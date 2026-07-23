@@ -1,0 +1,160 @@
+@import "tailwindcss";
+
+/* @tailwindcss/typography gives us the `prose` class for clean rich-text
+ * rendering inside the FileViewerDialog's markdown body. We customize
+ * heavily in the component itself (GitHub-flavored borders on h2,
+ * code-block treatment) — the plugin is the base layer. */
+@plugin "@tailwindcss/typography";
+
+/* Octopus design tokens — stolen wholesale from vm0's globals.css.
+ *
+ * Light theme, orange primary, cool-gray neutrals. Octopus used to be
+ * dark; this is the deliberate flip to vm0's look. All values are
+ * `H S% L%` triplets so they compose with Tailwind's alpha syntax
+ * (`bg-background/80`). */
+
+@theme {
+  /* Color scales referenced by both Tailwind utilities and semantic tokens */
+  --color-gray-0: hsl(var(--gray-0));
+  --color-gray-50: hsl(var(--gray-50));
+  --color-gray-100: hsl(var(--gray-100));
+  --color-gray-200: hsl(var(--gray-200));
+  --color-gray-300: hsl(var(--gray-300));
+  --color-gray-400: hsl(var(--gray-400));
+  --color-gray-500: hsl(var(--gray-500));
+  --color-gray-600: hsl(var(--gray-600));
+  --color-gray-700: hsl(var(--gray-700));
+  --color-gray-800: hsl(var(--gray-800));
+  --color-gray-900: hsl(var(--gray-900));
+  --color-gray-950: hsl(var(--gray-950));
+
+  --color-primary-50: hsl(var(--primary-50));
+  --color-primary-100: hsl(var(--primary-100));
+  --color-primary-200: hsl(var(--primary-200));
+  --color-primary-300: hsl(var(--primary-300));
+  --color-primary-500: hsl(var(--primary-500));
+  --color-primary-600: hsl(var(--primary-600));
+  --color-primary-700: hsl(var(--primary-700));
+
+  /* Semantic colors — what components actually use */
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+
+  /* Sidebar tokens (vm0 surfaces these independently of card/background) */
+  --color-sidebar: hsl(var(--sidebar));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+  --color-sidebar-accent: hsl(var(--sidebar-accent));
+  --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground));
+  --color-sidebar-border: hsl(var(--sidebar-border));
+
+  /* Radius scale */
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+
+  /* Typography */
+  --font-family-sans:
+    "Noto Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-family-mono:
+    "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Monaco, Consolas,
+    monospace;
+
+  /* Tabler icons — consistent stroke weight across the app */
+  --icon-stroke-width: 1.5;
+}
+
+@layer base {
+  :root {
+    /* Gray scale — cool neutral, lifted verbatim from vm0/globals.css */
+    --gray-0:   210 25% 98%;  /* #FAFBFC */
+    --gray-50:  216 26% 96%;  /* #F3F5F8 */
+    --gray-100: 213 23% 92%;  /* #E7EBF0 */
+    --gray-200: 215 21% 89%;  /* #DCE1E8 */
+    --gray-300: 216 19% 85%;  /* #D1D7E0 */
+    --gray-400: 217 18% 80%;  /* #C2C9D4 — borders on buttons/inputs/menus */
+    --gray-500: 218 17% 74%;  /* #B2BAC8 */
+    --gray-600: 220 14% 65%;  /* #9BA3B3 */
+    --gray-700: 219 11% 52%;  /* #788192 */
+    --gray-800: 215 12% 36%;  /* #525B68 */
+    --gray-900: 220 19% 13%;  /* #1A1E26 */
+    --gray-950: 220 18% 10%;  /* #14171D */
+
+    /* Primary scale — dark blue (user requested white + dark blue). Hue
+     * locked around 220° (true blue, not teal/violet); the 700 stop is
+     * the brand accent used on filled buttons, focus rings, and active
+     * pills. Lighter stops are used for tinted backgrounds + avatar
+     * tiles. */
+    --primary-50:  214 100% 97%;  /* #EEF5FE */
+    --primary-100: 213 100% 93%;  /* #DCEAFD */
+    --primary-200: 214 100% 88%;  /* #C2DCFB */
+    --primary-300: 215  92% 80%;  /* #A2C5F4 */
+    --primary-500: 218  72% 56%;  /* #4A82DA */
+    --primary-600: 219  78% 42%;  /* #1B53BC */
+    --primary-700: 222  76% 30%;  /* #133E8B — the brand dark blue */
+
+    /* Semantic mappings (light theme) */
+    --background:           214 20% 98.5%;
+    --foreground:           var(--gray-950);
+
+    --card:                 0 0% 100%;
+    --card-foreground:      var(--gray-950);
+
+    --popover:              0 0% 100%;
+    --popover-foreground:   var(--gray-950);
+
+    --primary:              var(--primary-700);
+    --primary-foreground:   0 0% 100%;
+
+    --secondary:            var(--gray-100);
+    --secondary-foreground: var(--gray-950);
+
+    --muted:                var(--gray-100);
+    --muted-foreground:     var(--gray-800);
+
+    --accent:               var(--gray-100);
+    --accent-foreground:    var(--gray-950);
+
+    --destructive:          0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border:               var(--gray-200);
+    --input:                0 0% 100%;
+    --ring:                 var(--primary-600);
+
+    --sidebar:                    var(--gray-50);
+    --sidebar-foreground:         var(--gray-950);
+    --sidebar-accent:             var(--gray-100);
+    --sidebar-accent-foreground:  var(--gray-950);
+    --sidebar-border:             var(--gray-200);
+
+    --radius: 0.5rem;
+  }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: var(--font-family-sans);
+  }
+
+  /* Tabler icons share a consistent stroke. */
+  svg[class*="tabler-icon"] {
+    stroke-width: var(--icon-stroke-width);
+  }
+}

@@ -1,0 +1,37 @@
+# Project-local agent prompt fragments.
+# This file is loaded fresh on every backend turn.
+#
+# Supported sections:
+# [common] applies to every agent in this working directory.
+# [backends."claude-code"] applies to Claude Code backed sessions.
+# [backends.codex] applies to Codex backed sessions.
+# [agents."Agent Name"] applies to an exact agent name, or use the agent id.
+# [group] applies only when the agent is running as a group member.
+# Long group routing rules can live in .chaintogether/rules.md.
+
+[common]
+system_prompt = ""
+
+[backends."claude-code"]
+system_prompt = ""
+
+[backends.codex]
+system_prompt = ""
+
+[group]
+system_prompt = """
+Project group rule additions:
+- Treat @mentions as routing commands only.
+- When work is complete, answer naturally without writing STOP or DONE.
+"""
+
+# Example:
+# [agents."Claude"]
+# system_prompt = """
+# Claude-specific project rules go here.
+# """
+#
+# [agents."Codex"]
+# system_prompt = """
+# Codex-specific project rules go here.
+# """

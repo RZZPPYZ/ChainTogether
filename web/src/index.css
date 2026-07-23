@@ -1,0 +1,210 @@
+/* All design tokens (colors, radius, sidebar surfaces) live in
+ * tokens.css as `H S% L%` triplets wrapped by `hsl(var(--token))`.
+ * This file used to carry a legacy unlayered `:root` palette
+ * (--accent, --border, …) that silently broke those tokens: being
+ * unlayered it beat tokens.css's layered values, and because it
+ * stored *full* `hsl(...)` colors, `hsl(var(--accent))` resolved to
+ * the invalid `hsl(hsl(...))` — killing every `bg-accent`/`border-border`
+ * hover. The few selectors below that need those values now read the
+ * gray scale from tokens.css directly. */
+
+/* Universal reset. Wrapped in `@layer base` so Tailwind v4's utility
+ * classes (which live in cascade layers) can still set padding/margin.
+ * Without the @layer wrapper, an unlayered universal rule beats every
+ * layered utility — Tailwind's px-* would silently no-op. */
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--gray-300)) transparent;
+  }
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: hsl(var(--gray-300));
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--gray-500));
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+html {
+  height: 100%;
+}
+
+body {
+  /* font-family + bg + text color come from tokens.css. Keep the
+   * layout-only bits here. */
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+#root {
+  height: 100%;
+}
+
+/* Layout */
+.app-layout {
+  display: flex;
+  position: absolute;
+  top: var(--app-top, 0px);
+  left: 0;
+  right: 0;
+  height: var(--app-h, 100dvh);
+  overflow: hidden;
+}
+
+.sidebar {
+  width: 260px;
+  min-width: 260px;
+  background-color: hsl(var(--sidebar));
+  border-right: 0.7px solid hsl(var(--sidebar-border));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidebar-overlay {
+  display: none;
+}
+
+.main-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* Virtuoso spacing hooks — target data attributes the lib renders. */
+.chat-messages [data-virtuoso-scroller] {
+  padding: 1rem 0;
+}
+
+.chat-messages [data-item-index] {
+  padding: 0 1rem 0.75rem;
+}
+
+/* Markdown nested output — react-markdown wraps assistant text in
+ * .markdown; these selectors style its <pre>/<code>/<table> output. */
+.msg-assistant .markdown pre {
+  background: hsl(var(--gray-50));
+  padding: 0.6rem;
+  border-radius: var(--radius);
+  overflow-x: auto;
+  margin: 0.5rem 0;
+  font-family: var(--font-family-mono);
+  font-size: 0.85rem;
+}
+
+.msg-assistant .markdown code {
+  background: hsl(var(--gray-50));
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.9em;
+  font-family: var(--font-family-mono);
+}
+
+.msg-assistant .markdown pre code {
+  background: none;
+  padding: 0;
+}
+
+.msg-assistant .markdown p {
+  margin: 0.4rem 0;
+}
+
+.msg-assistant .markdown ul, .msg-assistant .markdown ol {
+  padding-left: 1.5rem;
+  margin: 0.4rem 0;
+}
+
+.msg-assistant .markdown table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5rem 0;
+  font-size: 0.9em;
+  overflow-x: auto;
+  display: block;
+}
+
+.msg-assistant .markdown th,
+.msg-assistant .markdown td {
+  border: 1px solid hsl(var(--gray-200));
+  padding: 0.4rem 0.7rem;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.msg-assistant .markdown th {
+  background: hsl(var(--gray-50));
+  font-weight: 600;
+}
+
+.msg-assistant .markdown tr:nth-child(even) {
+  background: hsl(var(--gray-50));
+}
+
+.group-markdown p {
+  margin: 0.25rem 0;
+}
+
+.group-markdown p:first-child {
+  margin-top: 0;
+}
+
+.group-markdown p:last-child {
+  margin-bottom: 0;
+}
+
+.group-markdown strong {
+  font-weight: 700;
+}
+
+/* Mobile responsive */
+@media (max-width: 768px) {
+  .sidebar {
+    position: absolute;
+    left: -260px;
+    top: 0;
+    height: 100%;
+    z-index: 100;
+    transition: left 0.3s;
+  }
+
+  .sidebar.open {
+    left: 0;
+  }
+
+  .sidebar-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 99;
+  }
+
+  .msg-user .msg-content {
+    max-width: 95%;
+  }
+}

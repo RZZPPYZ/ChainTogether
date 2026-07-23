@@ -1,0 +1,17 @@
+.env
+.venv
+__pycache__/
+*.pyc
+node_modules/
+web/dist/
+web/test-results/
+test-results/
+.claude/
+.pytest_cache/
+octopus.db*
+octopus-dev.db*
+chaintogether.db*
+*.egg-info/
+
+# Intermediate file from `bun run generate:contracts`
+web/.openapi.json

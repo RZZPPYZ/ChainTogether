@@ -1,0 +1,270 @@
+/**
+ * Inline card rendered next to a `mcp__ask_agent__ask` tool_use. The
+ * tool_use itself shows the model's call shape (target agent name,
+ * request, optional files); this card shows the LIVE state of the
+ * delegation — running spinner, completed, cancelled, failed — plus
+ * a deep-link into the child's session and a cancel button while
+ * the run is open.
+ *
+ * State source: `delegations[sessionId]` in the zustand store,
+ * populated by either the snapshot fetch (on session load) or the
+ * REST round-trip the tool_use kicked off. Once the sibling
+ * tool_result arrives, we match the live record by the
+ * `delegation_id` parsed from "Started delegation `<id>`". Before
+ * that, we briefly fall back to (target_agent_name, request).
+ */
+
+import { useEffect, useMemo, useState } from "react";
+import {
+  IconCheck,
+  IconExclamationCircle,
+  IconExternalLink,
+  IconHandStop,
+  IconLoader2,
+  IconSubtask,
+  IconX,
+} from "@tabler/icons-react";
+
+import { useSessionStore, type Delegation } from "../stores/sessionStore";
+
+const STATUS_LABEL: Record<Delegation["state"], string> = {
+  running: "running",
+  completed: "replied",
+  failed: "failed",
+  cancelled: "cancelled",
+};
+
+function StatusIcon({ state }: { state: Delegation["state"] }) {
+  if (state === "running") {
+    return <IconLoader2 size={14} className="animate-spin text-primary" />;
+  }
+  if (state === "completed") {
+    return <IconCheck size={14} className="text-green-700" />;
+  }
+  if (state === "cancelled") {
+    return <IconHandStop size={14} className="text-muted-foreground" />;
+  }
+  return <IconExclamationCircle size={14} className="text-destructive" />;
+}
+
+export function AgentDelegationRequestCard({
+  sessionId,
+  toolUseId,
+  agentName,
+  request,
+  files,
+}: {
+  sessionId: string;
+  toolUseId: string | undefined;
+  agentName: string;
+  request: string;
+  files: string[] | undefined;
+}) {
+  const token = useSessionStore((s) => s.token);
+  const setDelegations = useSessionStore((s) => s.setDelegations);
+  const setActiveSessionId = useSessionStore((s) => s.setActiveSessionId);
+  const setActiveAgentId = useSessionStore((s) => s.setActiveAgentId);
+  const sessions = useSessionStore((s) => s.sessions);
+  const messages = useSessionStore((s) => s.messages[sessionId]);
+  const wantName = (agentName || "").toLowerCase();
+
+  // Server-truth path: the tool_result for THIS tool_use carries
+  // "Started delegation `<id>`" — that id is the canonical identity
+  // of the delegation. We match by it whenever the tool_result has
+  // already arrived; that's robust to any request-string round-trip
+  // differences between what the model wrote and what the server
+  // stored (which was tripping the (name,request) match in real
+  // browser runs).
+  const delegationIdFromResult = useMemo(() => {
+    if (!toolUseId || !messages) return null;
+    const tr = messages.find(
+      (m) => m.type === "tool_result" && m.tool_use_id === toolUseId
+    );
+    if (!tr || typeof tr.content !== "string") return null;
+    const m = tr.content.match(/Started delegation `([A-Za-z0-9]+)`/);
+    return m ? m[1] : null;
+  }, [messages, toolUseId]);
+
+  // Fall back to (name, request) match only when the tool_result
+  // hasn't arrived yet — that's the brief window between the
+  // tool_use rendering and the MCP shim's HTTP round-trip completing.
+  // We deliberately do NOT fall further to "by name alone": under
+  // fan-out (multiple in-flight delegations to the same target) it
+  // would bind this card to the wrong record and the Cancel button
+  // would stop someone else's delegation. When neither match
+  // applies, render the card in a starting-state with no controls.
+  const match = useSessionStore((s) => {
+    const list = s.delegations[sessionId] || [];
+    if (delegationIdFromResult) {
+      return list.find((d) => d.delegation_id === delegationIdFromResult);
+    }
+    return [...list]
+      .reverse()
+      .find(
+        (d) =>
+          (d.target_agent_name || "").toLowerCase() === wantName &&
+          d.request === request
+      );
+  });
+  const [cancelling, setCancelling] = useState(false);
+
+  // Poll the delegations list until we have a record AND it's in a
+  // terminal state. The card mounts when the tool_use is emitted,
+  // but the server-side delegation may not yet exist (the MCP shim's
+  // HTTP POST is still in flight); we can't rely on a single
+  // on-mount fetch. The poll fires an immediate request then every
+  // 2 s and stops automatically once the record terminates. No WS
+  // event for delegation state changes exists yet; this is the
+  // right shape for v1.
+  useEffect(() => {
+    if (match && match.state !== "running") return;
+    const url = `${window.location.origin}/api/sessions/${encodeURIComponent(
+      sessionId
+    )}/delegations`;
+    let cancelled = false;
+    const fire = () => {
+      fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (!cancelled && Array.isArray(data))
+            setDelegations(sessionId, data as Delegation[]);
+        })
+        .catch(() => {});
+    };
+    fire();
+    const id = window.setInterval(fire, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [match?.state, sessionId, token, setDelegations]);
+
+  const openChild = async () => {
+    if (!match) return;
+    let child = sessions.find((s) => s.id === match.delegation_id);
+    if (!child) {
+      // After DelegationManager auto-archives the child on terminal
+      // delivery, the child is no longer in the live `sessions`
+      // list. Fetch it (the GET /sessions/{id} route returns
+      // archived rows too) and slot it into the right store map so
+      // the chat view can render either as live or read-only.
+      const url = `${window.location.origin}/api/sessions/${encodeURIComponent(
+        match.delegation_id
+      )}`;
+      try {
+        const r = await fetch(url, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (r.ok) {
+          const detail = await r.json();
+          const store = useSessionStore.getState();
+          if (detail.archived) {
+            const existing = store.archivedSessions;
+            if (!existing.some((s) => s.id === detail.id)) {
+              store.setArchivedSessions([...existing, detail]);
+            }
+          } else {
+            const existing = store.sessions;
+            if (!existing.some((s) => s.id === detail.id)) {
+              store.setSessions([...existing, detail]);
+            }
+          }
+          child = detail;
+        }
+      } catch {
+        // Best-effort — fall through to the navigation, which will
+        // land on the chat-empty state if the session really is gone.
+      }
+    }
+    if (child?.agent_id) setActiveAgentId(child.agent_id);
+    setActiveSessionId(match.delegation_id);
+  };
+
+  const cancel = async () => {
+    if (!match) return;
+    setCancelling(true);
+    const url = `${window.location.origin}/api/sessions/${encodeURIComponent(
+      sessionId
+    )}/delegations/${encodeURIComponent(match.delegation_id)}/cancel`;
+    try {
+      await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ reason: "cancelled from UI" }),
+      });
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  const state = match?.state ?? "running";
+  const label = STATUS_LABEL[state];
+  const delegationIdShort = match?.delegation_id?.slice(0, 8) ?? "…";
+
+  return (
+    <div
+      className={`agent-delegation-request inline-flex items-start gap-2 rounded-md border px-2.5 py-1.5 text-xs ${
+        state === "completed"
+          ? "border-primary/40 bg-primary/5"
+          : state === "running"
+          ? "border-border bg-card"
+          : state === "cancelled"
+          ? "border-border bg-muted/40 text-muted-foreground"
+          : "border-destructive/40 bg-destructive/5"
+      }`}
+      data-delegation-state={state}
+    >
+      <IconSubtask size={14} className="text-primary mt-0.5 shrink-0" />
+      <div className="flex-1 min-w-0 space-y-0.5">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-medium truncate">
+            Asked {agentName}
+          </span>
+          <span className="inline-flex items-center gap-1 text-muted-foreground">
+            <StatusIcon state={state} />
+            <span>{label}</span>
+          </span>
+          {match && (
+            <span className="text-[10px] text-muted-foreground/70 font-mono">
+              ({delegationIdShort})
+            </span>
+          )}
+        </div>
+        <div className="text-muted-foreground truncate" title={request}>
+          “{request}”
+        </div>
+        {files && files.length > 0 && (
+          <div className="text-[10px] text-muted-foreground/80">
+            files: {files.join(", ")}
+          </div>
+        )}
+      </div>
+      <div className="flex items-center gap-1 shrink-0">
+        {match && (
+          <button
+            type="button"
+            onClick={openChild}
+            className="btn-open inline-flex items-center justify-center h-6 px-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent"
+            title={`Open ${agentName}'s session`}
+          >
+            <IconExternalLink size={12} />
+          </button>
+        )}
+        {state === "running" && match && (
+          <button
+            type="button"
+            onClick={cancel}
+            disabled={cancelling}
+            className="btn-cancel inline-flex items-center justify-center h-6 px-1.5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 disabled:opacity-50"
+            title="Cancel delegation"
+          >
+            <IconX size={12} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}

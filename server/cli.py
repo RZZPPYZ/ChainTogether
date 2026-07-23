@@ -1,0 +1,334 @@
+"""CLI entry point for Octopus: serve (default) and handoff subcommands."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import urllib.request
+import urllib.error
+from pathlib import Path
+
+
+def get_project_dir(cwd: str | None = None) -> Path:
+    """Return the Claude Code project directory for the given (or current) cwd."""
+    if cwd is None:
+        cwd = str(Path.cwd())
+    escaped = cwd.replace("/", "-").replace("\\", "-")
+    return Path.home() / ".claude" / "projects" / escaped
+
+
+def discover_sessions(project_dir: Path) -> list[dict]:
+    """Find JSONL session files and return basic info about each."""
+    if not project_dir.is_dir():
+        return []
+
+    sessions = []
+    for jsonl_path in sorted(project_dir.glob("*.jsonl")):
+        session_id = jsonl_path.stem
+        preview = _get_session_preview(jsonl_path)
+        sessions.append({
+            "session_id": session_id,
+            "path": jsonl_path,
+            "preview": preview,
+        })
+    return sessions
+
+
+def _get_session_preview(path: Path) -> str:
+    """Extract first user message from a JSONL file as a preview."""
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if data.get("type") != "user":
+                    continue
+                message = data.get("message", {})
+                content = message.get("content")
+                if isinstance(content, str):
+                    return content[:100]
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            return block.get("text", "")[:100]
+    except OSError:
+        pass
+    return "(no preview)"
+
+
+def build_import_payload(
+    jsonl_path: Path, name: str | None = None
+) -> dict:
+    """Parse a Claude Code JSONL file (via the claude harness's transcript
+    codec) and build the import API payload. Handoff reads Claude's on-disk
+    JSONL, so the codec is always the claude-code harness's."""
+    from .harness import get_harness
+
+    parsed = get_harness("claude-code").transcript_codec.parse_file(str(jsonl_path))
+    meta = parsed.metadata
+
+    return {
+        "name": name or f"Handoff: {(meta.first_user_message or 'session')[:60]}",
+        "working_dir": meta.cwd,
+        "claude_session_id": meta.session_id,
+        "messages": [msg.model_dump(exclude_none=True) for msg in parsed.messages],
+    }
+
+
+def do_handoff(args: argparse.Namespace) -> None:
+    """Execute the handoff subcommand."""
+    server = args.server.rstrip("/")
+    token = args.token
+
+    # Determine project dir
+    project_dir = Path(args.project_dir) if args.project_dir else get_project_dir()
+
+    if args.session_id:
+        jsonl_path = project_dir / f"{args.session_id}.jsonl"
+        if not jsonl_path.exists():
+            print(f"Error: Session file not found: {jsonl_path}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        # Discover and let user pick
+        sessions = discover_sessions(project_dir)
+        if not sessions:
+            print(f"No sessions found in {project_dir}", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"Found {len(sessions)} session(s) in {project_dir}:\n")
+        for i, s in enumerate(sessions, 1):
+            print(f"  {i}. {s['session_id'][:12]}...  {s['preview']}")
+        print()
+
+        try:
+            choice = input(f"Select session (1-{len(sessions)}): ").strip()
+            idx = int(choice) - 1
+            if idx < 0 or idx >= len(sessions):
+                raise ValueError
+        except (ValueError, EOFError, KeyboardInterrupt):
+            print("\nAborted.", file=sys.stderr)
+            sys.exit(1)
+
+        jsonl_path = sessions[idx]["path"]
+
+    # Build payload
+    payload = build_import_payload(jsonl_path, name=args.name)
+    msg_count = len(payload["messages"])
+    print(f"Importing session with {msg_count} messages...")
+
+    # POST to server
+    url = f"{server}/api/sessions/import"
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            print(f"Session imported: {result['id']}")
+            print(f"  Name: {result['name']}")
+            print(f"  Messages: {result['message_count']}")
+            print(f"  URL: {server}/sessions/{result['id']}")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        print(f"Error: HTTP {e.code} — {body}", file=sys.stderr)
+        sys.exit(1)
+    except urllib.error.URLError as e:
+        print(f"Error: Could not connect to {server}", file=sys.stderr)
+        print(f"  Is the Octopus server running? Start it with:", file=sys.stderr)
+        print(f"    octopus serve", file=sys.stderr)
+        print(f"  Or with Cloudflare Tunnel:", file=sys.stderr)
+        print(f"    octopus serve --tunnel", file=sys.stderr)
+        sys.exit(1)
+
+
+def do_pull(args: argparse.Namespace) -> None:
+    """Execute the pull subcommand — fetch a session from Octopus and write as JSONL."""
+    from .harness import get_harness
+    from .models import MessageContent
+
+    server = args.server.rstrip("/")
+    token = args.token
+    session_id = args.session_id
+
+    # Fetch session from server
+    url = f"{server}/api/sessions/{session_id}"
+    req = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        method="GET",
+    )
+
+    try:
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        print(f"Error: HTTP {e.code} — {body}", file=sys.stderr)
+        sys.exit(1)
+    except urllib.error.URLError as e:
+        print(f"Error: Could not connect to {server} — {e.reason}", file=sys.stderr)
+        sys.exit(1)
+
+    # Only harnesses with a transcript codec can be written to disk (Claude
+    # Code JSONL). A Codex session has no on-disk transcript format → say so.
+    backend = data.get("backend") or "claude-code"
+    harness = get_harness(backend)
+    if not harness.can_export:
+        print(
+            f"Error: pull isn't supported for the {backend} harness — it has no "
+            "on-disk transcript format.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    claude_session_id = data.get("claude_session_id")
+    if not claude_session_id:
+        import uuid
+        claude_session_id = str(uuid.uuid4())
+        print(f"Note: No claude_session_id on server — generated {claude_session_id}")
+
+    working_dir = args.cwd or data.get("working_dir") or str(Path.cwd())
+    messages = [MessageContent(**msg) for msg in data.get("messages", [])]
+
+    if not messages:
+        print("Warning: Session has no messages.", file=sys.stderr)
+
+    # Determine output path
+    project_dir = Path(args.project_dir) if args.project_dir else get_project_dir(working_dir)
+    out_path = project_dir / f"{claude_session_id}.jsonl"
+
+    harness.transcript_codec.write_file(
+        str(out_path), messages, claude_session_id, working_dir
+    )
+
+    msg_count = len(messages)
+    print(f"Pulled session with {msg_count} messages → {out_path}")
+    print(f"\nResume with:\n  claude --resume {claude_session_id}")
+
+
+def do_serve(args: argparse.Namespace) -> None:
+    """Execute the serve subcommand (default)."""
+    dist_index = Path(__file__).resolve().parent.parent / "web" / "dist" / "index.html"
+    if not dist_index.exists():
+        print(
+            "Warning: Built frontend not found (web/dist/index.html).\n"
+            "  The API will work, but no UI will be served.\n"
+            "  Run `cd web && bun run build` to build the frontend.\n"
+        )
+
+    # CLI --tunnel flag overrides config if explicitly set.
+    # We set the env var (not the Settings object) so the value survives
+    # uvicorn's reload, which re-imports the module and creates a fresh Settings().
+    if getattr(args, "tunnel", None) is not None:
+        import os
+        os.environ["OCTOPUS_ENABLE_TUNNEL"] = str(args.tunnel).lower()
+
+    from .main import run
+    run()
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI argument parser."""
+    parser = argparse.ArgumentParser(
+        prog="octopus",
+        description="Octopus — remote Claude Code controller",
+    )
+    subparsers = parser.add_subparsers(dest="command")
+
+    # serve (default)
+    serve_parser = subparsers.add_parser("serve", help="Start the Octopus server")
+    serve_parser.add_argument(
+        "--tunnel",
+        action="store_true",
+        default=None,
+        help="Enable Cloudflare Tunnel for public HTTPS access",
+    )
+
+    # handoff
+    handoff_parser = subparsers.add_parser(
+        "handoff", help="Import a local Claude Code session"
+    )
+    handoff_parser.add_argument(
+        "--session-id",
+        help="Claude Code session UUID (skips interactive selection)",
+    )
+    handoff_parser.add_argument(
+        "--project-dir",
+        help="Path to Claude Code project directory (default: auto-detect from cwd)",
+    )
+    handoff_parser.add_argument(
+        "--server",
+        default="http://localhost:8000",
+        help="Octopus server URL (default: http://localhost:8000)",
+    )
+    handoff_parser.add_argument(
+        "--token",
+        default="changeme",
+        help="Auth token for the Octopus server",
+    )
+    handoff_parser.add_argument(
+        "--name",
+        help="Name for the imported session",
+    )
+
+    # pull
+    pull_parser = subparsers.add_parser(
+        "pull", help="Pull a session from Octopus and write as Claude Code JSONL"
+    )
+    pull_parser.add_argument(
+        "session_id",
+        help="Octopus session ID to pull",
+    )
+    pull_parser.add_argument(
+        "--server",
+        default="http://localhost:8000",
+        help="Octopus server URL (default: http://localhost:8000)",
+    )
+    pull_parser.add_argument(
+        "--token",
+        default="changeme",
+        help="Auth token for the Octopus server",
+    )
+    pull_parser.add_argument(
+        "--project-dir",
+        help="Path to Claude Code project directory (default: auto-detect from working_dir)",
+    )
+    pull_parser.add_argument(
+        "--cwd",
+        help="Override the working directory stored in the session",
+    )
+
+    return parser
+
+
+def main() -> None:
+    """CLI entry point."""
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if args.command is None or args.command == "serve":
+        do_serve(args)
+    elif args.command == "handoff":
+        do_handoff(args)
+    elif args.command == "pull":
+        do_pull(args)
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
