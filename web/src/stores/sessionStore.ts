@@ -207,12 +207,21 @@ interface SessionStore {
   addGroupTypingAgent: (sessionId: string, agentName: string) => void;
   removeGroupTypingAgent: (sessionId: string, agentName: string) => void;
 
-  // Group streaming agent replies: session_id → agent_name → accumulated text.
-  // Populated by group_agent_text WS events; cleared when the final
-  // [agent-reply:Name] user_message replaces the stream.
+  // Compatibility path for older servers that emit group_agent_text instead
+  // of text blocks. New servers put response chunks in group_agent_activity.
   groupStreamingReplies: Record<string, Record<string, string>>;
   appendGroupStreamingReply: (sessionId: string, agentName: string, chunk: string) => void;
   clearGroupStreamingReply: (sessionId: string, agentName: string) => void;
+
+  // Ephemeral rich execution state for group-member turns. Normalized CLI
+  // events become ordered blocks in one live Agent message. The final reply is
+  // durable; execution blocks remain available until a reload or newer turn.
+  groupAgentRuns: Record<string, Record<string, GroupAgentRun>>;
+  applyGroupAgentActivity: (
+    sessionId: string,
+    event: GroupAgentActivityEvent,
+  ) => void;
+  clearGroupAgentRun: (sessionId: string, agentName: string) => void;
 
   // Native deep-research jobs, keyed by sessionId → list (native-deep-research.md
   // §7). The ResearchCard renders live phase/progress; the final report arrives
@@ -298,6 +307,88 @@ export interface GroupInvocation {
   created_at: string;
   updated_at: string;
   completed_at?: string | null;
+}
+
+interface GroupAgentBlockBase {
+  id: string;
+  startedAt: number;
+  finishedAt?: number;
+  status: "running" | "completed" | "failed";
+}
+
+export interface GroupAgentStageBlock extends GroupAgentBlockBase {
+  kind: "stage";
+  label: string;
+}
+
+export interface GroupAgentToolBlock extends GroupAgentBlockBase {
+  kind: "tool";
+  toolName: string;
+  input: Record<string, unknown>;
+  output?: string;
+}
+
+export interface GroupAgentResponseBlock extends GroupAgentBlockBase {
+  kind: "response";
+  content: string;
+}
+
+export interface GroupAgentErrorBlock extends GroupAgentBlockBase {
+  kind: "error";
+  content: string;
+}
+
+export type GroupAgentActivityBlock =
+  | GroupAgentStageBlock
+  | GroupAgentToolBlock
+  | GroupAgentResponseBlock
+  | GroupAgentErrorBlock;
+
+export interface GroupAgentRun {
+  invocationId: string | null;
+  agentName: string;
+  status: "running" | "completed" | "failed";
+  startedAt: number;
+  finishedAt?: number;
+  durationMs?: number;
+  cost?: number;
+  error?: string;
+  blocks: GroupAgentActivityBlock[];
+}
+
+export interface GroupAgentActivityEvent {
+  invocation_id?: string | null;
+  agent_name: string;
+  phase:
+    | "started"
+    | "thinking"
+    | "text"
+    | "tool_started"
+    | "tool_finished"
+    | "result"
+    | "completed"
+    | "error";
+  tool_name?: string;
+  tool_use_id?: string | null;
+  tool_input?: Record<string, unknown>;
+  output?: string;
+  content?: string;
+  is_error?: boolean;
+  duration_ms?: number | null;
+  cost?: number | null;
+  detail?: string;
+}
+
+function finishRunningPhaseBlocks(
+  blocks: GroupAgentActivityBlock[],
+  finishedAt: number,
+): GroupAgentActivityBlock[] {
+  return blocks.map((block) =>
+    (block.kind === "stage" || block.kind === "response") &&
+    block.status === "running"
+      ? { ...block, status: "completed", finishedAt }
+      : block,
+  );
 }
 
 interface StorageLike {
@@ -661,5 +752,185 @@ export const useSessionStore = create<SessionStore>((set) => ({
         delete copy[sessionId];
       }
       return { groupStreamingReplies: copy };
+    }),
+
+  groupAgentRuns: {},
+  applyGroupAgentActivity: (sessionId, event) =>
+    set((s) => {
+      const byAgent = s.groupAgentRuns[sessionId] ?? {};
+      const now = Date.now();
+      const existing = byAgent[event.agent_name];
+      let run: GroupAgentRun =
+        event.phase === "started" || !existing
+          ? {
+              invocationId: event.invocation_id ?? null,
+              agentName: event.agent_name,
+              status: "running",
+              startedAt: now,
+              blocks: [
+                {
+                  id: "started",
+                  kind: "stage",
+                  label: "Agent started",
+                  status: "completed",
+                  startedAt: now,
+                  finishedAt: now,
+                },
+              ],
+            }
+          : { ...existing, blocks: existing.blocks.map((block) => ({ ...block })) };
+
+      if (event.phase === "thinking") {
+        if (
+          !run.blocks.some(
+            (block) =>
+              block.kind === "stage" &&
+              block.label === "Reasoning" &&
+              block.status === "running",
+          )
+        ) {
+          run.blocks = finishRunningPhaseBlocks(run.blocks, now);
+          run.blocks.push({
+            id: `thinking-${now}-${run.blocks.length}`,
+            kind: "stage",
+            label: "Reasoning",
+            status: "running",
+            startedAt: now,
+          });
+        }
+      } else if (event.phase === "tool_started") {
+        run.blocks = finishRunningPhaseBlocks(run.blocks, now);
+        const id = event.tool_use_id || `tool-${now}-${run.blocks.length}`;
+        const index = run.blocks.findIndex(
+          (block) => block.kind === "tool" && block.id === id,
+        );
+        const tool: GroupAgentToolBlock = {
+          id,
+          kind: "tool",
+          toolName: event.tool_name || "Tool",
+          input: event.tool_input || {},
+          status: "running",
+          startedAt: now,
+        };
+        run.blocks =
+          index >= 0
+            ? [
+                ...run.blocks.slice(0, index),
+                tool,
+                ...run.blocks.slice(index + 1),
+              ]
+            : [...run.blocks, tool];
+      } else if (event.phase === "tool_finished") {
+        run.blocks = finishRunningPhaseBlocks(run.blocks, now);
+        const index = event.tool_use_id
+          ? run.blocks.findIndex(
+              (block) => block.kind === "tool" && block.id === event.tool_use_id,
+            )
+          : -1;
+        if (index >= 0) {
+          const current = run.blocks[index] as GroupAgentToolBlock;
+          const updated: GroupAgentToolBlock = {
+            ...current,
+            output: event.output,
+            status: event.is_error ? "failed" : "completed",
+            finishedAt: now,
+          };
+          run.blocks = [
+            ...run.blocks.slice(0, index),
+            updated,
+            ...run.blocks.slice(index + 1),
+          ];
+        } else {
+          run.blocks.push({
+            id: event.tool_use_id || `tool-result-${now}-${run.blocks.length}`,
+            kind: "tool",
+            toolName: event.tool_name || "Tool",
+            input: {},
+            output: event.output,
+            status: event.is_error ? "failed" : "completed",
+            startedAt: now,
+            finishedAt: now,
+          });
+        }
+      } else if (event.phase === "text" && event.content) {
+        run.blocks = finishRunningPhaseBlocks(run.blocks, now);
+        const index = run.blocks.findIndex((block) => block.kind === "response");
+        const previous =
+          index >= 0 ? (run.blocks[index] as GroupAgentResponseBlock) : null;
+        const response: GroupAgentResponseBlock = {
+          id: "response",
+          kind: "response",
+          content: previous?.content
+            ? `${previous.content}\n\n${event.content}`
+            : event.content,
+          status: "running",
+          startedAt: previous?.startedAt ?? now,
+        };
+        run.blocks = [
+          ...run.blocks.filter((block) => block.kind !== "response"),
+          response,
+        ];
+      } else if (event.phase === "result") {
+        run.blocks = finishRunningPhaseBlocks(run.blocks, now);
+        run.durationMs = event.duration_ms ?? run.durationMs;
+        run.cost = event.cost ?? run.cost;
+        if (event.is_error) run.status = "failed";
+      } else if (event.phase === "completed") {
+        run.blocks = finishRunningPhaseBlocks(run.blocks, now).map((block) =>
+          block.kind === "response" && block.status === "running"
+            ? { ...block, status: "completed", finishedAt: now }
+            : block,
+        );
+        if (run.status !== "failed") run.status = "completed";
+        run.finishedAt = now;
+        run.blocks.push({
+          id: "completed",
+          kind: "stage",
+          label: run.status === "failed" ? "Finished with errors" : "Completed",
+          status: run.status === "failed" ? "failed" : "completed",
+          startedAt: now,
+          finishedAt: now,
+        });
+      } else if (event.phase === "error") {
+        run.blocks = finishRunningPhaseBlocks(run.blocks, now);
+        run.status = "failed";
+        run.error = event.detail || "Agent execution failed";
+        run.finishedAt = now;
+        if (
+          !run.blocks.some(
+            (block) => block.kind === "error" && block.content === run.error,
+          )
+        ) {
+          run.blocks.push({
+            id: `error-${now}-${run.blocks.length}`,
+            kind: "error",
+            content: run.error,
+            status: "failed",
+            startedAt: now,
+            finishedAt: now,
+          });
+        }
+      }
+
+      return {
+        groupAgentRuns: {
+          ...s.groupAgentRuns,
+          [sessionId]: { ...byAgent, [event.agent_name]: run },
+        },
+      };
+    }),
+  clearGroupAgentRun: (sessionId, agentName) =>
+    set((s) => {
+      const byAgent = s.groupAgentRuns[sessionId];
+      if (!byAgent || !(agentName in byAgent)) return s;
+      const nextByAgent = { ...byAgent };
+      delete nextByAgent[agentName];
+      const next = { ...s.groupAgentRuns };
+      if (Object.keys(nextByAgent).length > 0) {
+        next[sessionId] = nextByAgent;
+      } else {
+        delete next[sessionId];
+      }
+      return { groupAgentRuns: next };
     }),
 }));

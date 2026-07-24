@@ -7,11 +7,16 @@ import {
 } from "react";
 import {
   IconArrowUp,
+  IconAlertCircle,
   IconAt,
+  IconCheck,
   IconClock,
+  IconLoader2,
   IconMenu2,
+  IconMessageCircle,
   IconPlayerPlay,
   IconPlayerStop,
+  IconTerminal2,
   IconUsers,
 } from "@tabler/icons-react";
 import Markdown from "react-markdown";
@@ -21,6 +26,7 @@ import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 import {
   useSessionStore,
+  type GroupAgentRun,
   type GroupInvocation,
   type Message,
 } from "../stores/sessionStore";
@@ -55,11 +61,11 @@ function buildMentionHighlightRe(
     .sort((a, b) => b.length - a.length);
   // `\b` is ASCII-only so we use a custom left-boundary that also
   // catches CJK / Unicode: (?:^|[\s,.:;!?()\[\]{}<>,。！？、：；（）【】《》「」『』〈〉])
-  const leftBoundary = "(?:^|[\\s,.:;!?()\\[\\]{}<>,\\u3000\\u3001\\u3002\\uFF01\\uFF1A\\uFF1B\\uFF08\\uFF09\\u3010\\u3011\\u300A\\u300B\\u300C\\u300D\\u300E\\u300F\\u3008\\u3009])";
+  const leftBoundary = "(^|[\\s,.:;!?()\\[\\]{}<>,\\u3000\\u3001\\u3002\\uFF01\\uFF1A\\uFF1B\\uFF08\\uFF09\\u3010\\u3011\\u300A\\u300B\\u300C\\u300D\\u300E\\u300F\\u3008\\u3009])";
   const rightBoundary = "(?=$|[\\s,.:;!?()\\[\\]{}<>,\\u3000\\u3001\\u3002\\uFF01\\uFF1A\\uFF1B\\uFF08\\uFF09\\u3010\\u3011\\u300A\\u300B\\u300C\\u300D\\u300E\\u300F\\u3008\\u3009])";
   return new RegExp(
     `${leftBoundary}@(${escaped.join("|")})${rightBoundary}`,
-    "gu",
+    "giu",
   );
 }
 
@@ -79,20 +85,19 @@ export function highlightMentions(
   re.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
-    // Text before the mention (includes the left-boundary char).
+    // Text before the match, followed by the captured boundary character.
     if (m.index > lastIndex) {
-      parts.push(text.slice(lastIndex, m.index + 1));
+      parts.push(text.slice(lastIndex, m.index));
     }
+    if (m[1]) parts.push(m[1]);
     parts.push(
       <span
         key={`m-${key++}`}
-        className="inline-flex items-center rounded px-0.5 bg-primary/30 text-white font-medium text-[0.95em]"
+        className="mention-highlight inline-flex items-center rounded-sm bg-primary/15 px-0.5 font-semibold text-primary ring-1 ring-primary/20"
       >
-        @{m[1]}
+        @{m[2]}
       </span>,
     );
-    // Skip the boundary char matched inside the group (it's already
-    // included in the pre-mention text push above via `m.index + 1`).
     lastIndex = re.lastIndex;
   }
   if (lastIndex < text.length) {
@@ -105,15 +110,376 @@ function normalizeGroupMarkdown(text: string): string {
   return text.replace(/\*\*\s+([^*\n][\s\S]*?[^*\n])\s+\*\*/g, "**$1**");
 }
 
-function GroupMarkdown({ text }: { text: string }) {
+interface MentionTreeNode {
+  type: string;
+  value?: string;
+  tagName?: string;
+  properties?: Record<string, unknown>;
+  children?: MentionTreeNode[];
+}
+
+function rehypeMentionHighlights(options: { names: string[] }) {
+  return (tree: MentionTreeNode) => {
+    const transform = (node: MentionTreeNode, skip = false) => {
+      const shouldSkip =
+        skip ||
+        (node.type === "element" &&
+          (node.tagName === "code" ||
+            node.tagName === "pre" ||
+            node.tagName === "a"));
+      if (shouldSkip || !node.children) return;
+
+      const children: MentionTreeNode[] = [];
+      for (const child of node.children) {
+        if (child.type !== "text" || !child.value) {
+          transform(child);
+          children.push(child);
+          continue;
+        }
+
+        const re = buildMentionHighlightRe(options.names);
+        if (!re) {
+          children.push(child);
+          continue;
+        }
+        let lastIndex = 0;
+        let match: RegExpExecArray | null;
+        while ((match = re.exec(child.value)) !== null) {
+          const prefix = child.value.slice(lastIndex, match.index) + match[1];
+          if (prefix) children.push({ type: "text", value: prefix });
+          children.push({
+            type: "element",
+            tagName: "span",
+            properties: {
+              className: [
+                "mention-highlight",
+                "inline-flex",
+                "items-center",
+                "rounded-sm",
+                "bg-primary/15",
+                "px-0.5",
+                "font-semibold",
+                "text-primary",
+                "ring-1",
+                "ring-primary/20",
+              ],
+            },
+            children: [{ type: "text", value: `@${match[2]}` }],
+          });
+          lastIndex = re.lastIndex;
+        }
+        if (lastIndex === 0) {
+          children.push(child);
+        } else if (lastIndex < child.value.length) {
+          children.push({ type: "text", value: child.value.slice(lastIndex) });
+        }
+      }
+      node.children = children;
+    };
+    transform(tree);
+  };
+}
+
+export function GroupMarkdown({
+  text,
+  memberNames = [],
+}: {
+  text: string;
+  memberNames?: string[];
+}) {
   return (
     <div className="markdown group-markdown">
       <Markdown
         remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeKatex]}
+        rehypePlugins={[
+          rehypeKatex,
+          [rehypeMentionHighlights, { names: memberNames }],
+        ]}
       >
         {normalizeGroupMarkdown(text)}
       </Markdown>
+    </div>
+  );
+}
+
+function formatElapsed(milliseconds: number): string {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+function formatToolName(name: string): string {
+  const parts = name.split("__").filter(Boolean);
+  if (parts.length >= 3 && parts[0] === "mcp") {
+    return `${parts[1]} · ${parts.slice(2).join(" ").replaceAll("_", " ")}`;
+  }
+  return name.replaceAll("_", " ");
+}
+
+function summarizeToolInput(input: Record<string, unknown>): string {
+  const keys = [
+    "description",
+    "command",
+    "file_path",
+    "path",
+    "query",
+    "pattern",
+    "url",
+    "request",
+    "prompt",
+    "preview",
+  ];
+  for (const key of keys) {
+    const value = input[key];
+    if (value === undefined || value === null) continue;
+    const text = typeof value === "string" ? value : JSON.stringify(value);
+    const singleLine = text.replace(/\s+/g, " ").trim();
+    return singleLine.length > 150
+      ? `${singleLine.slice(0, 150)}...`
+      : singleLine;
+  }
+  const fallback = JSON.stringify(input);
+  return fallback.length > 150 ? `${fallback.slice(0, 150)}...` : fallback;
+}
+
+export function GroupAgentRunBlock({
+  run,
+  avatar,
+  streamingText,
+  finalText,
+}: {
+  run: GroupAgentRun;
+  avatar: string;
+  streamingText: string;
+  finalText?: string;
+}) {
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    if (run.status !== "running") return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [run.status]);
+
+  const elapsed =
+    run.durationMs ?? (run.finishedAt ?? now) - run.startedAt;
+  const activeBlock = [...run.blocks]
+    .reverse()
+    .find((block) => block.status === "running");
+  const statusText =
+    run.status === "failed"
+      ? "Execution failed"
+      : run.status === "completed"
+        ? "Completed"
+        : activeBlock?.kind === "tool"
+          ? `Using ${formatToolName(activeBlock.toolName)}`
+          : activeBlock?.kind === "stage"
+            ? activeBlock.label
+            : activeBlock?.kind === "response" || streamingText
+              ? "Writing response"
+              : "Waiting for CLI activity";
+  const toolCount = run.blocks.filter((block) => block.kind === "tool").length;
+  const hasResponseBlock = run.blocks.some((block) => block.kind === "response");
+  const fallbackResponse = hasResponseBlock ? "" : finalText || streamingText;
+
+  return (
+    <div className="group-agent-run mb-3 flex w-full max-w-2xl flex-col items-start">
+      <div className="mb-1 flex items-center gap-1.5 px-1">
+        <span className="text-sm">{avatar}</span>
+        <span className="text-xs font-medium text-muted-foreground">
+          @{run.agentName}
+        </span>
+      </div>
+      <div className="w-full overflow-hidden rounded-lg border border-border bg-card text-sm shadow-sm">
+        <div className="flex min-h-11 items-center gap-2.5 px-3 py-2">
+          {run.status === "failed" ? (
+            <IconAlertCircle size={17} className="shrink-0 text-destructive" />
+          ) : run.status === "completed" ? (
+            <IconCheck size={17} className="shrink-0 text-emerald-500" />
+          ) : (
+            <IconLoader2
+              size={17}
+              className="shrink-0 animate-spin text-primary"
+            />
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="truncate font-medium text-foreground">
+              {statusText}
+            </div>
+            <div className="text-xs text-muted-foreground">
+              {run.blocks.length} {run.blocks.length === 1 ? "block" : "blocks"}
+              {toolCount > 0
+                ? ` · ${toolCount} tool ${toolCount === 1 ? "call" : "calls"}`
+                : ""}
+            </div>
+          </div>
+          <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+            {formatElapsed(elapsed)}
+          </span>
+        </div>
+
+        {run.blocks.length > 0 && (
+          <div className="border-t border-border">
+            {run.blocks.map((block) => {
+              if (block.kind === "stage") {
+                return (
+                  <div
+                    key={block.id}
+                    className="flex min-h-9 items-center gap-2 border-b border-border px-3 py-2 last:border-b-0"
+                  >
+                    {block.status === "running" ? (
+                      <IconLoader2
+                        size={14}
+                        className="shrink-0 animate-spin text-primary"
+                      />
+                    ) : block.status === "failed" ? (
+                      <IconAlertCircle
+                        size={14}
+                        className="shrink-0 text-destructive"
+                      />
+                    ) : (
+                      <IconCheck
+                        size={14}
+                        className="shrink-0 text-emerald-500"
+                      />
+                    )}
+                    <IconClock
+                      size={14}
+                      className="shrink-0 text-muted-foreground"
+                    />
+                    <span className="text-xs font-medium text-foreground">
+                      {block.label}
+                    </span>
+                    {block.finishedAt && block.finishedAt > block.startedAt && (
+                      <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                        {formatElapsed(block.finishedAt - block.startedAt)}
+                      </span>
+                    )}
+                  </div>
+                );
+              }
+
+              if (block.kind === "response") {
+                const text = finalText ?? block.content;
+                return (
+                  <div
+                    key={block.id}
+                    className="border-b border-border px-3 py-2.5 last:border-b-0"
+                  >
+                    <div className="mb-1.5 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                      <IconMessageCircle size={14} />
+                      <span>Response</span>
+                      {block.status === "running" && (
+                        <IconLoader2 size={13} className="animate-spin text-primary" />
+                      )}
+                    </div>
+                    <div className="leading-relaxed text-foreground">
+                      <GroupMarkdown text={text} />
+                      {block.status === "running" && (
+                        <span className="inline-block h-4 w-1.5 animate-pulse bg-foreground/50 align-text-bottom" />
+                      )}
+                    </div>
+                  </div>
+                );
+              }
+
+              if (block.kind === "error") {
+                return (
+                  <div
+                    key={block.id}
+                    className="flex items-start gap-2 border-b border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive last:border-b-0"
+                  >
+                    <IconAlertCircle size={14} className="mt-0.5 shrink-0" />
+                    <span className="whitespace-pre-wrap break-words">
+                      {block.content}
+                    </span>
+                  </div>
+                );
+              }
+
+              const hasDetails =
+                Object.keys(block.input).length > 0 || Boolean(block.output);
+              return (
+                <details
+                  key={block.id}
+                  className="group/tool border-b border-border last:border-b-0"
+                >
+                  <summary
+                    className={`flex min-h-10 list-none items-center gap-2 px-3 py-2 ${
+                      hasDetails ? "cursor-pointer hover:bg-accent/40" : ""
+                    }`}
+                  >
+                    {block.status === "running" ? (
+                      <IconLoader2
+                        size={14}
+                        className="shrink-0 animate-spin text-primary"
+                      />
+                    ) : block.status === "failed" ? (
+                      <IconAlertCircle
+                        size={14}
+                        className="shrink-0 text-destructive"
+                      />
+                    ) : (
+                      <IconCheck
+                        size={14}
+                        className="shrink-0 text-emerald-500"
+                      />
+                    )}
+                    <IconTerminal2
+                      size={14}
+                      className="shrink-0 text-muted-foreground"
+                    />
+                    <span className="shrink-0 text-xs font-medium text-foreground">
+                      {formatToolName(block.toolName)}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                      {summarizeToolInput(block.input)}
+                    </span>
+                    {block.finishedAt && (
+                      <span className="shrink-0 text-[10px] text-muted-foreground">
+                        {formatElapsed(block.finishedAt - block.startedAt)}
+                      </span>
+                    )}
+                  </summary>
+                  {hasDetails && (
+                    <div className="space-y-2 border-t border-border bg-muted/30 px-3 py-2">
+                      {Object.keys(block.input).length > 0 && (
+                        <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-muted-foreground">
+                          {JSON.stringify(block.input, null, 2)}
+                        </pre>
+                      )}
+                      {block.output && (
+                        <pre
+                          className={`max-h-48 overflow-auto whitespace-pre-wrap break-words border-t border-border pt-2 font-mono text-[11px] leading-relaxed ${
+                            block.status === "failed"
+                              ? "text-destructive"
+                              : "text-muted-foreground"
+                          }`}
+                        >
+                          {block.output}
+                        </pre>
+                      )}
+                    </div>
+                  )}
+                </details>
+              );
+            })}
+          </div>
+        )}
+
+        {fallbackResponse && (
+          <div className="border-t border-border px-3 py-2 leading-relaxed text-foreground">
+            <div className="mb-1.5 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+              <IconMessageCircle size={14} />
+              <span>Response</span>
+            </div>
+            <GroupMarkdown text={fallbackResponse} />
+            {run.status === "running" && (
+              <span className="inline-block h-4 w-1.5 animate-pulse bg-foreground/50 align-text-bottom" />
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -160,6 +526,19 @@ export function GroupChatView({
             .filter(Boolean)
         : [],
     [group, agents],
+  );
+
+  const memberHandles = useMemo(
+    () =>
+      members.flatMap((agent) => {
+        if (!agent) return [];
+        const handles = [agent.name];
+        if (agent.alias && agent.alias.toLowerCase() !== agent.name.toLowerCase()) {
+          handles.push(agent.alias);
+        }
+        return handles;
+      }),
+    [members],
   );
 
   const agentByName = useMemo(() => {
@@ -220,9 +599,20 @@ export function GroupChatView({
   }, [activeGroupId, token, setGroupInvocations]);
 
   const mentionOptions = useMemo(() => {
-    if (!showMentions) return members;
+    const handles = members.flatMap((agent) => {
+      if (!agent) return [];
+      const rows = [{ agent, handle: agent.name, isAlias: false }];
+      if (agent.alias && agent.alias.toLowerCase() !== agent.name.toLowerCase()) {
+        rows.push({ agent, handle: agent.alias, isAlias: true });
+      }
+      return rows;
+    });
+    if (!showMentions) return handles;
     const q = mentionSearch.toLowerCase();
-    return members.filter((a) => a!.name.toLowerCase().includes(q));
+    return handles.filter(
+      ({ agent, handle }) =>
+        handle.toLowerCase().includes(q) || agent.name.toLowerCase().includes(q),
+    );
   }, [showMentions, mentionSearch, members]);
 
   // Auto-scroll to bottom on new messages or streaming text.
@@ -377,7 +767,7 @@ export function GroupChatView({
         if (e.key === "Tab" || e.key === "Enter") {
           e.preventDefault();
           const sel = mentionOptions[mentionIndex] || mentionOptions[0];
-          if (sel) insertMention(sel.name);
+          if (sel) insertMention(sel.handle);
           return;
         }
         if (e.key === "Escape") {
@@ -475,12 +865,19 @@ export function GroupChatView({
                   : "bg-muted"
             }`}
           >
-            {isError ? body : <GroupMarkdown text={body} />}
+            {isError ? (
+              body
+            ) : (
+              <GroupMarkdown
+                text={body}
+                memberNames={isUser ? [] : memberHandles}
+              />
+            )}
           </div>
         </div>
       );
     },
-    [parseAgentMsg, agentByName],
+    [parseAgentMsg, agentByName, memberHandles],
   );
 
   if (!activeGroupId || !group) {
@@ -534,7 +931,7 @@ export function GroupChatView({
             <option value="">不设置</option>
             {members.map((a) => (
               <option key={a!.id} value={a!.id}>
-                {a!.name}
+                {a!.alias ? `${a!.name} (@${a!.alias})` : a!.name}
               </option>
             ))}
           </select>
@@ -544,7 +941,7 @@ export function GroupChatView({
             <span
               key={a!.id}
               className="text-base leading-none"
-              title={a!.name}
+              title={a!.alias ? `${a!.name} (@${a!.alias})` : a!.name}
             >
               {a!.avatar || "\u{1F419}"}
             </span>
@@ -629,38 +1026,41 @@ export function GroupChatView({
         {/* Streaming agent replies — live bubbles that grow as the
          * backend streams chunks. Cleared when the final
          * [agent-reply:Name] user_message replaces them. */}
-        {Object.entries(streamingReplies).map(([name, text]) => {
-          const avatar = agentByName.get(name)?.avatar || "\u{1F419}";
-          return (
-            <div key={`stream-${name}`} className="flex flex-col mb-3 items-start">
-              <div className="flex items-center gap-1.5 mb-1 px-1">
-                <span className="text-sm">{avatar}</span>
-                <span className="text-xs font-medium text-muted-foreground">
-                  @{name}
-                </span>
+        {Object.entries(streamingReplies)
+          .map(([name, text]) => {
+            const avatar = agentByName.get(name)?.avatar || "\u{1F419}";
+            return (
+              <div key={`stream-${name}`} className="mb-3 flex flex-col items-start">
+                <div className="mb-1 flex items-center gap-1.5 px-1">
+                  <span className="text-sm">{avatar}</span>
+                  <span className="text-xs font-medium text-muted-foreground">
+                    @{name}
+                  </span>
+                </div>
+                <div className="max-w-[75%] rounded-lg bg-muted px-3 py-2 text-sm leading-relaxed">
+                  <GroupMarkdown text={text} memberNames={memberHandles} />
+                  <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-foreground/50 align-text-bottom" />
+                </div>
               </div>
-              <div className="max-w-[75%] rounded-lg px-3 py-2 text-sm leading-relaxed bg-muted">
-                <GroupMarkdown text={text} />
-                <span className="inline-block w-1.5 h-4 ml-0.5 bg-foreground/50 animate-pulse align-text-bottom" />
-              </div>
-            </div>
-          );
-        })}
+            );
+          })}
 
         {/* Typing indicator — only shown when the agent is typing but
          * hasn't produced any text yet (streamingReplies takes over
          * once text starts flowing). */}
-        {typingNames.length > 0 && Object.keys(streamingReplies).length === 0 && (
+        {typingNames.some((name) => !streamingReplies[name]) && (
           <div className="flex items-center gap-1.5 px-1 py-1 text-xs text-muted-foreground">
-            {typingNames.map((name) => {
-              const a = agentByName.get(name);
-              return (
-                <span key={name} className="flex items-center gap-1">
-                  <span className="text-sm">{a?.avatar || "\u{1F419}"}</span>
-                  <span>@{name}</span>
-                </span>
-              );
-            })}
+            {typingNames
+              .filter((name) => !streamingReplies[name])
+              .map((name) => {
+                const a = agentByName.get(name);
+                return (
+                  <span key={name} className="flex items-center gap-1">
+                    <span className="text-sm">{a?.avatar || "\u{1F419}"}</span>
+                    <span>@{name}</span>
+                  </span>
+                );
+              })}
             <span className="animate-pulse">is typing…</span>
           </div>
         )}
@@ -670,19 +1070,26 @@ export function GroupChatView({
       <div className="chat-composer shrink-0 border-t border-border bg-background px-3 py-2 relative">
         {showMentions && mentionOptions.length > 0 && (
           <div className="absolute bottom-full left-3 right-3 mb-1 bg-popover border border-border rounded-lg shadow-lg overflow-hidden z-50">
-            {mentionOptions.map((a, i) => (
+            {mentionOptions.map(({ agent, handle, isAlias }, i) => (
               <button
-                key={a!.id}
+                key={`${agent.id}-${handle}`}
                 className={`flex items-center gap-2 w-full px-3 py-2 text-sm text-left transition-colors ${
                   i === mentionIndex ? "bg-accent" : "hover:bg-accent/50"
                 }`}
-                onClick={() => insertMention(a!.name)}
+                onClick={() => insertMention(handle)}
                 onMouseEnter={() => setMentionIndex(i)}
               >
-                <span className="text-base">{a!.avatar || "\u{1F419}"}</span>
-                <span className="flex-1 truncate">{a!.name}</span>
+                <span className="text-base">{agent.avatar || "\u{1F419}"}</span>
+                <span className="min-w-0 flex-1 truncate">
+                  @{handle}
+                  {isAlias && (
+                    <span className="ml-1.5 text-xs text-muted-foreground">
+                      {agent.name}
+                    </span>
+                  )}
+                </span>
                 <span className="text-xs text-muted-foreground">
-                  {a!.backend === "codex" ? "Codex" : "Claude"}
+                  {agent.backend === "codex" ? "Codex" : "Claude"}
                 </span>
               </button>
             ))}

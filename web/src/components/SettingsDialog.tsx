@@ -19,6 +19,7 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { useSessionStore } from "../stores/sessionStore";
+import { PersonaLibrary } from "./PersonaLibrary";
 
 interface Props {
   open: boolean;
@@ -57,7 +58,7 @@ export function SettingsDialog({ open, onOpenChange }: Props) {
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>
-            Connection, account, and notification preferences.
+            Connection, personas, account, and notification preferences.
           </DialogDescription>
         </DialogHeader>
 
@@ -68,6 +69,9 @@ export function SettingsDialog({ open, onOpenChange }: Props) {
             </TabsTrigger>
             <TabsTrigger value="account" className="flex-1">
               Account
+            </TabsTrigger>
+            <TabsTrigger value="personas" className="flex-1">
+              Personas
             </TabsTrigger>
             <TabsTrigger value="notifications" className="flex-1">
               Notifications
@@ -133,6 +137,10 @@ export function SettingsDialog({ open, onOpenChange }: Props) {
                 Sign out
               </Button>
             </div>
+          </TabsContent>
+
+          <TabsContent value="personas">
+            <PersonaLibrary token={token} />
           </TabsContent>
 
           <TabsContent value="notifications">

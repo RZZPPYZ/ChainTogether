@@ -88,7 +88,7 @@ async def start_delegation(
 
     Status codes:
     - 201 Created with the delegation record on success
-    - 404 if the parent session is gone or the target agent name
+    - 404 if the parent session is gone or the target agent name/alias
       doesn't resolve
     - 409 on cycle, depth, self-delegation, or ambiguous name
     """

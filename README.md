@@ -25,8 +25,29 @@ Current focus areas:
   context instead of repeatedly receiving the full group transcript.
 - Project-level rules and system prompt fragments loaded from local config,
   such as `.chaintogether/agents.toml` and `.chaintogether/rules.md`.
+- A shared persona library imported from complete GitHub skill repositories,
+  with several personas assignable to an agent and at most one active at once.
+- Live group execution blocks showing agent phase, elapsed time, tool calls,
+  bounded inputs/results, and streamed response text while a turn is running.
 - Better guardrails around agent-to-agent routing, completion tokens, holds,
   and noisy model output.
+
+## Personas
+
+Open **Settings > Personas** to install a persona from an HTTPS GitHub
+repository. ChainTogether pins the repository to its current commit, keeps the
+complete package under `OCTOPUS_PERSONAS_DIR`, and uses its `SKILL.md` as the
+persona's core prompt. Text references and examples remain available to the
+agent through a read-only persona MCP server when needed.
+
+When GitHub API access is unavailable or rate-limited, the same screen accepts
+a locally downloaded ZIP package. Both import paths use the same archive safety
+limits, package layout normalization, and `SKILL.md` validation.
+
+In **Agent Settings**, assign any number of installed personas to an agent and
+choose zero or one as active. The active persona is loaded fresh on every turn,
+so switching it affects existing sessions without changing the selected Claude
+Code or Codex backend.
 
 ## Octopus Roots
 

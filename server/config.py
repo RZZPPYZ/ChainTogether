@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     # CLAUDE_COWORK_MEMORY_PATH_OVERRIDE, Codex via its instructions blurb).
     # `~` expanded at use time.
     agents_dir: str = "~/.octopus/agents"
+    # Globally installed persona packages. Each imported GitHub repository is
+    # pinned to a commit and unpacked under `<personas_dir>/<persona_id>/`.
+    personas_dir: str = "~/.octopus/personas"
 
     # Dev mode (enables uvicorn reload)
     debug: bool = False

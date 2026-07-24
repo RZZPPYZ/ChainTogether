@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import {
   useSessionStore,
   type BgTask,
+  type GroupAgentActivityEvent,
   type GroupInvocation,
   type Message,
   type PendingQuestion,
@@ -171,7 +172,7 @@ function handleWsMessage(data: Record<string, unknown>) {
       // message replaces the live stream.
       {
         const content = data.content as string;
-        const replyMatch = content?.match(/^\[agent-reply:(.+?)\]/);
+        const replyMatch = content?.match(/^\[agent-(?:reply|error):(.+?)\]/);
         if (replyMatch && sessionId) {
           getState().clearGroupStreamingReply(sessionId, replyMatch[1]);
         }
@@ -221,6 +222,17 @@ function handleWsMessage(data: Record<string, unknown>) {
       const chunk = data.content as string;
       if (sessionId && agentName && chunk) {
         getState().appendGroupStreamingReply(sessionId, agentName, chunk);
+      }
+      break;
+    }
+
+    case "group_agent_activity": {
+      const agentName = data.agent_name as string;
+      if (sessionId && agentName) {
+        getState().applyGroupAgentActivity(
+          sessionId,
+          data as unknown as GroupAgentActivityEvent,
+        );
       }
       break;
     }

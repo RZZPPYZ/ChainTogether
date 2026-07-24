@@ -2399,7 +2399,12 @@ class SessionManager:
         """Fetch the session's owning agent row (or None for legacy/no-DB)."""
         if self.db is None or not session.agent_id:
             return None
-        return await self.db.get_agent(session.agent_id)
+        agent = await self.db.get_agent(session.agent_id)
+        if agent is not None:
+            agent["_active_persona"] = await self.db.get_active_persona_for_agent(
+                session.agent_id
+            )
+        return agent
 
     async def _load_connectors(
         self, agent: dict[str, Any] | None
@@ -2456,6 +2461,21 @@ class SessionManager:
             mcp_servers = list(servers) if servers is not None else None
             tool_allow = _split_tool_list(agent.get("tool_allow"))
             tool_deny = _split_tool_list(agent.get("tool_deny"))
+
+            active_persona = agent.get("_active_persona")
+            if active_persona:
+                from .persona_manager import render_persona_prompt
+
+                persona_prompt = render_persona_prompt(active_persona)
+                system_prompt = "\n\n".join(
+                    part for part in (system_prompt, persona_prompt) if part
+                )
+                # Persona resources are an internal, read-only capability. Add
+                # it to the agent's selected built-ins without exposing it as a
+                # regular checkbox in Agent Settings.
+                mcp_servers = list(mcp_servers or [])
+                if "persona" not in mcp_servers:
+                    mcp_servers.append("persona")
 
         project_prompts = project_system_prompts(
             session.working_dir,
@@ -3011,8 +3031,7 @@ class SessionManager:
                 "content": event.content,
             }
         if event.type == "thinking":
-            # We persist thinking but don't broadcast it by default — the
-            # UI doesn't render it today.
+            # We persist thinking but don't broadcast it by default.
             return None
         if event.type == "tool_use":
             return {

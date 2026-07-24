@@ -317,7 +317,7 @@ class BridgeManager:
                 return
             target = await self.db.get_agent(args.strip())
             if target is None:
-                target = await self.db.get_agent_by_name(args.strip())
+                target = await self.db.get_agent_by_handle(args.strip())
             if target is None:
                 await bridge.send_text(chat_id, f"Agent '{args.strip()}' not found.")
                 return

@@ -21,7 +21,7 @@ What this module owns:
     captures the events that matter for delivery (the same filter
     bridges use for quiet mode: assistant_text + result + error).
   - The cycle and depth guards that walk the parent chain.
-  - The agent-name lookup (case-insensitive, ambiguity-rejecting).
+  - The agent name/alias lookup (case-insensitive).
   - The injection formatter: ``[agent-reply|agent-error:<name>
     delegation=<id>]`` plus the body, fed through
     ``SessionManager.start_message(parent_session_id, …)``.
@@ -187,7 +187,7 @@ class DelegationManager:
         target = await self._resolve_target_agent(agent_name)
         if target is None:
             raise DelegationError(
-                f"No agent named {agent_name!r}", status_code=404
+                f"No agent with name or alias {agent_name!r}", status_code=404
             )
         if parent.agent_id and target["id"] == parent.agent_id:
             raise DelegationError(
@@ -508,25 +508,12 @@ class DelegationManager:
     async def _resolve_target_agent(
         self, name: str
     ) -> dict[str, Any] | None:
-        """Case-insensitive name lookup over non-archived agents.
-
-        Multiple matches → DelegationError(409). One match → the row.
-        Zero matches → None (caller turns this into a 404)."""
+        """Resolve a canonical name or alias over non-archived agents."""
         assert self.db is not None  # bound at lifespan
-        wanted = (name or "").strip().lower()
+        wanted = (name or "").strip()
         if not wanted:
             return None
-        agents = await self.db.load_agents()
-        matches = [a for a in agents if (a.get("name") or "").lower() == wanted]
-        if not matches:
-            return None
-        if len(matches) > 1:
-            names = ", ".join(repr(a.get("name")) for a in matches)
-            raise DelegationError(
-                f"Ambiguous agent name {name!r} (matches: {names})",
-                status_code=409,
-            )
-        return matches[0]
+        return await self.db.get_agent_by_handle(wanted)
 
     async def _check_chain(self, parent, *, target_agent_id: str) -> None:
         """Walk the parent chain upward from the given parent session.

@@ -25,6 +25,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY,                    -- 12-char hex, same scheme as sessions
     name TEXT NOT NULL,
+    alias TEXT NOT NULL DEFAULT '',          -- optional alternate @handle
     description TEXT NOT NULL DEFAULT '',
     avatar TEXT,                            -- emoji or URL, optional
     system_prompt TEXT NOT NULL DEFAULT '',
@@ -41,6 +42,40 @@ CREATE TABLE IF NOT EXISTS agents (
     updated_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS agents_name_unique ON agents(name) WHERE archived = 0;
+
+-- Backend-neutral persona packages imported once and shared by agents. The
+-- core SKILL.md is stored alongside package metadata for fast per-turn prompt
+-- assembly; supporting references/examples remain in package_path.
+CREATE TABLE IF NOT EXISTS personas (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    source_url TEXT NOT NULL UNIQUE,
+    source_commit TEXT NOT NULL,
+    license TEXT,
+    entrypoint TEXT NOT NULL DEFAULT 'SKILL.md',
+    package_path TEXT NOT NULL,
+    core_prompt TEXT NOT NULL,
+    resources TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- An agent may keep several personas in its collection, but exactly zero or
+-- one can be active. The partial unique index enforces the latter in SQLite.
+CREATE TABLE IF NOT EXISTS agent_personas (
+    agent_id TEXT NOT NULL,
+    persona_id TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 0,
+    assigned_at TEXT NOT NULL,
+    PRIMARY KEY (agent_id, persona_id),
+    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+    FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE RESTRICT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_persona_per_agent
+  ON agent_personas(agent_id) WHERE is_active = 1;
+CREATE INDEX IF NOT EXISTS idx_agent_personas_persona
+  ON agent_personas(persona_id);
 
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
@@ -506,6 +541,23 @@ class Database:
             )
         except Exception:
             pass
+
+        # Optional alternate group-chat handle. The functional partial index
+        # makes aliases case-insensitively unique among active agents. Cross
+        # name/alias conflicts are validated by AgentManager.
+        try:
+            await self._conn.execute(
+                "ALTER TABLE agents ADD COLUMN alias TEXT NOT NULL DEFAULT ''"
+            )
+        except Exception:
+            pass
+        try:
+            await self._conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS agents_alias_unique "
+                "ON agents(lower(alias)) WHERE archived = 0 AND alias <> ''"
+            )
+        except Exception:
+            logger.exception("agent alias index migration failed")
 
         # bridge_mappings.verbose — per-chat output verbosity (quiet by
         # default: only octo replies/errors/approvals). DEFAULT 0 backfills
@@ -2170,7 +2222,7 @@ class Database:
     _AGENT_COLS = (
         "id, name, description, avatar, system_prompt, model, credential_id, "
         "mcp_servers, tool_allow, tool_deny, is_system, archived, "
-        "created_at, updated_at, backend"
+        "created_at, updated_at, backend, alias"
     )
 
     @staticmethod
@@ -2195,10 +2247,11 @@ class Database:
             "created_at": row[12],
             "updated_at": row[13],
             "backend": row[14] or "claude-code",
+            "alias": row[15] or "",
         }
         # Optional active-session count appended by load_agents / get_agent.
-        if len(row) > 15:
-            agent["active_session_count"] = row[15]
+        if len(row) > 16:
+            agent["active_session_count"] = row[16]
         return agent
 
     # Subquery counting live (non-archived) sessions for an agent — shared
@@ -2213,6 +2266,7 @@ class Database:
         *,
         agent_id: str,
         name: str,
+        alias: str = "",
         created_at: str,
         updated_at: str,
         description: str = "",
@@ -2232,12 +2286,12 @@ class Database:
         )
         await self._conn.execute(
             "INSERT INTO agents "
-            "(id, name, description, avatar, system_prompt, model, "
+            "(id, name, alias, description, avatar, system_prompt, model, "
             " credential_id, backend, mcp_servers, tool_allow, tool_deny, "
             " is_system, archived, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
             (
-                agent_id, name, description, avatar, system_prompt, model,
+                agent_id, name, alias, description, avatar, system_prompt, model,
                 credential_id, backend or "claude-code", servers_json,
                 tool_allow, tool_deny, int(bool(is_system)),
                 created_at, updated_at,
@@ -2258,7 +2312,10 @@ class Database:
         query += " ORDER BY a.is_system DESC, a.created_at"
         cursor = await self._conn.execute(query)
         rows = await cursor.fetchall()
-        return [self._row_to_agent(row) for row in rows]
+        agents = [self._row_to_agent(row) for row in rows]
+        for agent in agents:
+            await self._attach_agent_personas(agent)
+        return agents
 
     async def get_agent(self, agent_id: str) -> dict[str, Any] | None:
         await self._ensure_connected()
@@ -2269,7 +2326,11 @@ class Database:
             (agent_id,),
         )
         row = await cursor.fetchone()
-        return self._row_to_agent(row) if row else None
+        if not row:
+            return None
+        agent = self._row_to_agent(row)
+        await self._attach_agent_personas(agent)
+        return agent
 
     async def get_agent_by_name(
         self, name: str, *, include_archived: bool = False
@@ -2285,7 +2346,31 @@ class Database:
             query += " AND a.archived = 0"
         cursor = await self._conn.execute(query, params)
         row = await cursor.fetchone()
-        return self._row_to_agent(row) if row else None
+        if not row:
+            return None
+        agent = self._row_to_agent(row)
+        await self._attach_agent_personas(agent)
+        return agent
+
+    async def get_agent_by_handle(
+        self, handle: str, *, include_archived: bool = False
+    ) -> dict[str, Any] | None:
+        """Resolve an exact canonical name or alias, case-insensitively."""
+        await self._ensure_connected()
+        cols = ", ".join(f"a.{c}" for c in self._AGENT_COLS.split(", "))
+        query = f"SELECT {cols}, {self._ACTIVE_SESSION_COUNT} FROM agents a"
+        if not include_archived:
+            query += " WHERE a.archived = 0"
+        cursor = await self._conn.execute(query)
+        wanted = handle.casefold()
+        for row in await cursor.fetchall():
+            agent = self._row_to_agent(row)
+            if agent["name"].casefold() == wanted or (
+                agent["alias"] and agent["alias"].casefold() == wanted
+            ):
+                await self._attach_agent_personas(agent)
+                return agent
+        return None
 
     async def get_system_agent(self) -> dict[str, Any] | None:
         """The protected Default Agent (is_system=1), created by migration."""
@@ -2296,12 +2381,16 @@ class Database:
             "WHERE a.is_system = 1 LIMIT 1"
         )
         row = await cursor.fetchone()
-        return self._row_to_agent(row) if row else None
+        if not row:
+            return None
+        agent = self._row_to_agent(row)
+        await self._attach_agent_personas(agent)
+        return agent
 
     async def update_agent(self, agent_id: str, **fields: Any) -> None:
         await self._ensure_connected()
         allowed = {
-            "name", "description", "avatar", "system_prompt", "model",
+            "name", "alias", "description", "avatar", "system_prompt", "model",
             "credential_id", "backend", "mcp_servers", "tool_allow", "tool_deny",
             "archived",
         }
@@ -2328,6 +2417,170 @@ class Database:
             f"UPDATE agents SET {set_clause} WHERE id = ?", values
         )
         await self._conn.commit()
+
+    # --- Personas ---
+
+    @staticmethod
+    def _row_to_persona(row: tuple[Any, ...]) -> dict[str, Any]:
+        try:
+            resources = json.loads(row[9]) if row[9] else []
+        except (json.JSONDecodeError, TypeError):
+            resources = []
+        persona = {
+            "id": row[0],
+            "name": row[1],
+            "description": row[2] or "",
+            "source_url": row[3],
+            "source_commit": row[4],
+            "license": row[5],
+            "entrypoint": row[6],
+            "package_path": row[7],
+            "core_prompt": row[8],
+            "resources": resources,
+            "created_at": row[10],
+            "updated_at": row[11],
+        }
+        if len(row) > 12:
+            persona["assigned_agent_count"] = row[12]
+        return persona
+
+    _PERSONA_COLS = (
+        "id, name, description, source_url, source_commit, license, "
+        "entrypoint, package_path, core_prompt, resources, created_at, updated_at"
+    )
+
+    async def save_persona(
+        self,
+        *,
+        persona_id: str,
+        name: str,
+        description: str,
+        source_url: str,
+        source_commit: str,
+        license_name: str | None,
+        entrypoint: str,
+        package_path: str,
+        core_prompt: str,
+        resources: list[dict[str, Any]],
+        created_at: str,
+    ) -> None:
+        await self._ensure_connected()
+        await self._conn.execute(
+            "INSERT INTO personas "
+            "(id, name, description, source_url, source_commit, license, "
+            " entrypoint, package_path, core_prompt, resources, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                persona_id, name, description, source_url, source_commit,
+                license_name, entrypoint, package_path, core_prompt,
+                json.dumps(resources), created_at, created_at,
+            ),
+        )
+        await self._conn.commit()
+
+    async def list_personas(self) -> list[dict[str, Any]]:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            f"SELECT {self._PERSONA_COLS}, "
+            "(SELECT COUNT(*) FROM agent_personas ap WHERE ap.persona_id = p.id) "
+            "FROM personas p ORDER BY p.created_at"
+        )
+        return [self._row_to_persona(row) for row in await cursor.fetchall()]
+
+    async def get_persona(self, persona_id: str) -> dict[str, Any] | None:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            f"SELECT {self._PERSONA_COLS}, "
+            "(SELECT COUNT(*) FROM agent_personas ap WHERE ap.persona_id = p.id) "
+            "FROM personas p WHERE p.id = ?",
+            (persona_id,),
+        )
+        row = await cursor.fetchone()
+        return self._row_to_persona(row) if row else None
+
+    async def get_persona_by_source(self, source_url: str) -> dict[str, Any] | None:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            f"SELECT {self._PERSONA_COLS} FROM personas WHERE source_url = ?",
+            (source_url,),
+        )
+        row = await cursor.fetchone()
+        return self._row_to_persona(row) if row else None
+
+    async def delete_persona(self, persona_id: str) -> bool:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "DELETE FROM personas WHERE id = ?", (persona_id,)
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
+    async def _attach_agent_personas(self, agent: dict[str, Any]) -> None:
+        cursor = await self._conn.execute(
+            "SELECT persona_id, is_active FROM agent_personas "
+            "WHERE agent_id = ? ORDER BY assigned_at",
+            (agent["id"],),
+        )
+        rows = await cursor.fetchall()
+        agent["persona_ids"] = [row[0] for row in rows]
+        agent["active_persona_id"] = next(
+            (row[0] for row in rows if bool(row[1])), None
+        )
+
+    async def get_active_persona_for_agent(
+        self, agent_id: str
+    ) -> dict[str, Any] | None:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            f"SELECT {', '.join(f'p.{c}' for c in self._PERSONA_COLS.split(', '))} "
+            "FROM personas p JOIN agent_personas ap ON ap.persona_id = p.id "
+            "WHERE ap.agent_id = ? AND ap.is_active = 1 LIMIT 1",
+            (agent_id,),
+        )
+        row = await cursor.fetchone()
+        return self._row_to_persona(row) if row else None
+
+    async def set_agent_personas(
+        self,
+        agent_id: str,
+        persona_ids: list[str],
+        active_persona_id: str | None,
+    ) -> None:
+        await self._ensure_connected()
+        unique_ids = list(dict.fromkeys(persona_ids))
+        if active_persona_id is not None and active_persona_id not in unique_ids:
+            raise ValueError("Active persona must be assigned to the agent")
+        if unique_ids:
+            placeholders = ",".join("?" for _ in unique_ids)
+            cursor = await self._conn.execute(
+                f"SELECT id FROM personas WHERE id IN ({placeholders})", unique_ids
+            )
+            found = {row[0] for row in await cursor.fetchall()}
+            missing = [pid for pid in unique_ids if pid not in found]
+            if missing:
+                raise ValueError(f"Persona not found: {missing[0]}")
+
+        try:
+            await self._conn.execute(
+                "DELETE FROM agent_personas WHERE agent_id = ?", (agent_id,)
+            )
+            now = datetime.now(timezone.utc).isoformat()
+            for persona_id in unique_ids:
+                await self._conn.execute(
+                    "INSERT INTO agent_personas "
+                    "(agent_id, persona_id, is_active, assigned_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        agent_id,
+                        persona_id,
+                        int(persona_id == active_persona_id),
+                        now,
+                    ),
+                )
+            await self._conn.commit()
+        except Exception:
+            await self._conn.rollback()
+            raise
 
     async def count_active_sessions_for_agent(self, agent_id: str) -> int:
         await self._ensure_connected()

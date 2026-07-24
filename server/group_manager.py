@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Literal
 
+from .group_protocol import GROUP_PRE_SEND_EXIT_CHECK
+
 if TYPE_CHECKING:
     from .database import Database
     from .session_manager import SessionManager
@@ -292,14 +294,14 @@ def parse_agent_mentions(text: str) -> list[str]:
     mentions = _parse_line_start_mentions(slot)
     if not mentions:
         return []
-    # A handoff paragraph is a routing block, not mixed prose. Every non-empty
-    # line must independently start with a handle; continuation prose after a
-    # routing line makes the whole block malformed and eligible for repair.
-    if any(
-        not _parse_line_start_mentions(line)
-        for line in slot.splitlines()
-        if line.strip()
-    ):
+    # A routing block must begin with a line-start handle. Once established,
+    # later lines may continue the handoff instructions without repeating the
+    # handle. This keeps ordinary prose non-executable while accepting natural
+    # multi-line task descriptions.
+    first_content_line = next(
+        (line for line in slot.splitlines() if line.strip()), ""
+    )
+    if not _parse_line_start_mentions(first_content_line):
         return []
     return mentions
 
@@ -386,6 +388,25 @@ def is_substantive_tool(tool_name: str) -> bool:
     """Return True when a tool call indicates real work, not pure routing."""
     lowered = tool_name.lower()
     return not any(pattern in lowered for pattern in NON_SUBSTANTIVE_TOOL_PATTERNS)
+
+
+def agent_routing_handles(agent: dict[str, Any]) -> tuple[str, ...]:
+    """Return the canonical @handle followed by its optional alias."""
+    handles = [str(agent["name"])]
+    alias = str(agent.get("alias") or "").strip()
+    if alias and alias.casefold() != handles[0].casefold():
+        handles.append(alias)
+    return tuple(handles)
+
+
+def member_routing_handles(
+    member_agents: list[dict[str, Any]],
+) -> list[str]:
+    return [
+        handle
+        for agent in member_agents
+        for handle in agent_routing_handles(agent)
+    ]
 
 
 class GroupManager:
@@ -897,7 +918,7 @@ class GroupManager:
                     )
                     return
                 analysis = analyze_agent_routing(
-                    reply_text, [member["name"] for member in member_agents]
+                    reply_text, member_routing_handles(member_agents)
                 )
                 if analysis.invalid_inline_mentions:
                     remedial = await self._run_routing_remedial(
@@ -909,7 +930,7 @@ class GroupManager:
                     if remedial is not None:
                         corrected = analyze_agent_routing(
                             self._strip_completion_token(remedial.text),
-                            [member["name"] for member in member_agents],
+                            member_routing_handles(member_agents),
                         )
                         if corrected.line_start_mentions:
                             remedial_text = self._strip_completion_token(
@@ -1285,12 +1306,11 @@ class GroupManager:
     ) -> AgentTurnResult:
         """Drive a reuse session's backend turn and collect assistant text.
 
-        While the agent streams, each ``assistant_text`` chunk is **also**
+        While the agent streams, each ``assistant_text`` chunk is also
         broadcast into the group session as a ``group_agent_text`` event so
-        the frontend renders a streaming agent bubble in real time instead
-        of making the user wait for the entire turn to complete. The final
-        ``[agent-reply:Name]`` inject (in ``_run_mentioned_agent``) replaces
-        the live stream with the committed message.
+        the frontend renders a normal live chat bubble. The final
+        ``[agent-reply:Name]`` inject replaces that stream with the committed
+        message.
 
         Returns the concatenated assistant text plus lightweight activity
         metadata used by routing guards.
@@ -1308,8 +1328,6 @@ class GroupManager:
             ):
                 chunk = event["content"].strip()
                 reply_parts.append(chunk)
-                # Stream each chunk into the group session so the
-                # frontend can render a live-updating bubble.
                 if self.session_manager:
                     await self.session_manager._broadcast({
                         "type": "group_agent_text",
@@ -1327,6 +1345,12 @@ class GroupManager:
                 )
                 if tool_name:
                     tool_names.append(str(tool_name))
+            elif etype == "result" and event.get("is_error"):
+                detail = (
+                    event.get("message")
+                    or "The CLI reported that this turn failed."
+                )
+                error_messages.append(str(detail))
             elif etype == "error" and event.get("message", "").strip():
                 error_messages.append(event["message"].strip())
         if reply_parts:
@@ -1519,7 +1543,21 @@ class GroupManager:
         by @{name}" so the agent knows who specifically called on it.
         """
         roster = self._format_roster(member_agents)
-        exact_handles = ", ".join(f"@{a['name']}" for a in member_agents)
+        exact_handles = ", ".join(
+            f"@{handle}" for handle in member_routing_handles(member_agents)
+        )
+        current = next(
+            (a for a in member_agents if a["name"] == agent_name), None
+        )
+        identity_handles = (
+            " / ".join(f"@{handle}" for handle in agent_routing_handles(current))
+            if current is not None
+            else f"@{agent_name}"
+        )
+        exit_check = GROUP_PRE_SEND_EXIT_CHECK.format(
+            valid_handles=exact_handles,
+            self_handles=identity_handles,
+        )
         origin_line = (
             f"You were @-mentioned by @{direct_message_from} — respond "
             f"to their message. You may @mention another listed agent by "
@@ -1530,22 +1568,24 @@ class GroupManager:
             "to include them."
         )
         return (
-            f"You are @{agent_name}, responding in the group chat "
+            f"You are {identity_handles}, responding in the group chat "
             f"\"{group_name}\".\n\n"
             f"Group members: {roster}\n\n"
             f"Valid routing handles for this turn: {exact_handles}\n\n"
             f"Below is the relevant group transcript window. {origin_line}\n\n"
             f"<group_transcript>\n{context}\n</group_transcript>\n\n"
             f"Respond now under the mandatory group routing protocol already "
-            f"present in your system instructions. If no teammate must act "
-            f"next, end naturally with no @handle and no completion token. "
-            f"If a teammate must act next, use a final paragraph whose lines "
-            f"begin with exact handles from the list above and state concrete "
-            f"next work. If progress must pause, use "
+            f"present in your system instructions. If no teammate meets the "
+            f"pre-send exit-check conditions, end naturally with no @handle "
+            f"and no completion token. If a teammate must be routed, use a "
+            f"final paragraph whose lines begin with exact handles from the "
+            f"list above and explain the action, awareness, or work impact. "
+            f"If progress must pause, use "
             f"[group-hold:SECONDS] reason. Do not @User, do not @ yourself, "
             f"and use teammate names without @ in explanatory prose. HOLD "
             f"seconds must be between {GROUP_HOLD_MIN_SECONDS} and "
-            f"{GROUP_HOLD_MAX_SECONDS}."
+            f"{GROUP_HOLD_MAX_SECONDS}.\n\n"
+            f"{exit_check}"
         )
 
     def _format_roster(
@@ -1555,7 +1595,10 @@ class GroupManager:
         parts: list[str] = []
         for a in member_agents:
             backend_label = "Codex" if a.get("backend") == "codex" else "Claude"
-            parts.append(f"@{a['name']} ({backend_label})")
+            handles = " / ".join(
+                f"@{handle}" for handle in agent_routing_handles(a)
+            )
+            parts.append(f"{handles} ({backend_label})")
         return ", ".join(parts)
 
     # ------------------------------------------------------------------
@@ -1918,15 +1961,29 @@ class GroupManager:
         *,
         allow_prefix: bool = True,
     ) -> dict[str, Any] | None:
-        name_lower = name.lower()
-        exact = [a for a in member_agents if a["name"].lower() == name_lower]
+        name_lower = name.casefold()
+        exact = [
+            agent
+            for agent in member_agents
+            if any(
+                handle.casefold() == name_lower
+                for handle in agent_routing_handles(agent)
+            )
+        ]
+        exact = list({agent["id"]: agent for agent in exact}.values())
         if len(exact) == 1:
             return exact[0]
         if not allow_prefix:
             return None
         prefix = [
-            a for a in member_agents if a["name"].lower().startswith(name_lower)
+            agent
+            for agent in member_agents
+            if any(
+                handle.casefold().startswith(name_lower)
+                for handle in agent_routing_handles(agent)
+            )
         ]
+        prefix = list({agent["id"]: agent for agent in prefix}.values())
         if len(prefix) == 1:
             return prefix[0]
         return None

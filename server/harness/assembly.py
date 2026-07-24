@@ -34,6 +34,9 @@ _BUILTIN_MODULES = {
     # Native deep research (native-deep-research.md §7). Thin shim to the
     # /api/sessions/{sid}/research routes in front of ResearchManager.
     "research": "server.mcp_servers.research",
+    # Read-only supporting research/examples for the agent's active persona.
+    # Added dynamically by SessionManager only when a persona is active.
+    "persona": "server.mcp_servers.persona",
 }
 
 
@@ -84,6 +87,11 @@ def select_mcp_servers(
         "research": {
             "command": sys.executable,
             "args": ["-m", _BUILTIN_MODULES["research"]],
+            "env": dict(callback_env),
+        },
+        "persona": {
+            "command": sys.executable,
+            "args": ["-m", _BUILTIN_MODULES["persona"]],
             "env": dict(callback_env),
         },
     }

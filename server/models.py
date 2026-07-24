@@ -275,6 +275,7 @@ class AgentRead(BaseModel):
 
     id: str
     name: str
+    alias: str = ""
     description: str = ""
     avatar: str | None = None
     system_prompt: str = ""
@@ -288,6 +289,8 @@ class AgentRead(BaseModel):
     # `tool_deny` wins on conflict.
     tool_allow: str = ""
     tool_deny: str = ""
+    persona_ids: list[str] = []
+    active_persona_id: str | None = None
     is_system: bool = False
     archived: bool = False
     created_at: str
@@ -299,6 +302,7 @@ class AgentCreate(BaseModel):
     model_config = {"use_enum_values": True}
 
     name: str = Field(min_length=1)
+    alias: str = Field(default="", max_length=64, pattern=r"^(?:[\w-]+)?$")
     description: str = ""
     avatar: str | None = None
     system_prompt: str = ""
@@ -308,6 +312,8 @@ class AgentCreate(BaseModel):
     mcp_servers: list[str] = ["ask", "bg"]
     tool_allow: str = ""
     tool_deny: str = ""
+    persona_ids: list[str] = []
+    active_persona_id: str | None = None
 
 
 class AgentUpdate(BaseModel):
@@ -317,6 +323,9 @@ class AgentUpdate(BaseModel):
     model_config = {"use_enum_values": True}
 
     name: str | None = None
+    alias: str | None = Field(
+        default=None, max_length=64, pattern=r"^(?:[\w-]+)?$"
+    )
     description: str | None = None
     avatar: str | None = None
     system_prompt: str | None = None
@@ -326,6 +335,45 @@ class AgentUpdate(BaseModel):
     mcp_servers: list[str] | None = None
     tool_allow: str | None = None
     tool_deny: str | None = None
+    persona_ids: list[str] | None = None
+    active_persona_id: str | None = None
+
+
+class PersonaResourceInfo(BaseModel):
+    path: str
+    size: int
+    kind: str
+
+
+class PersonaRead(BaseModel):
+    id: str
+    name: str
+    alias: str = ""
+    description: str = ""
+    source_url: str
+    source_commit: str
+    license: str | None = None
+    entrypoint: str
+    resources: list[PersonaResourceInfo] = []
+    created_at: str
+    updated_at: str
+    assigned_agent_count: int = 0
+
+
+class PersonaImportRequest(BaseModel):
+    source_url: str = Field(min_length=1)
+
+
+class PersonaResourcesResponse(BaseModel):
+    persona_id: str
+    persona_name: str
+    resources: list[PersonaResourceInfo]
+
+
+class PersonaResourceContent(BaseModel):
+    persona_id: str
+    path: str
+    content: str
 
 
 # Backend credentials

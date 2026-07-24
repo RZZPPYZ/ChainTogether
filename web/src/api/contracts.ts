@@ -121,6 +121,108 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/personas": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Personas */
+        get: operations["list_personas_api_personas_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/personas/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Import Persona */
+        post: operations["import_persona_api_personas_import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/personas/import-zip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Import Persona Zip */
+        post: operations["import_persona_zip_api_personas_import_zip_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/personas/{persona_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Persona */
+        delete: operations["delete_persona_api_personas__persona_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/persona/resources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Persona Resources */
+        get: operations["list_persona_resources_api_sessions__session_id__persona_resources_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/persona/resource": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Persona Resource */
+        get: operations["read_persona_resource_api_sessions__session_id__persona_resource_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions": {
         parameters: {
             query?: never;
@@ -491,7 +593,7 @@ export interface paths {
          *
          *     Status codes:
          *     - 201 Created with the delegation record on success
-         *     - 404 if the parent session is gone or the target agent name
+         *     - 404 if the parent session is gone or the target agent name/alias
          *       doesn't resolve
          *     - 409 on cycle, depth, self-delegation, or ambiguous name
          */
@@ -1208,7 +1310,8 @@ export interface paths {
         delete: operations["delete_group_api_groups__group_id__delete"];
         options?: never;
         head?: never;
-        patch?: never;
+        /** Update Group */
+        patch: operations["update_group_api_groups__group_id__patch"];
         trace?: never;
     };
     "/api/groups/{group_id}/members/{agent_id}": {
@@ -1368,6 +1471,11 @@ export interface components {
             /** Name */
             name: string;
             /**
+             * Alias
+             * @default
+             */
+            alias: string;
+            /**
              * Description
              * @default
              */
@@ -1403,6 +1511,13 @@ export interface components {
              * @default
              */
             tool_deny: string;
+            /**
+             * Persona Ids
+             * @default []
+             */
+            persona_ids: string[];
+            /** Active Persona Id */
+            active_persona_id?: string | null;
         };
         /** AgentRead */
         AgentRead: {
@@ -1410,6 +1525,11 @@ export interface components {
             id: string;
             /** Name */
             name: string;
+            /**
+             * Alias
+             * @default
+             */
+            alias: string;
             /**
              * Description
              * @default
@@ -1444,6 +1564,13 @@ export interface components {
              */
             tool_deny: string;
             /**
+             * Persona Ids
+             * @default []
+             */
+            persona_ids: string[];
+            /** Active Persona Id */
+            active_persona_id?: string | null;
+            /**
              * Is System
              * @default false
              */
@@ -1467,6 +1594,8 @@ export interface components {
         AgentUpdate: {
             /** Name */
             name?: string | null;
+            /** Alias */
+            alias?: string | null;
             /** Description */
             description?: string | null;
             /** Avatar */
@@ -1484,6 +1613,10 @@ export interface components {
             tool_allow?: string | null;
             /** Tool Deny */
             tool_deny?: string | null;
+            /** Persona Ids */
+            persona_ids?: string[] | null;
+            /** Active Persona Id */
+            active_persona_id?: string | null;
         };
         /**
          * AnswerDelegationQuestionRequest
@@ -1539,6 +1672,11 @@ export interface components {
          * @enum {string}
          */
         BackendKind: "claude-code" | "codex";
+        /** Body_import_persona_zip_api_personas_import_zip_post */
+        Body_import_persona_zip_api_personas_import_zip_post: {
+            /** File */
+            file: string;
+        };
         /** Body_upload_attachment_api_sessions__session_id__attachments_post */
         Body_upload_attachment_api_sessions__session_id__attachments_post: {
             /** File */
@@ -1893,6 +2031,8 @@ export interface components {
             name: string;
             /** Agent Ids */
             agent_ids: string[];
+            /** Default Agent Id */
+            default_agent_id?: string | null;
         };
         /** GroupInfo */
         GroupInfo: {
@@ -1906,6 +2046,8 @@ export interface components {
             created_at: string;
             /** Session Id */
             session_id?: string | null;
+            /** Default Agent Id */
+            default_agent_id?: string | null;
         };
         /** GroupInvocationInfo */
         GroupInvocationInfo: {
@@ -1961,6 +2103,13 @@ export interface components {
              * @default []
              */
             attachment_ids: string[];
+        };
+        /** GroupUpdate */
+        GroupUpdate: {
+            /** Name */
+            name?: string | null;
+            /** Default Agent Id */
+            default_agent_id?: string | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -2093,6 +2242,77 @@ export interface components {
             questions: {
                 [key: string]: unknown;
             }[];
+        };
+        /** PersonaImportRequest */
+        PersonaImportRequest: {
+            /** Source Url */
+            source_url: string;
+        };
+        /** PersonaRead */
+        PersonaRead: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /**
+             * Alias
+             * @default
+             */
+            alias: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Source Url */
+            source_url: string;
+            /** Source Commit */
+            source_commit: string;
+            /** License */
+            license?: string | null;
+            /** Entrypoint */
+            entrypoint: string;
+            /**
+             * Resources
+             * @default []
+             */
+            resources: components["schemas"]["PersonaResourceInfo"][];
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+            /**
+             * Assigned Agent Count
+             * @default 0
+             */
+            assigned_agent_count: number;
+        };
+        /** PersonaResourceContent */
+        PersonaResourceContent: {
+            /** Persona Id */
+            persona_id: string;
+            /** Path */
+            path: string;
+            /** Content */
+            content: string;
+        };
+        /** PersonaResourceInfo */
+        PersonaResourceInfo: {
+            /** Path */
+            path: string;
+            /** Size */
+            size: number;
+            /** Kind */
+            kind: string;
+        };
+        /** PersonaResourcesResponse */
+        PersonaResourcesResponse: {
+            /** Persona Id */
+            persona_id: string;
+            /** Persona Name */
+            persona_name: string;
+            /** Resources */
+            resources: components["schemas"]["PersonaResourceInfo"][];
         };
         /**
          * ScheduleFromTextRequest
@@ -2734,6 +2954,185 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScheduleInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_personas_api_personas_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonaRead"][];
+                };
+            };
+        };
+    };
+    import_persona_api_personas_import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PersonaImportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonaRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_persona_zip_api_personas_import_zip_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_import_persona_zip_api_personas_import_zip_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonaRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_persona_api_personas__persona_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                persona_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_persona_resources_api_sessions__session_id__persona_resources_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonaResourcesResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_persona_resource_api_sessions__session_id__persona_resource_get: {
+        parameters: {
+            query: {
+                path: string;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonaResourceContent"];
                 };
             };
             /** @description Validation Error */
@@ -5040,6 +5439,41 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_group_api_groups__group_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                group_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GroupUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupInfo"];
+                };
             };
             /** @description Validation Error */
             422: {

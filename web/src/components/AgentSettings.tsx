@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { IconPlus } from "@tabler/icons-react";
+import type { PersonaRead } from "../api";
 import { fetchAgentConnectors, toggleAgentConnector } from "../api/connectors";
+import { fetchPersonas } from "../api/personas";
 import { useSessionStore, type Agent } from "../stores/sessionStore";
 import { Button } from "./ui/button";
 import {
@@ -60,6 +62,7 @@ export function AgentSettings({ open, onOpenChange, initialAgentId }: Props) {
   );
 
   const [name, setName] = useState("");
+  const [alias, setAlias] = useState("");
   const [description, setDescription] = useState("");
   const [avatar, setAvatar] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
@@ -69,6 +72,10 @@ export function AgentSettings({ open, onOpenChange, initialAgentId }: Props) {
   const [mcpServers, setMcpServers] = useState<string[]>([...BUILTIN_MCP]);
   const [toolAllow, setToolAllow] = useState("");
   const [toolDeny, setToolDeny] = useState("");
+  const [personas, setPersonas] = useState<PersonaRead[]>([]);
+  const [personaIds, setPersonaIds] = useState<string[]>([]);
+  const [activePersonaId, setActivePersonaId] = useState<string | null>(null);
+  const [personaLoadError, setPersonaLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -92,6 +99,7 @@ export function AgentSettings({ open, onOpenChange, initialAgentId }: Props) {
       ? agents.find((x) => x.id === selectedId) ?? null
       : null;
     setName(a?.name ?? "");
+    setAlias(a?.alias ?? "");
     setDescription(a?.description ?? "");
     setAvatar(a?.avatar ?? "");
     setSystemPrompt(a?.system_prompt ?? "");
@@ -101,8 +109,23 @@ export function AgentSettings({ open, onOpenChange, initialAgentId }: Props) {
     setMcpServers(a?.mcp_servers ?? [...BUILTIN_MCP]);
     setToolAllow(a?.tool_allow ?? "");
     setToolDeny(a?.tool_deny ?? "");
+    setPersonaIds(a?.persona_ids ?? []);
+    setActivePersonaId(a?.active_persona_id ?? null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, selectedId]);
+
+  useEffect(() => {
+    if (!open) return;
+    setPersonaLoadError(null);
+    fetchPersonas(token)
+      .then(setPersonas)
+      .catch((reason) => {
+        setPersonas([]);
+        setPersonaLoadError(
+          reason instanceof Error ? reason.message : "Could not load personas"
+        );
+      });
+  }, [open, token]);
 
   // Load the agent's enabled connectors when editing an existing one. New
   // agents have no id yet; their connectors are managed after first save.
@@ -132,6 +155,7 @@ export function AgentSettings({ open, onOpenChange, initialAgentId }: Props) {
   // empty draft)? Used to warn before discarding edits on a rail switch.
   const dirty =
     name !== (selected?.name ?? "") ||
+    alias !== (selected?.alias ?? "") ||
     description !== (selected?.description ?? "") ||
     avatar !== (selected?.avatar ?? "") ||
     systemPrompt !== (selected?.system_prompt ?? "") ||
@@ -140,6 +164,8 @@ export function AgentSettings({ open, onOpenChange, initialAgentId }: Props) {
     backend !== (selected?.backend ?? "claude-code") ||
     toolAllow !== (selected?.tool_allow ?? "") ||
     toolDeny !== (selected?.tool_deny ?? "") ||
+    activePersonaId !== (selected?.active_persona_id ?? null) ||
+    !sameSet(personaIds, selected?.persona_ids ?? []) ||
     !sameSet(mcpServers, selected?.mcp_servers ?? [...BUILTIN_MCP]);
 
   const selectAgent = (id: string | null) => {
@@ -162,6 +188,18 @@ export function AgentSettings({ open, onOpenChange, initialAgentId }: Props) {
       cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]
     );
 
+  const togglePersona = (id: string) => {
+    setPersonaIds((current) => {
+      if (current.includes(id)) {
+        if (activePersonaId === id) setActivePersonaId(null);
+        return current.filter((personaId) => personaId !== id);
+      }
+      const next = [...current, id];
+      if (!activePersonaId) setActivePersonaId(id);
+      return next;
+    });
+  };
+
   const detailOf = async (res: Response): Promise<string> => {
     const b = await res.json().catch(() => null);
     return (b && typeof b.detail === "string" && b.detail) || `HTTP ${res.status}`;
@@ -176,6 +214,7 @@ export function AgentSettings({ open, onOpenChange, initialAgentId }: Props) {
     setError(null);
     const body = {
       name: name.trim(),
+      alias: alias.trim(),
       description,
       avatar: avatar.trim() || null,
       system_prompt: systemPrompt,
@@ -185,6 +224,8 @@ export function AgentSettings({ open, onOpenChange, initialAgentId }: Props) {
       mcp_servers: mcpServers,
       tool_allow: toolAllow,
       tool_deny: toolDeny,
+      persona_ids: personaIds,
+      active_persona_id: activePersonaId,
     };
     try {
       const res = selected
@@ -282,7 +323,7 @@ export function AgentSettings({ open, onOpenChange, initialAgentId }: Props) {
                     : "text-foreground hover:bg-accent/60"
                 }`}
                 onClick={() => selectAgent(a.id)}
-                title={a.name}
+                title={a.alias ? `${a.name} (@${a.alias})` : a.name}
               >
                 <span className="shrink-0 text-base leading-none">
                   {a.avatar || "🐙"}
@@ -358,6 +399,89 @@ export function AgentSettings({ open, onOpenChange, initialAgentId }: Props) {
                 placeholder="You are a meticulous research assistant…"
                 className={textareaCls}
               />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="agent-alias">Alias</Label>
+              <Input
+                id="agent-alias"
+                value={alias}
+                onChange={(e) => setAlias(e.target.value)}
+                placeholder="Optional alternate @handle"
+                maxLength={64}
+                className="h-9"
+              />
+            </div>
+
+            <div className="agent-personas space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <Label>Personas</Label>
+                {personaIds.length > 0 && (
+                  <button
+                    type="button"
+                    className="text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => setActivePersonaId(null)}
+                  >
+                    Use no persona
+                  </button>
+                )}
+              </div>
+              {personas.length === 0 ? (
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {personaLoadError
+                    ? `Could not load personas: ${personaLoadError}`
+                    : "No personas installed. Add one from Settings → Personas."}
+                </p>
+              ) : (
+                <div className="divide-y divide-border border-y border-border">
+                  {personas.map((persona) => {
+                    const assigned = personaIds.includes(persona.id);
+                    const active = activePersonaId === persona.id;
+                    return (
+                      <div
+                        key={persona.id}
+                        className="agent-persona-row grid grid-cols-[auto_1fr_auto] items-center gap-2 py-2"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={assigned}
+                          onChange={() => togglePersona(persona.id)}
+                          aria-label={`Assign ${persona.name}`}
+                        />
+                        <button
+                          type="button"
+                          className="min-w-0 text-left"
+                          onClick={() => {
+                            if (!assigned) togglePersona(persona.id);
+                            setActivePersonaId(persona.id);
+                          }}
+                        >
+                          <span className="block truncate text-sm text-foreground">
+                            {persona.name}
+                          </span>
+                          <span className="block truncate text-xs text-muted-foreground">
+                            {persona.description || `${persona.resources.length} resources`}
+                          </span>
+                        </button>
+                        <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <input
+                            type="radio"
+                            name="active-persona"
+                            checked={active}
+                            disabled={!assigned}
+                            onChange={() => setActivePersonaId(persona.id)}
+                          />
+                          Active
+                        </label>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                Keep several personas available for this agent; only the active one
+                shapes its next response.
+              </p>
             </div>
 
             <div className="space-y-1.5">
