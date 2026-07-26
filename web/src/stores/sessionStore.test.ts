@@ -1,6 +1,22 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { useSessionStore } from "./sessionStore";
+import { useSessionStore, type Agent } from "./sessionStore";
+
+describe("agent identity updates", () => {
+  it("replaces a cleared alias instead of retaining the old handle", () => {
+    const agent = {
+      id: "agent-1",
+      name: "胖虎",
+      alias: "峰哥",
+    } as Agent;
+    useSessionStore.setState({ agents: [agent] });
+
+    useSessionStore.getState().upsertAgent({ ...agent, alias: "" });
+
+    expect(useSessionStore.getState().agents[0].name).toBe("胖虎");
+    expect(useSessionStore.getState().agents[0].alias).toBe("");
+  });
+});
 
 describe("group agent activity blocks", () => {
   beforeEach(() => {
@@ -10,6 +26,7 @@ describe("group agent activity blocks", () => {
   it("builds one ordered message from normalized CLI events", () => {
     const apply = useSessionStore.getState().applyGroupAgentActivity;
     const base = {
+      run_id: "run-1",
       invocation_id: "invocation-1",
       agent_name: "Builder",
     } as const;
@@ -43,7 +60,8 @@ describe("group agent activity blocks", () => {
     apply("group-session", { ...base, phase: "completed" });
 
     const run =
-      useSessionStore.getState().groupAgentRuns["group-session"].Builder;
+      useSessionStore.getState().groupAgentRuns["group-session"]["run-1"];
+    expect(run.runId).toBe("run-1");
     expect(run.status).toBe("completed");
     expect(run.blocks.map((block) => block.kind)).toEqual([
       "stage",

@@ -21,7 +21,7 @@ What this module owns:
     captures the events that matter for delivery (the same filter
     bridges use for quiet mode: assistant_text + result + error).
   - The cycle and depth guards that walk the parent chain.
-  - The agent name/alias lookup (case-insensitive).
+  - The canonical agent-name lookup (case-insensitive).
   - The injection formatter: ``[agent-reply|agent-error:<name>
     delegation=<id>]`` plus the body, fed through
     ``SessionManager.start_message(parent_session_id, …)``.
@@ -187,7 +187,7 @@ class DelegationManager:
         target = await self._resolve_target_agent(agent_name)
         if target is None:
             raise DelegationError(
-                f"No agent with name or alias {agent_name!r}", status_code=404
+                f"No agent with name {agent_name!r}", status_code=404
             )
         if parent.agent_id and target["id"] == parent.agent_id:
             raise DelegationError(
@@ -508,12 +508,15 @@ class DelegationManager:
     async def _resolve_target_agent(
         self, name: str
     ) -> dict[str, Any] | None:
-        """Resolve a canonical name or alias over non-archived agents."""
+        """Resolve a canonical name over non-archived agents."""
         assert self.db is not None  # bound at lifespan
         wanted = (name or "").strip()
         if not wanted:
             return None
-        return await self.db.get_agent_by_handle(wanted)
+        target = await self.db.get_agent_by_handle(wanted)
+        if target is None or target["name"].casefold() != wanted.casefold():
+            return None
+        return target
 
     async def _check_chain(self, parent, *, target_agent_id: str) -> None:
         """Walk the parent chain upward from the given parent session.

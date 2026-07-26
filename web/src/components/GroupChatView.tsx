@@ -10,6 +10,8 @@ import {
   IconAlertCircle,
   IconAt,
   IconCheck,
+  IconChevronDown,
+  IconChevronRight,
   IconClock,
   IconLoader2,
   IconMenu2,
@@ -26,6 +28,8 @@ import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 import {
   useSessionStore,
+  reduceGroupAgentRun,
+  type GroupAgentActivityEvent,
   type GroupAgentRun,
   type GroupInvocation,
   type Message,
@@ -242,18 +246,137 @@ function summarizeToolInput(input: Record<string, unknown>): string {
   return fallback.length > 150 ? `${fallback.slice(0, 150)}...` : fallback;
 }
 
+export function parseGroupAgentMessage(content: string): {
+  name?: string;
+  body: string;
+  isError: boolean;
+  isInvocation: boolean;
+} {
+  const reply = content.match(/^\[agent-reply:(.+?)\]\s*\n\n([\s\S]*)$/);
+  if (reply) {
+    return {
+      name: reply[1],
+      body: reply[2],
+      isError: false,
+      isInvocation: false,
+    };
+  }
+  const error = content.match(/^\[agent-error:(.+?)\]\s*\n\n([\s\S]*)$/);
+  if (error) {
+    return {
+      name: error[1],
+      body: error[2],
+      isError: true,
+      isInvocation: false,
+    };
+  }
+  const invocation = content.match(
+    /^\[group-invocation:[^:]+:[^\]]+\]\s*\n\n([\s\S]*)$/,
+  );
+  if (invocation) {
+    return {
+      body: invocation[1],
+      isError: false,
+      isInvocation: true,
+    };
+  }
+  return { body: content, isError: false, isInvocation: false };
+}
+
+export interface GroupTimelineRun {
+  run: GroupAgentRun;
+  firstIndex: number;
+  finalText?: string;
+  isError: boolean;
+  finalMessageIndex?: number;
+}
+
+export interface GroupTimeline {
+  runsByFirstIndex: Map<number, GroupTimelineRun>;
+  hiddenIndices: Set<number>;
+}
+
+function parseActivityMessage(message: Message): GroupAgentActivityEvent | null {
+  if (message.type !== "group_agent_activity" || !message.content) return null;
+  try {
+    const event = JSON.parse(message.content) as GroupAgentActivityEvent;
+    if (!event.run_id || !event.agent_name || !event.phase) return null;
+    return event;
+  } catch {
+    return null;
+  }
+}
+
+export function buildGroupTimeline(messages: Message[]): GroupTimeline {
+  const byRunId = new Map<string, GroupTimelineRun>();
+  const hiddenIndices = new Set<number>();
+
+  messages.forEach((message, index) => {
+    const event = parseActivityMessage(message);
+    if (!event || !event.run_id) return;
+    const existing = byRunId.get(event.run_id);
+    const run = reduceGroupAgentRun(existing?.run, event);
+    byRunId.set(event.run_id, {
+      run,
+      firstIndex: existing?.firstIndex ?? index,
+      finalText: existing?.finalText,
+      isError: existing?.isError ?? false,
+      finalMessageIndex: existing?.finalMessageIndex,
+    });
+    hiddenIndices.add(index);
+  });
+
+  messages.forEach((message, index) => {
+    if (message.type !== "text") return;
+    const parsed = parseGroupAgentMessage(message.content || "");
+    if (!parsed.name || parsed.isInvocation) return;
+    const candidate = [...byRunId.values()]
+      .filter(
+        (item) =>
+          item.run.agentName === parsed.name &&
+          item.firstIndex < index &&
+          item.finalMessageIndex === undefined,
+      )
+      .sort((a, b) => b.firstIndex - a.firstIndex)[0];
+    if (!candidate) return;
+
+    candidate.finalText = parsed.body;
+    candidate.isError = parsed.isError;
+    candidate.finalMessageIndex = index;
+    if (parsed.isError) {
+      candidate.run = {
+        ...candidate.run,
+        status: "failed",
+        error: parsed.body,
+        finishedAt: candidate.run.finishedAt ?? Date.now(),
+      };
+    }
+    hiddenIndices.add(index);
+  });
+
+  const runsByFirstIndex = new Map<number, GroupTimelineRun>();
+  byRunId.forEach((item) => {
+    hiddenIndices.delete(item.firstIndex);
+    runsByFirstIndex.set(item.firstIndex, item);
+  });
+  return { runsByFirstIndex, hiddenIndices };
+}
+
 export function GroupAgentRunBlock({
   run,
   avatar,
-  streamingText,
   finalText,
+  isError = false,
+  memberNames = [],
 }: {
   run: GroupAgentRun;
   avatar: string;
-  streamingText: string;
   finalText?: string;
+  isError?: boolean;
+  memberNames?: string[];
 }) {
   const [now, setNow] = useState(Date.now());
+  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
     if (run.status !== "running") return;
@@ -275,12 +398,15 @@ export function GroupAgentRunBlock({
           ? `Using ${formatToolName(activeBlock.toolName)}`
           : activeBlock?.kind === "stage"
             ? activeBlock.label
-            : activeBlock?.kind === "response" || streamingText
+            : activeBlock?.kind === "response"
               ? "Writing response"
               : "Waiting for CLI activity";
   const toolCount = run.blocks.filter((block) => block.kind === "tool").length;
-  const hasResponseBlock = run.blocks.some((block) => block.kind === "response");
-  const fallbackResponse = hasResponseBlock ? "" : finalText || streamingText;
+  const responseBlock = run.blocks.find((block) => block.kind === "response");
+  const responseText =
+    finalText ||
+    (responseBlock?.kind === "response" ? responseBlock.content : "") ||
+    (isError ? run.error || "" : "");
 
   return (
     <div className="group-agent-run mb-3 flex w-full max-w-2xl flex-col items-start">
@@ -291,7 +417,13 @@ export function GroupAgentRunBlock({
         </span>
       </div>
       <div className="w-full overflow-hidden rounded-lg border border-border bg-card text-sm shadow-sm">
-        <div className="flex min-h-11 items-center gap-2.5 px-3 py-2">
+        <button
+          type="button"
+          className="flex min-h-11 w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-muted/40"
+          onClick={() => setExpanded((value) => !value)}
+          aria-expanded={expanded}
+          aria-label={expanded ? "Collapse execution details" : "Expand execution details"}
+        >
           {run.status === "failed" ? (
             <IconAlertCircle size={17} className="shrink-0 text-destructive" />
           ) : run.status === "completed" ? (
@@ -316,9 +448,14 @@ export function GroupAgentRunBlock({
           <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
             {formatElapsed(elapsed)}
           </span>
-        </div>
+          {expanded ? (
+            <IconChevronDown size={16} className="shrink-0 text-muted-foreground" />
+          ) : (
+            <IconChevronRight size={16} className="shrink-0 text-muted-foreground" />
+          )}
+        </button>
 
-        {run.blocks.length > 0 && (
+        {expanded && run.blocks.length > 0 && (
           <div className="border-t border-border">
             {run.blocks.map((block) => {
               if (block.kind === "stage") {
@@ -360,27 +497,7 @@ export function GroupAgentRunBlock({
               }
 
               if (block.kind === "response") {
-                const text = finalText ?? block.content;
-                return (
-                  <div
-                    key={block.id}
-                    className="border-b border-border px-3 py-2.5 last:border-b-0"
-                  >
-                    <div className="mb-1.5 flex items-center gap-2 text-xs font-medium text-muted-foreground">
-                      <IconMessageCircle size={14} />
-                      <span>Response</span>
-                      {block.status === "running" && (
-                        <IconLoader2 size={13} className="animate-spin text-primary" />
-                      )}
-                    </div>
-                    <div className="leading-relaxed text-foreground">
-                      <GroupMarkdown text={text} />
-                      {block.status === "running" && (
-                        <span className="inline-block h-4 w-1.5 animate-pulse bg-foreground/50 align-text-bottom" />
-                      )}
-                    </div>
-                  </div>
-                );
+                return null;
               }
 
               if (block.kind === "error") {
@@ -467,13 +584,23 @@ export function GroupAgentRunBlock({
           </div>
         )}
 
-        {fallbackResponse && (
-          <div className="border-t border-border px-3 py-2 leading-relaxed text-foreground">
+        {responseText && (
+          <div
+            className={`border-t px-3 py-2.5 leading-relaxed ${
+              isError
+                ? "border-destructive/20 bg-destructive/5 text-destructive"
+                : "border-border text-foreground"
+            }`}
+          >
             <div className="mb-1.5 flex items-center gap-2 text-xs font-medium text-muted-foreground">
               <IconMessageCircle size={14} />
               <span>Response</span>
             </div>
-            <GroupMarkdown text={fallbackResponse} />
+            {isError ? (
+              <div className="whitespace-pre-wrap break-words">{responseText}</div>
+            ) : (
+              <GroupMarkdown text={responseText} memberNames={memberNames} />
+            )}
             {run.status === "running" && (
               <span className="inline-block h-4 w-1.5 animate-pulse bg-foreground/50 align-text-bottom" />
             )}
@@ -546,6 +673,20 @@ export function GroupChatView({
     for (const a of agents) m.set(a.name, { avatar: a.avatar });
     return m;
   }, [agents]);
+
+  const groupTimeline = useMemo(
+    () => buildGroupTimeline(sessionMessages),
+    [sessionMessages],
+  );
+  const activeRunAgentNames = useMemo(() => {
+    const names = new Set<string>();
+    groupTimeline.runsByFirstIndex.forEach((item) => {
+      if (item.run.status === "running" && item.finalMessageIndex === undefined) {
+        names.add(item.run.agentName);
+      }
+    });
+    return names;
+  }, [groupTimeline]);
 
   const groupTypingAgents = useSessionStore((s) => s.groupTypingAgents);
   const typingNames = useMemo(() => {
@@ -784,53 +925,28 @@ export function GroupChatView({
     [showMentions, mentionOptions, mentionIndex, insertMention],
   );
 
-  // Parse [agent-reply:Name] / [agent-error:Name] prefixes from injected
-  // user messages; the backend uses these to attribute agent turns.
-  const parseAgentMsg = useCallback(
-    (content: string): {
-      name?: string;
-      body: string;
-      isError: boolean;
-      isInvocation: boolean;
-    } => {
-      const reply = content.match(
-        /^\[agent-reply:(.+?)\]\s*\n\n([\s\S]*)$/,
-      );
-      if (reply)
-        return {
-          name: reply[1],
-          body: reply[2],
-          isError: false,
-          isInvocation: false,
-        };
-      const err = content.match(/^\[agent-error:(.+?)\]\s*\n\n([\s\S]*)$/);
-      if (err)
-        return {
-          name: err[1],
-          body: err[2],
-          isError: true,
-          isInvocation: false,
-        };
-      const invocation = content.match(
-        /^\[group-invocation:[^:]+:[^\]]+\]\s*\n\n([\s\S]*)$/,
-      );
-      if (invocation) {
-        return {
-          body: invocation[1],
-          isError: false,
-          isInvocation: true,
-        };
-      }
-      return { body: content, isError: false, isInvocation: false };
-    },
-    [],
-  );
-
   const renderMessage = useCallback(
     (msg: Message, idx: number) => {
+      const timelineRun = groupTimeline.runsByFirstIndex.get(idx);
+      if (timelineRun) {
+        const avatar =
+          agentByName.get(timelineRun.run.agentName)?.avatar || "\u{1F419}";
+        return (
+          <GroupAgentRunBlock
+            key={timelineRun.run.runId}
+            run={timelineRun.run}
+            avatar={avatar}
+            finalText={timelineRun.finalText}
+            isError={timelineRun.isError}
+            memberNames={memberHandles}
+          />
+        );
+      }
+      if (groupTimeline.hiddenIndices.has(idx)) return null;
       if (msg.type !== "text") return null;
       const content = msg.content || "";
-      const { name, body, isError, isInvocation } = parseAgentMsg(content);
+      const { name, body, isError, isInvocation } =
+        parseGroupAgentMessage(content);
       if (isInvocation) {
         return (
           <div key={idx} className="my-3 flex justify-center px-4">
@@ -877,7 +993,7 @@ export function GroupChatView({
         </div>
       );
     },
-    [parseAgentMsg, agentByName, memberHandles],
+    [groupTimeline, agentByName, memberHandles],
   );
 
   if (!activeGroupId || !group) {
@@ -931,7 +1047,7 @@ export function GroupChatView({
             <option value="">不设置</option>
             {members.map((a) => (
               <option key={a!.id} value={a!.id}>
-                {a!.alias ? `${a!.name} (@${a!.alias})` : a!.name}
+                {a!.name}
               </option>
             ))}
           </select>
@@ -941,7 +1057,7 @@ export function GroupChatView({
             <span
               key={a!.id}
               className="text-base leading-none"
-              title={a!.alias ? `${a!.name} (@${a!.alias})` : a!.name}
+              title={a!.name}
             >
               {a!.avatar || "\u{1F419}"}
             </span>
@@ -1027,6 +1143,7 @@ export function GroupChatView({
          * backend streams chunks. Cleared when the final
          * [agent-reply:Name] user_message replaces them. */}
         {Object.entries(streamingReplies)
+          .filter(([name]) => !activeRunAgentNames.has(name))
           .map(([name, text]) => {
             const avatar = agentByName.get(name)?.avatar || "\u{1F419}";
             return (
@@ -1048,10 +1165,15 @@ export function GroupChatView({
         {/* Typing indicator — only shown when the agent is typing but
          * hasn't produced any text yet (streamingReplies takes over
          * once text starts flowing). */}
-        {typingNames.some((name) => !streamingReplies[name]) && (
+        {typingNames.some(
+          (name) => !streamingReplies[name] && !activeRunAgentNames.has(name),
+        ) && (
           <div className="flex items-center gap-1.5 px-1 py-1 text-xs text-muted-foreground">
             {typingNames
-              .filter((name) => !streamingReplies[name])
+              .filter(
+                (name) =>
+                  !streamingReplies[name] && !activeRunAgentNames.has(name),
+              )
               .map((name) => {
                 const a = agentByName.get(name);
                 return (

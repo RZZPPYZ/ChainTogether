@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import unittest
 
-from server.group_manager import GroupManager, analyze_agent_routing, parse_agent_mentions
+from server.group_manager import (
+    GroupManager,
+    analyze_agent_routing,
+    member_canonical_handles,
+    member_routing_handles,
+    parse_agent_mentions,
+)
 
 
 class GroupRoutingTests(unittest.TestCase):
@@ -32,11 +38,17 @@ class GroupRoutingTests(unittest.TestCase):
         self.assertGreater(exit_check_at, prompt.index("</group_transcript>"))
         self.assertIn('First ask: "Does the workflow truly end with me?"', prompt)
         self.assertIn("do not let Q2 or Q3 veto this route", prompt)
-        self.assertIn("Valid handles for this turn: @Builder, @Maker, @Reviewer, @Checker", prompt)
+        self.assertIn("Valid handles for this turn: @Builder, @Reviewer", prompt)
         self.assertIn(
-            "Your own handle(s), which must not be routed: @Builder / @Maker",
+            "Your own handle(s), which must not be routed: @Builder",
             prompt,
         )
+        self.assertIn(
+            "Aliases are user-only input shortcuts and are not Agent names",
+            prompt,
+        )
+        self.assertNotIn("@Maker", prompt)
+        self.assertNotIn("@Checker", prompt)
         self.assertTrue(prompt.rstrip().endswith("or a documented hold action."))
 
     def test_separator_before_final_handoff_is_ignored(self) -> None:
@@ -51,13 +63,22 @@ class GroupRoutingTests(unittest.TestCase):
         )
         self.assertEqual(parse_agent_mentions(reply), ["builder"])
 
-    def test_alias_is_valid_in_final_handoff(self) -> None:
+    def test_canonical_name_is_valid_in_final_handoff(self) -> None:
         analysis = analyze_agent_routing(
             "Done.\n\n@Feng take the next step.",
             ["Panghu", "Feng"],
         )
         self.assertEqual(analysis.line_start_mentions, ("feng",))
         self.assertEqual(analysis.invalid_inline_mentions, ())
+
+    def test_alias_is_user_only_and_not_in_agent_handoff_roster(self) -> None:
+        agents = [
+            {"id": "panghu", "name": "胖虎", "alias": "峰哥"},
+            {"id": "xiaofu", "name": "小夫", "alias": ""},
+        ]
+
+        self.assertEqual(member_routing_handles(agents), ["胖虎", "峰哥", "小夫"])
+        self.assertEqual(member_canonical_handles(agents), ["胖虎", "小夫"])
 
     def test_prose_before_handoff_in_final_block_stays_non_executable(self) -> None:
         reply = "Done.\n\nPlease continue this work.\n@Builder take over."

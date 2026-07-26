@@ -229,9 +229,16 @@ function handleWsMessage(data: Record<string, unknown>) {
     case "group_agent_activity": {
       const agentName = data.agent_name as string;
       if (sessionId && agentName) {
+        const activity = data as unknown as GroupAgentActivityEvent;
+        addMessage(sessionId, {
+          role: "system",
+          type: "group_agent_activity",
+          content: JSON.stringify(activity),
+          seq: seq ?? undefined,
+        });
         getState().applyGroupAgentActivity(
           sessionId,
-          data as unknown as GroupAgentActivityEvent,
+          activity,
         );
       }
       break;

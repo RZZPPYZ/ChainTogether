@@ -149,8 +149,9 @@ def ask_agent(
             snippets, spell out goals. For mode 2 (continuation), say
             only what's NEW — the original brief and the previous
             reply are already in the other agent's transcript.
-        name: The other agent's display name or alias (e.g. "Vera",
-            "Researcher"). Required for mode 1 and case-insensitive.
+        name: The other agent's canonical display name (e.g. "Vera",
+            "Researcher"). Required for mode 1 and case-insensitive. Aliases
+            are user-only @ shortcuts and are not valid here.
         delegation_id: The id from an earlier reply (`[agent-reply:…
             delegation=<id>]`) to continue. Required for mode 2. The
             delegation must be in a terminal state — wait for the
@@ -238,7 +239,7 @@ def ask_agent(
     except httpx.HTTPError as e:
         return f"Error: failed to reach Octopus to start the delegation: {e}"
     if r.status_code == 404:
-        return f"No agent with name or alias {name!r}, and no parent session match."
+        return f"No agent with name {name!r}, and no parent session match."
     if r.status_code == 409:
         return f"Cannot delegate: {r.text[:300]}"
     if r.status_code != 201:

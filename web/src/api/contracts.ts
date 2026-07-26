@@ -593,7 +593,7 @@ export interface paths {
          *
          *     Status codes:
          *     - 201 Created with the delegation record on success
-         *     - 404 if the parent session is gone or the target agent name/alias
+         *     - 404 if the parent session is gone or the target agent name
          *       doesn't resolve
          *     - 409 on cycle, depth, self-delegation, or ambiguous name
          */

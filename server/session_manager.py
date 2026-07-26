@@ -1640,6 +1640,43 @@ class SessionManager:
         await self._broadcast(event)
         return seq
 
+    async def inject_group_agent_activity(
+        self,
+        session_id: str,
+        payload: dict[str, Any],
+        *,
+        agent_id: str | None = None,
+    ) -> int | None:
+        """Persist and broadcast one group-member execution event.
+
+        Activity rows use the system role so they are excluded from the group
+        transcript sent back to agents. Keeping them in the backing session
+        lets the frontend rebuild an in-progress or completed run after a
+        refresh instead of relying on ephemeral WebSocket state.
+        """
+        session = self.sessions.get(session_id)
+        if session is None:
+            raise ValueError(f"Session {session_id} not found")
+
+        safe_payload = json.loads(
+            json.dumps(payload, ensure_ascii=False, default=str)
+        )
+        msg = MessageContent(
+            role=MessageRole.system,
+            type="group_agent_activity",
+            content=json.dumps(safe_payload, ensure_ascii=False),
+        )
+        seq = await self._persist_message(session, msg, agent_id=agent_id)
+        event: dict[str, Any] = {
+            "type": "group_agent_activity",
+            "session_id": session_id,
+            **safe_payload,
+        }
+        if seq is not None:
+            event["seq"] = seq
+        await self._broadcast(event)
+        return seq
+
     async def start_message(
         self,
         session_id: str,

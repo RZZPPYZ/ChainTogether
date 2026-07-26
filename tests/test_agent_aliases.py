@@ -40,6 +40,11 @@ class AgentAliasTests(unittest.IsolatedAsyncioTestCase):
             group_manager._resolve_agent_by_name("胖虎", [agent])["id"],
             agent["id"],
         )
+        self.assertIsNone(
+            group_manager._resolve_agent_by_name(
+                "峰哥", [agent], allow_prefix=False, allow_alias=False
+            )
+        )
 
         updated = await self.manager.update_agent(agent["id"], alias="阿峰")
         self.assertIsNone(
@@ -74,7 +79,7 @@ class AgentAliasTests(unittest.IsolatedAsyncioTestCase):
         updated = await self.manager.update_agent(agent["id"], alias=None)
         self.assertEqual(updated["alias"], "")
 
-    async def test_delegation_target_accepts_name_or_alias(self) -> None:
+    async def test_delegation_target_accepts_only_canonical_name(self) -> None:
         agent = await self.manager.create_agent(name="胖虎", alias="峰哥")
         latin_agent = await self.manager.create_agent(name="Coach", alias="FÉNG")
         delegations = DelegationManager()
@@ -82,11 +87,11 @@ class AgentAliasTests(unittest.IsolatedAsyncioTestCase):
 
         by_name = await delegations._resolve_target_agent("胖虎")
         by_alias = await delegations._resolve_target_agent("峰哥")
-        by_unicode_casefold = await delegations._resolve_target_agent("féng")
+        by_casefolded_name = await delegations._resolve_target_agent("coach")
 
         self.assertEqual(by_name["id"], agent["id"])
-        self.assertEqual(by_alias["id"], agent["id"])
-        self.assertEqual(by_unicode_casefold["id"], latin_agent["id"])
+        self.assertIsNone(by_alias)
+        self.assertEqual(by_casefolded_name["id"], latin_agent["id"])
 
 
 if __name__ == "__main__":

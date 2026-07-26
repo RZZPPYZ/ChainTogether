@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -43,6 +45,11 @@ MAX_GROUP_CONTEXT_MESSAGES = 40
 
 # Hard cap before we give up on a reuse session turn and inject an error.
 _MAX_CHILD_WAIT = 300.0
+
+# Group activity is persisted in the transcript. Keep verbose CLI payloads
+# useful for inspection without allowing one tool event to dominate storage.
+_GROUP_ACTIVITY_INPUT_LIMIT = 4000
+_GROUP_ACTIVITY_OUTPUT_LIMIT = 12000
 
 # Maximum A2A @-mention hops below the initial user @: user→A is hop 0,
 # A@-B is hop 1, B@-C is hop 2, C@-D is hop 3 — D would exceed the cap.
@@ -124,6 +131,35 @@ class _BackendError(Exception):
     in the injected ``[agent-error:Name]`` message instead of the
     generic "Agent produced no reply." that otherwise masks it.
     """
+
+
+def _compact_activity_value(value: Any, limit: int) -> Any:
+    """Return a JSON-safe value, truncating only oversized serialized data."""
+    try:
+        serialized = json.dumps(value, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        serialized = str(value)
+    if len(serialized) <= limit:
+        try:
+            return json.loads(serialized)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return serialized
+    return f"{serialized[:limit]}\n... [truncated]"
+
+
+def _compact_activity_input(value: Any) -> dict[str, Any]:
+    compact = _compact_activity_value(value, _GROUP_ACTIVITY_INPUT_LIMIT)
+    return compact if isinstance(compact, dict) else {"value": compact}
+
+
+def _compact_activity_output(value: Any) -> str:
+    if isinstance(value, str):
+        text = value
+    else:
+        text = json.dumps(value, ensure_ascii=False, default=str)
+    if len(text) <= _GROUP_ACTIVITY_OUTPUT_LIMIT:
+        return text
+    return f"{text[:_GROUP_ACTIVITY_OUTPUT_LIMIT]}\n... [truncated]"
 
 
 @dataclass
@@ -402,11 +438,19 @@ def agent_routing_handles(agent: dict[str, Any]) -> tuple[str, ...]:
 def member_routing_handles(
     member_agents: list[dict[str, Any]],
 ) -> list[str]:
+    """Return handles accepted from user-authored group messages."""
     return [
         handle
         for agent in member_agents
         for handle in agent_routing_handles(agent)
     ]
+
+
+def member_canonical_handles(
+    member_agents: list[dict[str, Any]],
+) -> list[str]:
+    """Return the canonical handles Agents may use for A2A handoffs."""
+    return [str(agent["name"]) for agent in member_agents]
 
 
 class GroupManager:
@@ -887,6 +931,7 @@ class GroupManager:
                 self._collect_agent_reply(
                     reuse_session_id, augmented,
                     group_session_id=run.group_session_id,
+                    agent_id=agent_id,
                     agent_name=agent_name,
                     invocation_id=run.invocation_id or None,
                 ),
@@ -918,19 +963,20 @@ class GroupManager:
                     )
                     return
                 analysis = analyze_agent_routing(
-                    reply_text, member_routing_handles(member_agents)
+                    reply_text, member_canonical_handles(member_agents)
                 )
                 if analysis.invalid_inline_mentions:
                     remedial = await self._run_routing_remedial(
                         run=run,
                         reuse_session_id=reuse_session_id,
+                        agent_id=agent_id,
                         agent_name=agent_name,
                         invalid_mentions=analysis.invalid_inline_mentions,
                     )
                     if remedial is not None:
                         corrected = analyze_agent_routing(
                             self._strip_completion_token(remedial.text),
-                            member_routing_handles(member_agents),
+                            member_canonical_handles(member_agents),
                         )
                         if corrected.line_start_mentions:
                             remedial_text = self._strip_completion_token(
@@ -1154,7 +1200,7 @@ class GroupManager:
         has_viable_target = False
         for name in mentioned:
             target = self._resolve_agent_by_name(
-                name, member_agents, allow_prefix=False
+                name, member_agents, allow_prefix=False, allow_alias=False
             )
             if target is None:
                 logger.info(
@@ -1301,59 +1347,103 @@ class GroupManager:
     async def _collect_agent_reply(
         self, reuse_session_id: str, prompt: str, *,
         group_session_id: str,
+        agent_id: str | None = None,
         agent_name: str,
         invocation_id: str | None = None,
     ) -> AgentTurnResult:
-        """Drive a reuse session's backend turn and collect assistant text.
-
-        While the agent streams, each ``assistant_text`` chunk is also
-        broadcast into the group session as a ``group_agent_text`` event so
-        the frontend renders a normal live chat bubble. The final
-        ``[agent-reply:Name]`` inject replaces that stream with the committed
-        message.
-
-        Returns the concatenated assistant text plus lightweight activity
-        metadata used by routing guards.
-        """
+        """Drive one member turn and persist its execution timeline."""
         reply_parts: list[str] = []
         error_messages: list[str] = []
         tool_names: list[str] = []
-        async for event in self.session_manager.send_message(
-            reuse_session_id, prompt
-        ):
-            etype = event.get("type")
-            if (
-                etype == "assistant_text"
-                and event.get("content", "").strip()
+        error_recorded = False
+        run_id = uuid.uuid4().hex[:12]
+
+        async def record(phase: str, **details: Any) -> None:
+            if not self.session_manager:
+                return
+            await self.session_manager.inject_group_agent_activity(
+                group_session_id,
+                {
+                    "run_id": run_id,
+                    "invocation_id": invocation_id,
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
+                    "phase": phase,
+                    "timestamp_ms": int(time.time() * 1000),
+                    **details,
+                },
+                agent_id=agent_id,
+            )
+
+        await record("started")
+        try:
+            async for event in self.session_manager.send_message(
+                reuse_session_id, prompt
             ):
-                chunk = event["content"].strip()
-                reply_parts.append(chunk)
-                if self.session_manager:
-                    await self.session_manager._broadcast({
-                        "type": "group_agent_text",
-                        "session_id": group_session_id,
-                        "invocation_id": invocation_id,
-                        "agent_name": agent_name,
-                        "content": event["content"],
-                    })
-            elif etype == "tool_use":
-                tool_name = (
-                    event.get("tool_name")
-                    or event.get("tool")
-                    or event.get("name")
-                    or ""
-                )
-                if tool_name:
+                etype = event.get("type")
+                if etype == "thinking":
+                    await record("thinking")
+                elif (
+                    etype == "assistant_text"
+                    and event.get("content", "").strip()
+                ):
+                    chunk = event["content"].strip()
+                    reply_parts.append(chunk)
+                    await record("text", content=chunk)
+                elif etype == "tool_use":
+                    tool_name = (
+                        event.get("tool_name")
+                        or event.get("tool")
+                        or event.get("name")
+                        or "Tool"
+                    )
                     tool_names.append(str(tool_name))
-            elif etype == "result" and event.get("is_error"):
-                detail = (
-                    event.get("message")
-                    or "The CLI reported that this turn failed."
-                )
-                error_messages.append(str(detail))
-            elif etype == "error" and event.get("message", "").strip():
-                error_messages.append(event["message"].strip())
+                    await record(
+                        "tool_started",
+                        tool_name=str(tool_name),
+                        tool_use_id=event.get("tool_use_id"),
+                        tool_input=_compact_activity_input(
+                            event.get("input") or event.get("tool_input") or {},
+                        ),
+                    )
+                elif etype == "tool_result":
+                    await record(
+                        "tool_finished",
+                        tool_name=event.get("tool_name") or event.get("tool"),
+                        tool_use_id=event.get("tool_use_id"),
+                        output=_compact_activity_output(
+                            event.get("output") or event.get("content") or "",
+                        ),
+                        is_error=bool(event.get("is_error")),
+                    )
+                elif etype == "result":
+                    is_error = bool(event.get("is_error"))
+                    await record(
+                        "result",
+                        duration_ms=event.get("duration_ms"),
+                        cost=event.get("cost"),
+                        is_error=is_error,
+                    )
+                    if is_error:
+                        detail = (
+                            event.get("message")
+                            or "The CLI reported that this turn failed."
+                        )
+                        error_messages.append(str(detail))
+                elif etype == "error" and event.get("message", "").strip():
+                    detail = event["message"].strip()
+                    error_messages.append(detail)
+                    await record("error", detail=detail)
+                    error_recorded = True
+        except asyncio.CancelledError:
+            await record("error", detail="Agent execution was cancelled.")
+            raise
+        except Exception as exc:
+            await record("error", detail=str(exc))
+            raise
+
         if reply_parts:
+            await record("completed")
             return AgentTurnResult(
                 text="\n\n".join(reply_parts),
                 tool_names=tuple(tool_names),
@@ -1362,7 +1452,10 @@ class GroupManager:
         # user sees the real failure instead of a generic "Agent produced
         # no reply." when the backend in fact errored.
         if error_messages:
+            if not error_recorded:
+                await record("error", detail="\n".join(error_messages))
             raise _BackendError("\n".join(error_messages))
+        await record("completed")
         return AgentTurnResult(text="", tool_names=tuple(tool_names))
 
     async def _run_routing_remedial(
@@ -1370,6 +1463,7 @@ class GroupManager:
         *,
         run: GroupRunState,
         reuse_session_id: str,
+        agent_id: str | None,
         agent_name: str,
         invalid_mentions: tuple[str, ...],
     ) -> AgentTurnResult | None:
@@ -1395,6 +1489,7 @@ class GroupManager:
                     reuse_session_id,
                     prompt,
                     group_session_id=run.group_session_id,
+                    agent_id=agent_id,
                     agent_name=agent_name,
                     invocation_id=run.invocation_id or None,
                 ),
@@ -1544,16 +1639,9 @@ class GroupManager:
         """
         roster = self._format_roster(member_agents)
         exact_handles = ", ".join(
-            f"@{handle}" for handle in member_routing_handles(member_agents)
+            f"@{handle}" for handle in member_canonical_handles(member_agents)
         )
-        current = next(
-            (a for a in member_agents if a["name"] == agent_name), None
-        )
-        identity_handles = (
-            " / ".join(f"@{handle}" for handle in agent_routing_handles(current))
-            if current is not None
-            else f"@{agent_name}"
-        )
+        identity_handles = f"@{agent_name}"
         exit_check = GROUP_PRE_SEND_EXIT_CHECK.format(
             valid_handles=exact_handles,
             self_handles=identity_handles,
@@ -1572,6 +1660,10 @@ class GroupManager:
             f"\"{group_name}\".\n\n"
             f"Group members: {roster}\n\n"
             f"Valid routing handles for this turn: {exact_handles}\n\n"
+            f"Use canonical Agent names for identity, conversation, and A2A "
+            f"handoffs. Aliases are user-only input shortcuts and are not "
+            f"Agent names. Ignore any former aliases remembered from earlier "
+            f"resumed turns; the canonical roster above is authoritative.\n\n"
             f"Below is the relevant group transcript window. {origin_line}\n\n"
             f"<group_transcript>\n{context}\n</group_transcript>\n\n"
             f"Respond now under the mandatory group routing protocol already "
@@ -1595,10 +1687,7 @@ class GroupManager:
         parts: list[str] = []
         for a in member_agents:
             backend_label = "Codex" if a.get("backend") == "codex" else "Claude"
-            handles = " / ".join(
-                f"@{handle}" for handle in agent_routing_handles(a)
-            )
-            parts.append(f"{handles} ({backend_label})")
+            parts.append(f"@{a['name']} ({backend_label})")
         return ", ".join(parts)
 
     # ------------------------------------------------------------------
@@ -1960,6 +2049,7 @@ class GroupManager:
         member_agents: list[dict[str, Any]],
         *,
         allow_prefix: bool = True,
+        allow_alias: bool = True,
     ) -> dict[str, Any] | None:
         name_lower = name.casefold()
         exact = [
@@ -1967,7 +2057,11 @@ class GroupManager:
             for agent in member_agents
             if any(
                 handle.casefold() == name_lower
-                for handle in agent_routing_handles(agent)
+                for handle in (
+                    agent_routing_handles(agent)
+                    if allow_alias
+                    else (str(agent["name"]),)
+                )
             )
         ]
         exact = list({agent["id"]: agent for agent in exact}.values())
@@ -1980,7 +2074,11 @@ class GroupManager:
             for agent in member_agents
             if any(
                 handle.casefold().startswith(name_lower)
-                for handle in agent_routing_handles(agent)
+                for handle in (
+                    agent_routing_handles(agent)
+                    if allow_alias
+                    else (str(agent["name"]),)
+                )
             )
         ]
         prefix = list({agent["id"]: agent for agent in prefix}.values())
