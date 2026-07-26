@@ -45,9 +45,6 @@ MAX_MENTION_TARGETS = 4
 # Max group-context messages sent to a member on its first group turn.
 MAX_GROUP_CONTEXT_MESSAGES = 40
 
-# Hard cap before we give up on a reuse session turn and inject an error.
-_MAX_CHILD_WAIT = 300.0
-
 # Group activity is persisted in the transcript. Keep verbose CLI payloads
 # useful for inspection without allowing one tool event to dominate storage.
 _GROUP_ACTIVITY_INPUT_LIMIT = 4000
@@ -939,15 +936,14 @@ class GroupManager:
             await self._broadcast_typing(run, agent_name, started=True)
 
         try:
-            turn = await asyncio.wait_for(
-                self._collect_agent_reply(
-                    reuse_session_id, augmented,
-                    group_session_id=run.group_session_id,
-                    agent_id=agent_id,
-                    agent_name=agent_name,
-                    invocation_id=run.invocation_id or None,
-                ),
-                timeout=_MAX_CHILD_WAIT,
+            # SessionManager owns the configurable idle/overall watchdog. Do
+            # not layer a shorter group-only wall-clock cap over an active turn.
+            turn = await self._collect_agent_reply(
+                reuse_session_id, augmented,
+                group_session_id=run.group_session_id,
+                agent_id=agent_id,
+                agent_name=agent_name,
+                invocation_id=run.invocation_id or None,
             )
             reply_text = self._strip_completion_token(turn.text)
             routing_text = reply_text
@@ -1037,15 +1033,6 @@ class GroupManager:
                 depth=depth,
                 reply_text=routing_text or "",
                 turn=routing_turn,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(
-                "Group %s: agent %s turn timed out after %.0fs",
-                run.group_id, agent_name, _MAX_CHILD_WAIT,
-            )
-            await self._inject_agent_error(
-                run.group_session_id, agent_name,
-                "Agent turn timed out.",
             )
         except asyncio.CancelledError:
             logger.info(
@@ -1496,19 +1483,14 @@ class GroupManager:
             "or any completed work."
         )
         try:
-            remedial = await asyncio.wait_for(
-                self._collect_agent_reply(
-                    reuse_session_id,
-                    prompt,
-                    group_session_id=run.group_session_id,
-                    agent_id=agent_id,
-                    agent_name=agent_name,
-                    invocation_id=run.invocation_id or None,
-                ),
-                timeout=_MAX_CHILD_WAIT,
+            remedial = await self._collect_agent_reply(
+                reuse_session_id,
+                prompt,
+                group_session_id=run.group_session_id,
+                agent_id=agent_id,
+                agent_name=agent_name,
+                invocation_id=run.invocation_id or None,
             )
-        except asyncio.TimeoutError:
-            detail = "The one-time routing correction timed out."
         except _BackendError as exc:
             detail = f"The one-time routing correction failed: {exc}"
         except asyncio.CancelledError:

@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     # sub-turn can legitimately take tens of seconds. 0 disables that check.
     turn_idle_timeout_seconds: int = 300
     turn_max_seconds: int = 1800
+    # Group members commonly run long build/test tools with no intermediate
+    # CLI event. Keep their watchdog disabled by default; the group Stop action
+    # remains available. Operators can opt into either limit through env vars.
+    group_turn_idle_timeout_seconds: int = 0
+    group_turn_max_seconds: int = 0
 
     # Native deep research (native-deep-research.md §6/§8). Max jobs running
     # concurrently across all sessions (per-job leaf fan-out is bounded inside

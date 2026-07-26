@@ -14,12 +14,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import signal
 
 from .events import HarnessOneshotError
 from .login import LoginDriver
 from .profile import OneShotContext, RuntimeProfile
-from .run import HarnessRun, RunConfig, _which_with_fallback, prepare_spawn
+from .run import (
+    HarnessRun,
+    RunConfig,
+    _HARD_KILL_SIGNAL,
+    _which_with_fallback,
+    prepare_spawn,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +208,7 @@ class Harness:
         def _reap() -> None:
             # Kill the whole group (run_oneshot is a session leader via
             # prepare_spawn) so nothing lingers. turn-safety.md §2.
-            _terminate_process_group(proc, signal.SIGKILL)
+            _terminate_process_group(proc, _HARD_KILL_SIGNAL)
 
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)

@@ -30,8 +30,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shlex
-import signal
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -39,6 +39,12 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .database import Database
+from .harness.run import (
+    _HARD_KILL_SIGNAL,
+    _SOFT_TERMINATE_SIGNAL,
+    _terminate_process_group,
+    prepare_spawn,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -237,19 +243,31 @@ class BgTaskManager:
         task_id = _short_id()
         started_at = _now_iso()
 
-        # Spawn through /bin/sh -c so the model can use shell syntax
-        # (pipes, redirects, &&) — same trust model as the SDK's Bash
-        # tool. working_dir confines blast radius the same way.
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "/bin/sh",
-                "-c",
+        # Use the platform shell so pipes and redirects work on both POSIX and
+        # Windows. The process-group settings let cancellation reap children.
+        if os.name == "nt":
+            argv = [
+                os.environ.get("COMSPEC", "cmd.exe"),
+                "/D",
+                "/S",
+                "/C",
                 command,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=working_dir,
-                start_new_session=True,  # isolate process group so we can SIGTERM cleanly
+            ]
+        else:
+            argv = ["/bin/sh", "-c", command]
+        try:
+            argv, spawn_kwargs = prepare_spawn(
+                argv,
+                {
+                    "stdin": asyncio.subprocess.DEVNULL,
+                    "stdout": asyncio.subprocess.PIPE,
+                    "stderr": asyncio.subprocess.PIPE,
+                    "cwd": working_dir,
+                },
+            )
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                **spawn_kwargs,
             )
         except Exception as e:
             # Don't even persist a row — the task never existed. The
@@ -571,38 +589,25 @@ class BgTaskManager:
                     logger.exception("bg delivery callback failed for %s", rt.record.id)
 
     async def _terminate_proc(self, rt: _RunningTask) -> None:
-        """SIGTERM the whole process group; 5s grace; SIGKILL if needed.
-
-        We spawned with start_new_session=True, so killing the group
-        sweeps up any children the model's shell command forked off
-        (e.g. `bash -c "long_running &"`).
-        """
+        """Stop the whole process group; allow 5s before a hard kill."""
         proc = rt.proc
         if proc.returncode is not None:
             return
-        try:
-            import os
-            pgid = os.getpgid(proc.pid)
-            # Audit trail: which path called the SIGTERM, and on what
-            # task. Pairs with the terminal-state log line so the
-            # forensics for an "exit -15" task are local to this file.
-            logger.info(
-                "bg task %s: SIGTERM pgid=%s cancel_requested=%s",
-                rt.record.id, pgid, rt.cancel_requested,
-            )
-            os.killpg(pgid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            return
-        # Don't await here — let the wait_for in _run_task notice the exit.
-        # Schedule a SIGKILL fallback if the process resists SIGTERM.
+        logger.info(
+            "bg task %s: terminating process group pid=%s cancel_requested=%s",
+            rt.record.id,
+            proc.pid,
+            rt.cancel_requested,
+        )
+        _terminate_process_group(proc, _SOFT_TERMINATE_SIGNAL)
+
+        # Don't await here; let _run_task notice the exit. Schedule a hard
+        # group kill if the process resists the graceful signal.
         async def _kill_later() -> None:
             await asyncio.sleep(5.0)
             if proc.returncode is None:
-                try:
-                    import os as _os
-                    _os.killpg(_os.getpgid(proc.pid), signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    pass
+                _terminate_process_group(proc, _HARD_KILL_SIGNAL)
+
         asyncio.create_task(_kill_later(), name=f"bg-kill-{rt.record.id}")
 
 

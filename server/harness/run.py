@@ -18,6 +18,7 @@ import logging
 import os
 import shutil
 import signal
+import subprocess
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -39,6 +40,13 @@ _STREAM_END = object()
 # anything short of pathological emit cleanly; pipe backpressure keeps
 # memory bounded.
 _STDOUT_LINE_LIMIT_BYTES = 4 * 1024 * 1024
+
+# These constants only exist on Windows builds of Python. Keep numeric
+# fallbacks so platform-specific behavior can still be unit tested elsewhere.
+_CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+_SOFT_TERMINATE_SIGNAL = getattr(signal, "SIGTERM", 15)
+_HARD_KILL_SIGNAL = getattr(signal, "SIGKILL", 9)
 
 
 def _fallback_path_dirs() -> list[str]:
@@ -97,12 +105,51 @@ def prepare_spawn(
     env = kwargs.get("env") or os.environ.copy()
     cli_dir = os.path.dirname(argv[0]) if argv and os.path.isabs(argv[0]) else None
     env["PATH"] = augmented_path(env.get("PATH"), cli_dir)
-    # Own process group (session leader) so the whole tree the CLI spawns —
-    # MCP servers, nested subagents (Claude `Task`/Workflow) — is reapable as a
-    # unit via killpg, instead of orphaning on stop()/interrupt()
-    # (turn-safety.md §2). Shared by the streaming engine and run_oneshot.
-    # bg_tasks / codex_login already do this.
-    return argv, {**kwargs, "env": env, "start_new_session": True}
+    # Own a process group so the CLI's descendants can be reaped together.
+    # POSIX uses a new session/killpg; Windows uses CREATE_NEW_PROCESS_GROUP
+    # and PID-targeted taskkill /T so console signals cannot stop the server.
+    spawn_kwargs = {**kwargs, "env": env}
+    if os.name == "nt":
+        spawn_kwargs.pop("start_new_session", None)
+        spawn_kwargs["creationflags"] = (
+            int(spawn_kwargs.get("creationflags", 0)) | _CREATE_NEW_PROCESS_GROUP
+        )
+    else:
+        spawn_kwargs["start_new_session"] = True
+    return argv, spawn_kwargs
+
+
+def _terminate_windows_process_group(
+    proc: "asyncio.subprocess.Process", sig: int
+) -> bool:
+    """Best-effort termination of a Windows process group and its children."""
+    # taskkill is the standard Windows mechanism for terminating a complete
+    # descendant tree. Avoid CTRL_BREAK_EVENT: in some console hosts it can be
+    # observed by the parent Uvicorn process and trigger a server shutdown.
+    # /F is reserved for the hard-kill escalation path.
+    command = ["taskkill", "/PID", str(proc.pid), "/T"]
+    if sig == _HARD_KILL_SIGNAL:
+        command.append("/F")
+    try:
+        completed = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+        if completed.returncode == 0:
+            return True
+    except (OSError, subprocess.SubprocessError):
+        logger.debug("taskkill failed for PID %s", proc.pid, exc_info=True)
+
+    if sig == _HARD_KILL_SIGNAL:
+        try:
+            proc.kill()
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    return False
 
 
 def _terminate_process_group(proc: "asyncio.subprocess.Process", sig: int) -> bool:
@@ -112,19 +159,21 @@ def _terminate_process_group(proc: "asyncio.subprocess.Process", sig: int) -> bo
     swallows the races where the process already exited (turn-safety.md §2)."""
     if proc.returncode is not None:
         return False
+    if os.name == "nt":
+        return _terminate_windows_process_group(proc, sig)
     try:
         pgid = os.getpgid(proc.pid)
-    except (ProcessLookupError, PermissionError):
+    except (ProcessLookupError, PermissionError, OSError):
         pgid = None
     if pgid is not None:
         try:
             os.killpg(pgid, sig)
             return True
-        except (ProcessLookupError, PermissionError):
+        except (ProcessLookupError, PermissionError, OSError):
             return False
     try:
         proc.send_signal(sig)
-    except (ProcessLookupError, PermissionError):
+    except (ProcessLookupError, PermissionError, OSError):
         pass
     return False
 
@@ -309,12 +358,12 @@ class HarnessRun:
                 # (MCP servers, subagents) die too, not just the direct child
                 # (turn-safety.md §2).
                 logger.warning("CLI didn't exit on stdin close, terminating group")
-                _terminate_process_group(proc, signal.SIGTERM)
+                _terminate_process_group(proc, _SOFT_TERMINATE_SIGNAL)
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=2.0)
                 except asyncio.TimeoutError:
                     logger.warning("CLI didn't exit on SIGTERM, killing group")
-                    _terminate_process_group(proc, signal.SIGKILL)
+                    _terminate_process_group(proc, _HARD_KILL_SIGNAL)
                     await proc.wait()
 
         for task in (self._stdout_task, self._stderr_task):

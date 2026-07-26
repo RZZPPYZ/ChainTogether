@@ -2189,7 +2189,9 @@ class SessionManager:
             # turn that goes silent (idle) or runs too long (overall) so it can
             # never hang forever the way the deep-research wedge did.
             watchdog_state = {"last": time.monotonic(), "tripped": None}
-            watchdog = self._start_turn_watchdog(backend, watchdog_state)
+            watchdog = self._start_turn_watchdog(
+                backend, watchdog_state, session=session
+            )
 
             try:
                 await backend.start(
@@ -2793,17 +2795,26 @@ class SessionManager:
     _BACKEND_DISPLAY = {"claude-code": "Claude Code", "codex": "Codex"}
 
     def _start_turn_watchdog(
-        self, backend: HarnessRun, state: dict[str, Any]
+        self,
+        backend: HarnessRun,
+        state: dict[str, Any],
+        *,
+        session: Session,
     ) -> "asyncio.Task | None":
-        """Stop `backend` if the turn goes silent for `turn_idle_timeout_seconds`
-        or runs past `turn_max_seconds` (turn-safety.md §3). Returns the watchdog
-        task (or None if both checks are disabled). On a trip it records
+        """Apply the configured watchdog for this session origin.
+
+        Returns the watchdog task (or None if both checks are disabled). On a
+        trip it records
         `state["tripped"] = (reason, limit)` and calls `backend.stop()`, which
         emits the stream-end sentinel so the run loop unblocks cleanly — no
         generator cancellation. `state["last"]` is the caller-updated last-event
         timestamp."""
-        idle = settings.turn_idle_timeout_seconds
-        overall = settings.turn_max_seconds
+        if session.origin == "group_member":
+            idle = settings.group_turn_idle_timeout_seconds
+            overall = settings.group_turn_max_seconds
+        else:
+            idle = settings.turn_idle_timeout_seconds
+            overall = settings.turn_max_seconds
         if idle <= 0 and overall <= 0:
             return None
         limits = [x for x in (idle, overall) if x and x > 0]

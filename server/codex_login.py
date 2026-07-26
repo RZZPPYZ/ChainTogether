@@ -20,13 +20,17 @@ import logging
 import os
 import re
 import shutil
-import signal
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 
 from .config import settings
-from .harness.run import _which_with_fallback, augmented_path
+from .harness.run import (
+    _HARD_KILL_SIGNAL,
+    _terminate_process_group,
+    _which_with_fallback,
+    prepare_spawn,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,19 +86,12 @@ def codex_home_for(credential_id: str) -> str:
 
 
 def _kill_process_group(proc: asyncio.subprocess.Process | None) -> None:
-    """SIGKILL the whole process group. `codex login` spawns helpers that hold
+    """Hard-kill the whole process group. `codex login` spawns helpers that hold
     the stdout pipe open, so killing only the parent leaves our reader blocked
-    until the device code expires (~15 min). We spawn it as a group leader
-    (`start_new_session=True`) and kill the group so the pipe EOFs at once."""
+    until the device code expires (~15 min)."""
     if proc is None or proc.returncode is not None:
         return
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
+    _terminate_process_group(proc, _HARD_KILL_SIGNAL)
 
 
 class CodexLoginManager:
@@ -123,19 +120,21 @@ class CodexLoginManager:
 
         env = os.environ.copy()
         env["CODEX_HOME"] = home
-        # codex is a `#!/usr/bin/env node` script; make sure the child finds
-        # node even when the service PATH omits the nvm bin (else exit 127).
-        env["PATH"] = augmented_path(env.get("PATH"), os.path.dirname(argv[0]))
 
         try:
+            argv, spawn_kwargs = prepare_spawn(
+                argv,
+                {
+                    "cwd": home,
+                    "env": env,
+                    "stdin": asyncio.subprocess.DEVNULL,
+                    "stdout": asyncio.subprocess.PIPE,
+                    "stderr": asyncio.subprocess.STDOUT,
+                },
+            )
             proc = await asyncio.create_subprocess_exec(
                 *argv,
-                cwd=home,
-                env=env,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                start_new_session=True,  # own process group → killable as a unit
+                **spawn_kwargs,
             )
         except FileNotFoundError:
             shutil.rmtree(home, ignore_errors=True)

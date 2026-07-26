@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import unittest
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
+from server.config import settings
 from server.group_manager import GroupManager
 from server.session_manager import SessionManager
 
@@ -167,6 +170,25 @@ class GroupActivityPersistenceTests(unittest.IsolatedAsyncioTestCase):
                 "seq": 7,
             }],
         )
+
+
+class GroupTurnWatchdogTests(unittest.TestCase):
+    def test_group_member_watchdog_is_disabled_by_default(self) -> None:
+        manager = SessionManager.__new__(SessionManager)
+        backend = object()
+        state = {"last": 0.0, "tripped": None}
+
+        with (
+            patch.object(settings, "group_turn_idle_timeout_seconds", 0),
+            patch.object(settings, "group_turn_max_seconds", 0),
+        ):
+            watchdog = manager._start_turn_watchdog(  # type: ignore[arg-type]
+                backend,
+                state,
+                session=SimpleNamespace(origin="group_member"),  # type: ignore[arg-type]
+            )
+
+        self.assertIsNone(watchdog)
 
 
 if __name__ == "__main__":
