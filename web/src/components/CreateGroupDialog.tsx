@@ -29,6 +29,7 @@ export function CreateGroupDialog({
   const token = useSessionStore((s) => s.token);
 
   const [name, setName] = useState("");
+  const [workingDir, setWorkingDir] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [defaultAgentId, setDefaultAgentId] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -37,6 +38,7 @@ export function CreateGroupDialog({
   useEffect(() => {
     if (open) {
       setName("");
+      setWorkingDir("");
       setSelected(new Set());
       setDefaultAgentId("");
       setError(null);
@@ -79,6 +81,7 @@ export function CreateGroupDialog({
           name: name.trim(),
           agent_ids: [...selected],
           default_agent_id: defaultAgentId || null,
+          working_dir: workingDir.trim() || null,
         }),
       });
       if (!res.ok) {
@@ -94,6 +97,7 @@ export function CreateGroupDialog({
         createdAt: g.created_at,
         sessionId: g.session_id ?? null,
         defaultAgentId: g.default_agent_id ?? null,
+        workingDir: g.working_dir,
       } as Group);
       onOpenChange(false);
     } catch (e) {
@@ -127,6 +131,18 @@ export function CreateGroupDialog({
               }}
               placeholder="e.g. Brainstorming circle"
               autoFocus
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="group-working-dir">Working directory</Label>
+            <Input
+              id="group-working-dir"
+              value={workingDir}
+              onChange={(e) => {
+                setWorkingDir(e.target.value);
+                setError(null);
+              }}
+              placeholder="Default server working directory"
             />
           </div>
           <div className="space-y-1.5">

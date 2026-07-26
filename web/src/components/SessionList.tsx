@@ -13,6 +13,19 @@ import { Input } from "./ui/input";
 
 const API_URL = window.location.origin;
 
+const GROUP_SESSION_ORIGINS = new Set(["group", "group_member"]);
+
+export function getAgentSidebarSessions(
+  sessions: SessionInfo[],
+  agentId: string,
+): SessionInfo[] {
+  return sessions.filter(
+    (session) =>
+      session.agent_id === agentId &&
+      !GROUP_SESSION_ORIGINS.has(session.origin),
+  );
+}
+
 /** The session list for a single agent — rendered nested under its agent row
  * in AgentList (sessions belong to an agent). No "Sessions" header; the
  * new-session "+" lives on the agent row and drives `formOpen`. */
@@ -64,14 +77,16 @@ export function SessionList({
   const showDelegations = useSessionStore((s) => s.showDelegations);
   const setShowDelegations = useSessionStore((s) => s.setShowDelegations);
 
-  // This list shows exactly its agent's sessions (bucketed by agent_id).
+  // Group backing/member sessions are controller-owned implementation details.
+  // They remain in the store for group history and resume, but only GroupChat
+  // exposes them; an Agent's sidebar lists user-facing sessions exclusively.
   // Archived sessions live in the account-menu manage page, not here.
   // Delegation sessions (origin === "delegation") are hidden by default
   // to keep the sidebar clean under heavy fan-out — the user can flip
   // the global showDelegations toggle to see them. The hidden-count
   // pill at the bottom of this list surfaces what's been filtered.
   // (agent-collaboration.md §6)
-  const allAgentSessions = sessions.filter((s) => s.agent_id === agentId);
+  const allAgentSessions = getAgentSidebarSessions(sessions, agentId);
   const hiddenDelegationCount = showDelegations
     ? 0
     : allAgentSessions.filter((s) => s.origin === "delegation").length;

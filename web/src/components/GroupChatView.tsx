@@ -26,6 +26,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
+import { exactTurnCostTitle, formatTurnCost } from "../lib/cost";
 import {
   useSessionStore,
   reduceGroupAgentRun,
@@ -402,6 +403,7 @@ export function GroupAgentRunBlock({
               ? "Writing response"
               : "Waiting for CLI activity";
   const toolCount = run.blocks.filter((block) => block.kind === "tool").length;
+  const costLabel = formatTurnCost(run.cost);
   const responseBlock = run.blocks.find((block) => block.kind === "response");
   const responseText =
     finalText ||
@@ -445,6 +447,14 @@ export function GroupAgentRunBlock({
                 : ""}
             </div>
           </div>
+          {costLabel && run.cost != null && (
+            <span
+              className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground"
+              title={exactTurnCostTitle(run.cost)}
+            >
+              Cost {costLabel}
+            </span>
+          )}
           <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
             {formatElapsed(elapsed)}
           </span>
@@ -721,6 +731,13 @@ export function GroupChatView({
     ),
     [activeGroupId, groupInvocations],
   );
+  const stoppableInvocation = useMemo(
+    () =>
+      visibleInvocations.find((item) => item.status === "running") ??
+      visibleInvocations.find((item) => item.status === "held") ??
+      null,
+    [visibleInvocations],
+  );
 
   useEffect(() => {
     if (!activeGroupId || !token) return;
@@ -758,10 +775,16 @@ export function GroupChatView({
 
   // Auto-scroll to bottom on new messages or streaming text.
   useEffect(() => {
-    scrollRef.current?.scrollTo({
-      top: scrollRef.current.scrollHeight,
-      behavior: "smooth",
-    });
+    const container = scrollRef.current;
+    if (!container) return;
+    if (typeof container.scrollTo === "function") {
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior: "smooth",
+      });
+    } else {
+      container.scrollTop = container.scrollHeight;
+    }
   }, [sessionMessages.length, typingNames.length, streamingReplies]);
 
   const handleInputChange = useCallback(
@@ -879,6 +902,7 @@ export function GroupChatView({
             createdAt: updated.created_at,
             sessionId: updated.session_id ?? null,
             defaultAgentId: updated.default_agent_id ?? null,
+            workingDir: updated.working_dir,
           });
         }
       } finally {
@@ -1071,8 +1095,6 @@ export function GroupChatView({
             const currentAgent = agents.find(
               (agent) => agent.id === invocation.current_agent_id,
             );
-            const canCancel =
-              invocation.status === "running" || invocation.status === "held";
             const canResume = ["held", "blocked", "void"].includes(
               invocation.custody_state,
             );
@@ -1102,18 +1124,6 @@ export function GroupChatView({
                     aria-label="Resume this chain"
                   >
                     <IconPlayerPlay size={15} />
-                  </button>
-                )}
-                {canCancel && (
-                  <button
-                    type="button"
-                    className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
-                    onClick={() => void runInvocationAction(invocation, "cancel")}
-                    disabled={invocationAction === invocation.id}
-                    title="Cancel this chain"
-                    aria-label="Cancel this chain"
-                  >
-                    <IconPlayerStop size={15} />
                   </button>
                 )}
               </div>
@@ -1240,6 +1250,22 @@ export function GroupChatView({
             rows={1}
             className="flex-1 resize-none field-sizing-content bg-transparent px-2 py-1.5 text-sm text-foreground placeholder:text-muted-foreground/50 border-0 outline-none focus:outline-none max-h-48"
           />
+          {stoppableInvocation && (
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              className="btn btn-stop rounded-lg h-8 w-8 p-0 shrink-0"
+              onClick={() =>
+                void runInvocationAction(stoppableInvocation, "cancel")
+              }
+              disabled={invocationAction === stoppableInvocation.id}
+              aria-label="Stop group run"
+              title="Stop current group run"
+            >
+              <IconPlayerStop size={14} />
+            </Button>
+          )}
           <Button
             type="button"
             size="sm"

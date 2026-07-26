@@ -17,6 +17,7 @@ import {
   type AttachmentMetadata,
   type Message,
 } from "../stores/sessionStore";
+import { exactTurnCostTitle, formatTurnCost } from "../lib/cost";
 import { BgTaskChip } from "./BgTaskChip";
 import {
   AgentDelegationEventCard,
@@ -215,14 +216,23 @@ export function MessageBubble({
         </div>
       );
 
-    case "result":
+    case "result": {
+      const costLabel = formatTurnCost(message.cost);
       return (
         <div className="msg msg-system flex justify-center py-1">
-          <span className="result-badge text-[10px] font-medium uppercase tracking-wider text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
-            Done{message.cost != null ? ` · $${message.cost.toFixed(4)}` : ""}
+          <span
+            className="result-badge text-[11px] font-medium text-muted-foreground bg-muted px-2.5 py-1 rounded-full"
+            title={
+              message.cost != null
+                ? exactTurnCostTitle(message.cost)
+                : undefined
+            }
+          >
+            Done{costLabel ? ` · Cost ${costLabel}` : ""}
           </span>
         </div>
       );
+    }
 
     // Ephemeral, client-side system note (e.g. the /schedule command's
     // confirmation or a parse-error hint). Centered pill, not attributed to

@@ -8,9 +8,11 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from .group_protocol import GROUP_PRE_SEND_EXIT_CHECK
+from .session_manager import resolve_working_dir
 
 if TYPE_CHECKING:
     from .database import Database
@@ -519,6 +521,7 @@ class GroupManager:
     async def create_group(
         self, name: str, agent_ids: list[str],
         default_agent_id: str | None = None,
+        working_dir: str | None = None,
     ) -> dict[str, Any]:
         if not self.db or not self.session_manager:
             raise RuntimeError("GroupManager not initialized")
@@ -529,6 +532,12 @@ class GroupManager:
                 raise GroupError(f"Agent {aid} not found", status_code=404)
         if default_agent_id is not None and default_agent_id not in agent_ids:
             raise GroupError("Default reply agent must be a group member")
+        requested_working_dir = working_dir.strip() if working_dir else None
+        resolved_working_dir = resolve_working_dir(requested_working_dir)
+        if not Path(resolved_working_dir).is_dir():
+            raise GroupError(
+                f"Working directory does not exist: {resolved_working_dir}"
+            )
 
         sys_agent = await self.db.get_system_agent()
         if sys_agent is None:
@@ -539,11 +548,13 @@ class GroupManager:
         session = await self.session_manager.create_session(
             agent_id=sys_agent["id"],
             name=f"group:{group_id}",
+            working_dir=resolved_working_dir,
             origin="group",
         )
         await self.db.create_group(
             group_id, name, session.id, created_at, agent_ids,
             default_agent_id=default_agent_id,
+            working_dir=resolved_working_dir,
         )
 
         self._runs[group_id] = GroupRunState(
@@ -554,6 +565,7 @@ class GroupManager:
             "name": name,
             "agent_ids": list(agent_ids),
             "default_agent_id": default_agent_id,
+            "working_dir": resolved_working_dir,
             "created_at": created_at,
             "session_id": session.id,
         }
@@ -1574,6 +1586,7 @@ class GroupManager:
         child = await self.session_manager.create_session(
             agent_id=aid,
             name=f"{agent['name']} @ {group['name']}",
+            working_dir=group["working_dir"],
             origin="group_member",
             parent_session_id=run.group_session_id,
             backend=agent.get("backend") or "claude-code",

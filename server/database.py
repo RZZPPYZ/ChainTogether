@@ -384,6 +384,7 @@ CREATE TABLE IF NOT EXISTS groups (
     name TEXT NOT NULL,
     session_id TEXT NOT NULL,               -- backing group session (1:1)
     default_agent_id TEXT,
+    working_dir TEXT NOT NULL,
     created_at TEXT NOT NULL,
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
     FOREIGN KEY (default_agent_id) REFERENCES agents(id) ON DELETE SET NULL
@@ -701,6 +702,17 @@ class Database:
             await self._conn.execute(
                 "ALTER TABLE groups ADD COLUMN default_agent_id TEXT"
             )
+        if not await self._has_column("groups", "working_dir"):
+            await self._conn.execute(
+                "ALTER TABLE groups ADD COLUMN working_dir TEXT NOT NULL "
+                "DEFAULT ''"
+            )
+            await self._conn.execute(
+                "UPDATE groups SET working_dir = COALESCE("
+                "(SELECT working_dir FROM sessions "
+                "WHERE sessions.id = groups.session_id), '.') "
+                "WHERE working_dir = ''"
+            )
 
     # ------------------------------------------------------------------
     # Group chat (groups.md)
@@ -710,15 +722,19 @@ class Database:
         self, group_id: str, name: str, session_id: str,
         created_at: str, agent_ids: list[str],
         default_agent_id: str | None = None,
+        working_dir: str = ".",
     ) -> dict[str, Any]:
         """Insert a group row + its membership. Caller is responsible for
         having already created the backing session (origin='group')."""
         await self._ensure_connected()
         await self._conn.execute(
             "INSERT INTO groups "
-            "(id, name, session_id, default_agent_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (group_id, name, session_id, default_agent_id, created_at),
+            "(id, name, session_id, default_agent_id, working_dir, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                group_id, name, session_id, default_agent_id, working_dir,
+                created_at,
+            ),
         )
         for aid in agent_ids:
             await self._conn.execute(
@@ -732,6 +748,7 @@ class Database:
             "name": name,
             "session_id": session_id,
             "default_agent_id": default_agent_id,
+            "working_dir": working_dir,
             "created_at": created_at,
             "agent_ids": list(agent_ids),
         }
@@ -739,7 +756,8 @@ class Database:
     async def get_group(self, group_id: str) -> dict[str, Any] | None:
         await self._ensure_connected()
         cursor = await self._conn.execute(
-            "SELECT id, name, session_id, default_agent_id, created_at "
+            "SELECT id, name, session_id, default_agent_id, working_dir, "
+            "created_at "
             "FROM groups WHERE id = ?",
             (group_id,),
         )
@@ -752,14 +770,16 @@ class Database:
             "name": row[1],
             "session_id": row[2],
             "default_agent_id": row[3],
-            "created_at": row[4],
+            "working_dir": row[4],
+            "created_at": row[5],
             "agent_ids": members,
         }
 
     async def list_groups(self) -> list[dict[str, Any]]:
         await self._ensure_connected()
         cursor = await self._conn.execute(
-            "SELECT id, name, session_id, default_agent_id, created_at FROM groups "
+            "SELECT id, name, session_id, default_agent_id, working_dir, "
+            "created_at FROM groups "
             "ORDER BY created_at"
         )
         rows = await cursor.fetchall()
@@ -771,7 +791,8 @@ class Database:
                 "name": row[1],
                 "session_id": row[2],
                 "default_agent_id": row[3],
-                "created_at": row[4],
+                "working_dir": row[4],
+                "created_at": row[5],
                 "agent_ids": members,
             })
         return out

@@ -1,13 +1,18 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   GroupAgentRunBlock,
+  GroupChatView,
   GroupMarkdown,
   buildGroupTimeline,
   highlightMentions,
 } from "./GroupChatView";
-import type { Message } from "../stores/sessionStore";
+import {
+  useSessionStore,
+  type GroupInvocation,
+  type Message,
+} from "../stores/sessionStore";
 
 describe("group mention highlighting", () => {
   it("highlights canonical and alias handles without changing message text", () => {
@@ -71,6 +76,11 @@ describe("group execution timeline", () => {
         tool_use_id: "tool-1",
         output: "Tests passed",
       }),
+      activity("result", {
+        timestamp_ms: 1450,
+        duration_ms: 450,
+        cost: 0.01,
+      }),
       activity("text", { timestamp_ms: 1500, content: "All checks passed." }),
       activity("completed", { timestamp_ms: 1600 }),
       {
@@ -85,7 +95,7 @@ describe("group execution timeline", () => {
     expect(timeline.runsByFirstIndex.size).toBe(1);
     expect(item?.run.status).toBe("completed");
     expect(item?.finalText).toBe("All checks passed.");
-    expect(timeline.hiddenIndices).toEqual(new Set([1, 2, 3, 4, 5, 6]));
+    expect(timeline.hiddenIndices).toEqual(new Set([1, 2, 3, 4, 5, 6, 7]));
     expect(item?.run.blocks.find((block) => block.kind === "tool")).toMatchObject({
       toolName: "Bash",
       output: "Tests passed",
@@ -106,6 +116,11 @@ describe("group execution timeline", () => {
         tool_use_id: "tool-1",
         output: "Tests passed",
       }),
+      activity("result", {
+        timestamp_ms: 1450,
+        duration_ms: 450,
+        cost: 0.01,
+      }),
       activity("text", { timestamp_ms: 1500, content: "All checks passed." }),
       activity("completed", { timestamp_ms: 1600 }),
     ]);
@@ -120,9 +135,58 @@ describe("group execution timeline", () => {
     );
 
     expect(screen.getByText("All checks passed.")).toBeTruthy();
+    expect(screen.getByText("Cost ≈1.0¢")).toBeTruthy();
     expect(screen.queryByText("npm test")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Expand execution details" }));
     expect(screen.getByText("npm test")).toBeTruthy();
     expect(screen.getByText("Tests passed")).toBeTruthy();
+  });
+});
+
+describe("group execution controls", () => {
+  beforeEach(() => {
+    const invocation: GroupInvocation = {
+      id: "invocation-1",
+      group_id: "group-1",
+      root_content: "Build it",
+      status: "running",
+      custody_state: "active",
+      current_agent_id: null,
+      depth: 0,
+      held_until: null,
+      hold_reason: null,
+      created_at: "2026-07-26T00:00:00Z",
+      updated_at: "2026-07-26T00:00:00Z",
+      completed_at: null,
+    };
+    useSessionStore.setState({
+      token: "",
+      agents: [],
+      activeGroupId: "group-1",
+      groups: [
+        {
+          id: "group-1",
+          name: "Build Team",
+          agentIds: [],
+          createdAt: "2026-07-26T00:00:00Z",
+          sessionId: "group-session-1",
+          defaultAgentId: null,
+          workingDir: "F:/workspace",
+        },
+      ],
+      messages: { "group-session-1": [] },
+      groupInvocations: { "group-1": [invocation] },
+      groupTypingAgents: {},
+      groupStreamingReplies: {},
+    });
+  });
+
+  it("places the stop control beside the composer send control", () => {
+    render(<GroupChatView onToggleSidebar={() => {}} />);
+
+    const stop = screen.getByRole("button", { name: "Stop group run" });
+    const send = screen.getByRole("button", { name: "Send message" });
+    expect(stop.closest(".chat-composer")).not.toBeNull();
+    expect(send.closest(".chat-composer")).toBe(stop.closest(".chat-composer"));
   });
 });

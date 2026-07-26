@@ -570,12 +570,14 @@ class GroupInfo(BaseModel):
     created_at: str
     session_id: str | None = None  # backing group session (1:1)
     default_agent_id: str | None = None
+    working_dir: str
 
 
 class GroupCreate(BaseModel):
     name: str = Field(min_length=1)
     agent_ids: list[str] = Field(min_length=2)
     default_agent_id: str | None = None
+    working_dir: str | None = Field(default=None, max_length=4096)
 
 
 class GroupUpdate(BaseModel):

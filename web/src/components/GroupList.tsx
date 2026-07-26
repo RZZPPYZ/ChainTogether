@@ -19,7 +19,9 @@ export function GroupList({ onCreateGroup }: { onCreateGroup: () => void }) {
   const setActiveSessionId = useSessionStore((s) => s.setActiveSessionId);
   const setMessages = useSessionStore((s) => s.setMessages);
   const setLastAppliedSeq = useSessionStore((s) => s.setLastAppliedSeq);
-  const [expanded, setExpanded] = useState(false);
+  // Existing groups should be discoverable immediately after app load. Users
+  // may still collapse the section when they need the sidebar space.
+  const [expanded, setExpanded] = useState(true);
 
   // Fetch groups once when we have a token.
   useEffect(() => {
@@ -28,7 +30,7 @@ export function GroupList({ onCreateGroup }: { onCreateGroup: () => void }) {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((r) => (r.ok ? r.json() : []))
-      .then((data: Array<{ id: string; name: string; agent_ids: string[]; created_at: string; session_id?: string | null; default_agent_id?: string | null }>) => {
+      .then((data: Array<{ id: string; name: string; agent_ids: string[]; created_at: string; session_id?: string | null; default_agent_id?: string | null; working_dir: string }>) => {
         setGroups(
           data.map((g) => ({
             id: g.id,
@@ -37,6 +39,7 @@ export function GroupList({ onCreateGroup }: { onCreateGroup: () => void }) {
             createdAt: g.created_at,
             sessionId: g.session_id ?? null,
             defaultAgentId: g.default_agent_id ?? null,
+            workingDir: g.working_dir,
           })),
         );
       })

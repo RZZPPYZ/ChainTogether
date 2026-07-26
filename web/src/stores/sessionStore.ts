@@ -290,6 +290,7 @@ export interface Group {
   createdAt: string;
   sessionId: string | null;
   defaultAgentId?: string | null;
+  workingDir: string;
 }
 
 export interface GroupInvocation {

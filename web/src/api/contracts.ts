@@ -2033,6 +2033,8 @@ export interface components {
             agent_ids: string[];
             /** Default Agent Id */
             default_agent_id?: string | null;
+            /** Working Dir */
+            working_dir?: string | null;
         };
         /** GroupInfo */
         GroupInfo: {
@@ -2048,6 +2050,8 @@ export interface components {
             session_id?: string | null;
             /** Default Agent Id */
             default_agent_id?: string | null;
+            /** Working Dir */
+            working_dir: string;
         };
         /** GroupInvocationInfo */
         GroupInvocationInfo: {
