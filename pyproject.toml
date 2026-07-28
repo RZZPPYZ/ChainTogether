@@ -21,3 +21,11 @@ octopus = "server.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["server*"]
+
+[tool.setuptools.package-data]
+server = [
+    "assets/*.json",
+    "assets/policies/*.json",
+    "assets/prompts/l0/*.md",
+    "assets/prompts/dynamic/*.md",
+]

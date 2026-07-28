@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -9,6 +12,56 @@ from server.harness import run
 
 
 class HarnessProcessGroupTests(unittest.TestCase):
+    def test_windows_codex_prefers_spawnable_npm_native_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            appdata = Path(td) / "AppData" / "Roaming"
+            native = (
+                appdata
+                / "npm"
+                / "node_modules"
+                / "@openai"
+                / "codex"
+                / "node_modules"
+                / "@openai"
+                / "codex-win32-x64"
+                / "vendor"
+                / "x86_64-pc-windows-msvc"
+                / "bin"
+                / "codex.exe"
+            )
+            native.parent.mkdir(parents=True)
+            native.touch()
+
+            with (
+                patch.object(run.os, "name", "nt"),
+                patch.dict(os.environ, {"APPDATA": str(appdata)}),
+                patch.object(
+                    run.shutil,
+                    "which",
+                    return_value=(
+                        r"C:\Program Files\WindowsApps\OpenAI.Codex_1.0"
+                        r"\app\resources\codex.exe"
+                    ),
+                ),
+            ):
+                resolved = run._which_with_fallback("codex")
+
+        self.assertEqual(resolved, str(native))
+
+    def test_windows_codex_rejects_store_desktop_binary(self) -> None:
+        store_binary = (
+            r"C:\Program Files\WindowsApps\OpenAI.Codex_1.0"
+            r"\app\resources\codex.exe"
+        )
+        with (
+            patch.object(run.os, "name", "nt"),
+            patch.dict(os.environ, {"APPDATA": ""}),
+            patch.object(run.shutil, "which", return_value=store_binary),
+        ):
+            resolved = run._which_with_fallback("codex")
+
+        self.assertIsNone(resolved)
+
     def test_prepare_spawn_uses_windows_process_group_flag(self) -> None:
         with patch.object(run.os, "name", "nt"):
             _, kwargs = run.prepare_spawn(

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "version": "2026-07-28.1",
+  "max_mention_targets": 4,
+  "a2a_depth_cap": 15,
+  "pingpong_warn_threshold": 2,
+  "pingpong_block_threshold": 4,
+  "substantive_output_length": 200,
+  "hold_min_seconds": 5,
+  "hold_max_seconds": 3600
+}

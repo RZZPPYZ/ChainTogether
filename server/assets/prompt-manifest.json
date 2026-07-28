@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "templates": {
+    "l0.system": {
+      "path": "prompts/l0/system-prompt-l0.md",
+      "required": [
+        "policy_version",
+        "group_id",
+        "group_name",
+        "roster_version",
+        "agent_id",
+        "agent_name",
+        "agent_backend",
+        "roster_lines",
+        "valid_handles",
+        "max_mention_targets",
+        "a2a_depth_cap",
+        "hold_min_seconds",
+        "hold_max_seconds"
+      ]
+    },
+    "dynamic.turn": {
+      "path": "prompts/dynamic/turn.md",
+      "required": [
+        "runtime_directives",
+        "delta_from_seq",
+        "delta_to_seq",
+        "group_delta_json",
+        "current_message_json"
+      ]
+    },
+    "dynamic.pingpong_warning": {
+      "path": "prompts/dynamic/pingpong-warning.md",
+      "required": ["from_agent", "target_agent", "count"]
+    },
+    "dynamic.routing_correction": {
+      "path": "prompts/dynamic/routing-correction.md",
+      "required": ["invalid_handles"]
+    },
+    "dynamic.hold_resume": {
+      "path": "prompts/dynamic/hold-resume.md",
+      "required": ["reason"]
+    }
+  }
+}

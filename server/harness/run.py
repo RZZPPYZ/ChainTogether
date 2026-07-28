@@ -51,9 +51,15 @@ _HARD_KILL_SIGNAL = getattr(signal, "SIGKILL", 9)
 
 def _fallback_path_dirs() -> list[str]:
     """Per-user install dirs a systemd-style service PATH typically strips:
-    ~/.local/bin, npm-global, Homebrew, and every nvm node version's bin."""
+    npm, ~/.local/bin, npm-global, Homebrew, and every nvm node version's
+    bin."""
     home = os.path.expanduser("~")
-    extras = [
+    extras: list[str] = []
+    if os.name == "nt":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            extras.append(os.path.join(appdata, "npm"))
+    extras += [
         os.path.join(home, ".local/bin"),
         os.path.join(home, ".npm-global/bin"),
         "/usr/local/bin",
@@ -63,18 +69,71 @@ def _fallback_path_dirs() -> list[str]:
     return extras
 
 
-def _which_with_fallback(binary: str) -> str | None:
-    """shutil.which, then retry against PATH + common per-user install dirs.
+def _windows_codex_native_candidates() -> list[str]:
+    """Native Codex executables installed by the official npm package.
 
-    systemd's default PATH excludes ~/.local/bin and node/npm global bins,
-    so a CLI installed for the invoking user is invisible to the service
-    unless we add those dirs ourselves."""
+    The Microsoft Store desktop app also exposes a ``codex.exe`` under its
+    protected WindowsApps package. Shells can broker-launch that file, but a
+    Python service using CreateProcess receives WinError 5. The npm package
+    contains the same CLI as an ordinary, directly spawnable executable.
+    """
+    if os.name != "nt":
+        return []
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        return []
+    package_root = (
+        Path(appdata)
+        / "npm"
+        / "node_modules"
+        / "@openai"
+        / "codex"
+    )
+    if not package_root.is_dir():
+        return []
+    candidates: list[str] = []
+    try:
+        for path in package_root.glob("**/vendor/*/bin/codex.exe"):
+            if path.is_file():
+                candidates.append(str(path))
+    except OSError:
+        return []
+    return sorted(candidates)
+
+
+def _is_unspawnable_windows_codex(binary: str, path: str) -> bool:
+    """Whether ``path`` is the Store desktop binary Python cannot spawn."""
+    if os.name != "nt" or binary.casefold() != "codex":
+        return False
+    normalized = os.path.normcase(os.path.abspath(path)).replace("/", "\\")
+    return (
+        "\\program files\\windowsapps\\openai.codex_" in normalized
+        and "\\app\\resources\\codex" in normalized
+    )
+
+
+def _which_with_fallback(binary: str) -> str | None:
+    """Resolve a CLI, including common per-user install directories.
+
+    On Windows, prefer the official npm package's native Codex executable over
+    the protected Store desktop binary. On every platform, retry with common
+    user-local directories that a service PATH may omit."""
+    if binary.casefold() == "codex":
+        native = _windows_codex_native_candidates()
+        if native:
+            return native[0]
+
     found = shutil.which(binary)
-    if found is not None:
+    if found is not None and not _is_unspawnable_windows_codex(binary, found):
         return found
     extra_path = os.pathsep.join(_fallback_path_dirs())
-    full_path = os.pathsep.join(p for p in (os.environ.get("PATH", ""), extra_path) if p)
-    return shutil.which(binary, path=full_path)
+    full_path = os.pathsep.join(
+        p for p in (extra_path, os.environ.get("PATH", "")) if p
+    )
+    found = shutil.which(binary, path=full_path)
+    if found is not None and _is_unspawnable_windows_codex(binary, found):
+        return None
+    return found
 
 
 def augmented_path(base: str | None = None, extra_dir: str | None = None) -> str:
@@ -199,6 +258,8 @@ class RunConfig:
 
     session_id: str | None = None
     system_prompt: str | None = None   # agent persona
+    # Highest-priority host governance, appended after tools/connectors/memory.
+    governance_prompt: str | None = None
     model: str | None = None
     mcp_servers: list[str] | None = None
     tool_allow: list[str] | None = None
@@ -261,6 +322,7 @@ class HarnessRun:
             memory_dir=self._config.memory_dir,
             inject_memory=self._profile.injects_memory_prompt,
             fork_note=self._config.fork_note,
+            governance_prompt=self._config.governance_prompt,
         )
         return TurnContext(
             prompt=prompt,

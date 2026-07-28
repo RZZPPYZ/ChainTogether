@@ -415,6 +415,7 @@ CREATE TABLE IF NOT EXISTS group_agent_sessions (
     agent_id TEXT NOT NULL,
     session_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
+    last_seen_group_seq INTEGER NOT NULL DEFAULT -1,
     PRIMARY KEY (group_id, agent_id),
     FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
     FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
@@ -532,6 +533,14 @@ class Database:
 
         await self._migrate_agents()
         await self._migrate_schedule_recurrence()
+
+        if not await self._has_column(
+            "group_agent_sessions", "last_seen_group_seq"
+        ):
+            await self._conn.execute(
+                "ALTER TABLE group_agent_sessions ADD COLUMN "
+                "last_seen_group_seq INTEGER NOT NULL DEFAULT -1"
+            )
 
         # agents.backend — default harness for an agent's new sessions. DEFAULT
         # backfills existing agents to claude-code → no behavior change.
@@ -886,6 +895,31 @@ class Database:
         )
         row = await cursor.fetchone()
         return row[0] if row else None
+
+    async def get_group_agent_cursor(
+        self, group_id: str, agent_id: str,
+    ) -> int:
+        """Last group-message seq committed to this member's D-layer turn."""
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT last_seen_group_seq FROM group_agent_sessions "
+            "WHERE group_id = ? AND agent_id = ?",
+            (group_id, agent_id),
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row else -1
+
+    async def update_group_agent_cursor(
+        self, group_id: str, agent_id: str, last_seen_group_seq: int,
+    ) -> None:
+        """Advance a member cursor monotonically after its backend saw a turn."""
+        await self._ensure_connected()
+        await self._conn.execute(
+            "UPDATE group_agent_sessions SET last_seen_group_seq = "
+            "MAX(last_seen_group_seq, ?) WHERE group_id = ? AND agent_id = ?",
+            (last_seen_group_seq, group_id, agent_id),
+        )
+        await self._conn.commit()
 
     async def list_group_agent_sessions(
         self, group_id: str,

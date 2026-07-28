@@ -99,6 +99,7 @@ async def lifespan(app: FastAPI):
     group_manager.bind(session_mgr=session_manager, db=db)
     groups_router.set_group_manager(group_manager)
     app.state.group_manager = group_manager
+    await group_manager.initialize_prompt_assets()
     await group_manager.reconcile_zombies()
 
     # Native deep research (native-deep-research.md). Tracks research jobs as

@@ -156,13 +156,16 @@ def compose_system_prompt(
     memory_dir: str | None = None,
     inject_memory: bool = False,
     fork_note: str | None = None,
+    governance_prompt: str | None = None,
 ) -> str:
     """persona (if any) ahead of the harness's in-app-tools blurb, then the
     connectors blurb (if any), then the memory blurb (when the harness has no
     native memory and an agent memory dir exists), then the fork first-turn
     note (session-rewind.md §5.6.4 — framing the model needs to read the
-    forked world correctly). Re-sent every turn — the CLIs don't persist system
-    prompts across resume."""
+    forked world correctly), and finally the optional governance contract.
+    Governance is last so group identity and routing rules have the strongest
+    prompt recency. Re-sent every turn — the CLIs don't persist system prompts
+    across resume."""
     from ..connectors.base import render_connectors_blurb
 
     out = tools_prompt
@@ -174,4 +177,6 @@ def compose_system_prompt(
         out = f"{out}\n\n{render_memory_blurb(memory_dir)}"
     if fork_note:
         out = f"{out}\n\n{fork_note}"
+    if governance_prompt:
+        out = f"{out}\n\n{governance_prompt}"
     return out

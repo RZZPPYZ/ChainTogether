@@ -45,7 +45,6 @@ from .models import (
     SessionDetail,
     SessionStatus,
 )
-from .group_protocol import GROUP_MEMBER_SYSTEM_PROTOCOL
 from .project_config import project_system_prompts
 
 logger = logging.getLogger(__name__)
@@ -251,6 +250,10 @@ class Session:
     _pending_question_answers: dict[str, str] = field(default_factory=dict, repr=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     _pending_queue: list[QueuedPrompt] = field(default_factory=list, repr=False)
+    # Fresh L0 group identity/roster/routing contract. GroupManager renders it
+    # immediately before each member turn; it is never persisted in the CLI
+    # transcript or treated as group conversation history.
+    _group_l0_prompt: str | None = field(default=None, repr=False)
 
 
 class SessionManager:
@@ -2493,6 +2496,7 @@ class SessionManager:
         mcp_servers: list[str] | None = None
         tool_allow: list[str] | None = None
         tool_deny: list[str] | None = None
+        governance_prompt: str | None = None
         if agent:
             system_prompt = agent.get("system_prompt") or None
             model = agent.get("model") or None
@@ -2527,17 +2531,18 @@ class SessionManager:
                 part for part in [system_prompt, *project_prompts] if part
             )
 
-        # Group member sessions receive the routing contract at the same
-        # system-prompt level as their persona. This is intentionally scoped
-        # by session origin so the agent's ordinary one-to-one sessions keep
-        # their existing behavior. The harness re-sends system prompts on
-        # every CLI invocation, including resumed member sessions.
+        # GroupManager renders the current L0 identity, canonical roster and
+        # routing contract immediately before every group-member invocation.
+        # The harness re-sends it on resumed CLI turns, while ordinary sessions
+        # remain unaffected.
         if session.origin == "group_member":
-            system_prompt = (
-                f"{system_prompt}\n\n{GROUP_MEMBER_SYSTEM_PROTOCOL}"
-                if system_prompt
-                else GROUP_MEMBER_SYSTEM_PROTOCOL
-            )
+            if not session._group_l0_prompt:
+                logger.warning(
+                    "Group member session %s has no rendered L0 prompt",
+                    session.id,
+                )
+            else:
+                governance_prompt = session._group_l0_prompt
 
         # Per-agent native memory (docs/plans/memory.md): derive the agent's
         # canonical memory dir and ensure it exists. None when there's no agent
@@ -2566,6 +2571,7 @@ class SessionManager:
         return RunConfig(
             session_id=session.id,
             system_prompt=system_prompt,
+            governance_prompt=governance_prompt,
             model=model,
             mcp_servers=mcp_servers,
             tool_allow=tool_allow,

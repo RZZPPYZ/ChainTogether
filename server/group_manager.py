@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from .group_protocol import GROUP_PRE_SEND_EXIT_CHECK
+from .prompt_governance import GroupPromptGovernance, get_prompt_registry
 from .session_manager import resolve_working_dir
 
 if TYPE_CHECKING:
@@ -39,8 +39,10 @@ _FENCED_CODE_RE = re.compile(r"```[\s\S]*?```")
 _MARKDOWN_RULE_RE = re.compile(r"^\s*[-*_]{3,}\s*$")
 _MARKDOWN_RULE_MENTION_PREFIX_RE = re.compile(r"^\s*[-*_]{3,}\s+(?=@)")
 
-# Max distinct @-targets per message (safety limit from clowder-ai).
-MAX_MENTION_TARGETS = 4
+_ROUTING_POLICY = get_prompt_registry().routing_policy
+
+# Runtime guards and the L0 model contract derive from one machine policy.
+MAX_MENTION_TARGETS = _ROUTING_POLICY.max_mention_targets
 
 # Max group-context messages sent to a member on its first group turn.
 MAX_GROUP_CONTEXT_MESSAGES = 40
@@ -61,10 +63,10 @@ _GROUP_ACTIVITY_OUTPUT_LIMIT = 12000
 # triggers a visible `[agent-error:Target]` injection so the user sees
 # the bounce.
 # Effective cap used by routing.
-GROUP_A2A_DEPTH_CAP = 15
-PINGPONG_WARN_THRESHOLD = 2
-PINGPONG_BLOCK_THRESHOLD = 4
-PINGPONG_OUTPUT_LEN_THRESHOLD = 200
+GROUP_A2A_DEPTH_CAP = _ROUTING_POLICY.a2a_depth_cap
+PINGPONG_WARN_THRESHOLD = _ROUTING_POLICY.pingpong_warn_threshold
+PINGPONG_BLOCK_THRESHOLD = _ROUTING_POLICY.pingpong_block_threshold
+PINGPONG_OUTPUT_LEN_THRESHOLD = _ROUTING_POLICY.substantive_output_length
 NON_SUBSTANTIVE_TOOL_PATTERNS = (
     "cat_cafe_post_message",
     "cat_cafe_multi_mention",
@@ -75,8 +77,8 @@ NON_SUBSTANTIVE_TOOL_PATTERNS = (
 _GROUP_HOLD_RE = re.compile(
     r"^\s*\[group-hold:(\d{1,4})\]\s*(.*)$", re.IGNORECASE | re.MULTILINE
 )
-GROUP_HOLD_MIN_SECONDS = 5
-GROUP_HOLD_MAX_SECONDS = 3600
+GROUP_HOLD_MIN_SECONDS = _ROUTING_POLICY.hold_min_seconds
+GROUP_HOLD_MAX_SECONDS = _ROUTING_POLICY.hold_max_seconds
 
 CustodyState = Literal[
     "new", "active", "held", "blocked", "void", "dead", "resolved",
@@ -178,6 +180,10 @@ class MentionWorkItem:
     spawner_agent_name: str | None = None
     depth: int = 1
     prompt_override: str | None = None
+    current_message: str = ""
+    current_message_seq: int | None = None
+    current_source: str = "User"
+    dynamic_directives: tuple[str, ...] = ()
 
 
 @dataclass
@@ -219,6 +225,7 @@ class GroupRunState:
     group_session_id: str    # the backing group session (origin='group')
     invocation_id: str = ""
     root_content: str = ""
+    root_message_seq: int | None = None
     worklist: list[WorklistEntry] = field(default_factory=list)
     pending: list[MentionWorkItem] = field(default_factory=list)
     runner_task: asyncio.Task[None] | None = None
@@ -321,7 +328,7 @@ def parse_agent_mentions(text: str) -> list[str]:
     """Extract valid routing handoffs from an agent reply.
 
     User messages may route mid-sentence mentions. Agent replies obey the
-    mandatory group protocol: only line-start handles in the final non-empty
+    L0 routing contract: only line-start handles in the final non-empty
     paragraph are executable handoffs. A line-start handle earlier in the
     reply is diagnostic input for one-shot correction, not a route.
     """
@@ -472,18 +479,16 @@ class GroupManager:
     When a user @-mentions a member agent:
 
     1. Get-or-create the (group × agent) reuse session (lazy on first @).
-    2. Augment the prompt with the recent group transcript as context so the
-       agent sees what came before it — this is the message-boundary answer:
-       the agent reads up-to-and-including the @-mention, and nothing after.
-       (The agent's own prior turns are already in its `--resume` transcript;
-       the augmented prompt only carries the group-wide context.)
-    3. start_message(reuse_session, augmented) — kicks off the real backend
+    2. Render L0 with the current canonical identity and roster, then build a
+       D-layer turn from only the unseen group delta and current trigger.
+       The agent's own prior turns remain in its `--resume` transcript.
+    3. start_message(reuse_session, dynamic_turn) kicks off the real backend
        turn. If the session is already running another turn (busy),
        start_message queues this prompt behind it (SessionManager's built-in
        busy→queue mechanism serializes naturally — no need for a separate
        worklist-based skip path).
-    4. Poll the reuse session until it goes idle, then extract its assistant
-       text.
+    4. Poll the reuse session until it goes idle, extract its assistant text,
+       and advance the member's persistent group cursor after success.
     5. inject_message(group_session, "user", "[agent-reply:Name]\\n\\n<reply>",
        agent_id=agent_id) — the reply lands in the group transcript and the
        frontend renders it as an agent bubble.
@@ -504,12 +509,20 @@ class GroupManager:
     def __init__(self) -> None:
         self.db: Database | None = None
         self.session_manager: SessionManager | None = None
+        self.prompt_governance = GroupPromptGovernance()
         self._runs: dict[str, GroupRunState] = {}
         self._invocations: dict[str, GroupRunState] = {}
 
     def bind(self, session_mgr: "SessionManager", db: "Database") -> None:
         self.db = db
         self.session_manager = session_mgr
+
+    async def initialize_prompt_assets(self) -> None:
+        """Materialize roster snapshots for every persisted group at startup."""
+        if not self.db:
+            return
+        for group in await self.db.list_groups():
+            await self._refresh_group_roster_snapshot(group["id"])
 
     # ------------------------------------------------------------------
     # Group CRUD
@@ -553,6 +566,7 @@ class GroupManager:
             default_agent_id=default_agent_id,
             working_dir=resolved_working_dir,
         )
+        await self._refresh_group_roster_snapshot(group_id)
 
         self._runs[group_id] = GroupRunState(
             group_id=group_id, group_session_id=session.id
@@ -592,6 +606,7 @@ class GroupManager:
         updated = await self.db.update_group(group_id, **fields)
         if updated is not None:
             self._populate_session_id(updated)
+            await self._refresh_group_roster_snapshot(group_id)
         return updated
 
     async def list_groups(self) -> list[dict[str, Any]]:
@@ -654,6 +669,7 @@ class GroupManager:
             if run.group_id == group_id
         ]:
             self._invocations.pop(invocation_id, None)
+        self.prompt_governance.remove_roster_snapshot(group_id)
         return result
 
     async def add_member(self, group_id: str, agent_id: str) -> None:
@@ -667,6 +683,7 @@ class GroupManager:
         await self.db.add_group_member(
             group_id, agent_id, datetime.now(timezone.utc).isoformat()
         )
+        await self._refresh_group_roster_snapshot(group_id)
 
     async def remove_member(self, group_id: str, agent_id: str) -> None:
         """Remove a member from the group and hard-delete its (group × agent)
@@ -696,6 +713,29 @@ class GroupManager:
             await self.db.delete_group_agent_session(group_id, agent_id)
 
         await self.db.remove_group_member(group_id, agent_id)
+        await self._refresh_group_roster_snapshot(group_id)
+
+    async def _refresh_group_roster_snapshot(self, group_id: str) -> None:
+        """Regenerate the derived roster JSON from canonical database rows."""
+        if not self.db:
+            return
+        group = await self.db.get_group(group_id)
+        if group is None:
+            return
+        members: list[dict[str, Any]] = []
+        for agent_id in group["agent_ids"]:
+            agent = await self.db.get_agent(agent_id)
+            if isinstance(agent, dict):
+                members.append(agent)
+        snapshot = self.prompt_governance.build_roster_snapshot(group, members)
+        try:
+            self.prompt_governance.persist_roster_snapshot(snapshot)
+        except OSError:
+            logger.warning(
+                "Group %s: failed to persist derived roster snapshot",
+                group_id,
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # @-mention routing
@@ -728,7 +768,7 @@ class GroupManager:
         # 1. Inject the user message. No agent turn is spawned — the system
         #    agent owns the group session but never responds. (attachment_ids
         #    are ignored for now; group attachments are a follow-up.)
-        await self.session_manager.inject_message(
+        root_message_seq = await self.session_manager.inject_message(
             group_session_id, "user", content
         )
 
@@ -775,9 +815,18 @@ class GroupManager:
             group_session_id=group_session_id,
             invocation_id=invocation_id,
             root_content=content,
+            root_message_seq=root_message_seq,
             created_at=created_at,
             updated_at=created_at,
-            pending=[MentionWorkItem(agent=target) for target in targets],
+            pending=[
+                MentionWorkItem(
+                    agent=target,
+                    current_message=content,
+                    current_message_seq=root_message_seq,
+                    current_source="User",
+                )
+                for target in targets
+            ],
         )
         await self._transition_invocation(run, "invocation_started")
         self._runs[group_id] = run
@@ -816,6 +865,10 @@ class GroupManager:
                     spawner_agent_name=item.spawner_agent_name,
                     depth=item.depth,
                     prompt_override=item.prompt_override,
+                    current_message=item.current_message,
+                    current_message_seq=item.current_message_seq,
+                    current_source=item.current_source,
+                    dynamic_directives=item.dynamic_directives,
                 )
         except asyncio.CancelledError:
             logger.info("Group %s: @-mention worklist cancelled", run.group_id)
@@ -842,11 +895,15 @@ class GroupManager:
         spawner_agent_name: str | None = None,
         depth: int = 1,
         prompt_override: str | None = None,
+        current_message: str = "",
+        current_message_seq: int | None = None,
+        current_source: str = "User",
+        dynamic_directives: tuple[str, ...] = (),
     ) -> None:
         """Run one agent turn in response to an @-mention.
 
-        Gets-or-creates the (group × agent) reuse session, augments the
-        prompt with group context, runs the backend turn via
+        Gets-or-creates the (group × agent) reuse session, renders its L0
+        system contract and D-layer incremental turn, runs the backend via
         ``send_message`` (awaited directly so there is no race with
         fire-and-forget task scheduling), injects the reply back into
         the group transcript, then — if the reply itself @-mentions
@@ -862,8 +919,8 @@ class GroupManager:
 
         ``spawner_agent_name`` carries the name of the agent whose reply
         triggered this A2A hop (the ``directMessageFrom`` field from
-        clowder-ai). When set, the augmented prompt tells the target
-        agent who @-mentioned it so it can respond directly.
+        clowder-ai). When set, the D-layer current-message source tells the
+        target agent who @-mentioned it so it can respond directly.
 
         ``depth`` is the number of agents woken up on this chain so far
         (including the current agent). The initial user @-mention starts at
@@ -896,26 +953,63 @@ class GroupManager:
             run, agent, group
         )
 
-        # Build group context up to the message boundary. First turn gets
-        # recent history; resumed member turns get only the group delta since
-        # this agent's previous committed group reply.
+        # L0 is rendered from the current canonical DB roster. D uses a durable
+        # per-member cursor and separates the triggering message from history.
         group_messages = await self.db.load_messages(run.group_session_id)
         member_agents: list[dict[str, Any]] = []
         for aid in group["agent_ids"]:
             a = await self.db.get_agent(aid)
             if isinstance(a, dict):
                 member_agents.append(a)
-        context = self._format_group_context(
-            group_messages, agent_name, member_agents,
+        member_session = self.session_manager.get_session(reuse_session_id)
+        if member_session is None:
+            raise GroupError(
+                f"Group member session {reuse_session_id} is unavailable",
+                status_code=500,
+            )
+        try:
+            member_session._group_l0_prompt = self.prompt_governance.render_l0(
+                group, agent, member_agents
+            )
+        except OSError:
+            logger.warning(
+                "Group %s: could not persist roster snapshot; rendering L0 "
+                "without the derived disk cache",
+                run.group_id,
+                exc_info=True,
+            )
+            member_session._group_l0_prompt = self.prompt_governance.render_l0(
+                group, agent, member_agents, persist_snapshot=False
+            )
+
+        cursor = await self.db.get_group_agent_cursor(run.group_id, agent_id)
+        trigger_content = current_message or prompt_override or run.root_content
+        trigger_source = (
+            current_source
+            if current_source != "User" or not spawner_agent_name
+            else f"Agent {spawner_agent_name}"
+        )
+        delta, delta_from, delta_to, highwater = self._build_group_delta_payload(
+            group_messages,
+            member_agents,
+            after_seq=cursor,
+            before_seq=current_message_seq,
             current_agent_id=agent_id,
         )
-        group_name = group["name"]
-        augmented = self._build_augmented_prompt(
-            agent_name, group_name, member_agents, context,
-            direct_message_from=spawner_agent_name,
-        )
+        directives = list(dynamic_directives)
         if prompt_override:
-            augmented = f"{augmented}\n\n{prompt_override}"
+            directives.append(prompt_override)
+        augmented = self.prompt_governance.assemble_dynamic_turn(
+            directives=directives,
+            delta_messages=delta,
+            current_message={
+                "seq": current_message_seq,
+                "source": trigger_source,
+                "content": trigger_content,
+            },
+            delta_from_seq=delta_from,
+            delta_to_seq=delta_to,
+        )
 
         agent_backend = agent.get("backend") or "claude-code"
         logger.info(
@@ -945,12 +1039,19 @@ class GroupManager:
                 agent_name=agent_name,
                 invocation_id=run.invocation_id or None,
             )
+            if current_message_seq is not None:
+                highwater = max(highwater, current_message_seq)
+            if highwater > cursor:
+                await self.db.update_group_agent_cursor(
+                    run.group_id, agent_id, highwater
+                )
             reply_text = self._strip_completion_token(turn.text)
             routing_text = reply_text
             routing_turn = AgentTurnResult(
                 text=reply_text,
                 tool_names=turn.tool_names,
             )
+            routing_message_seq: int | None = None
 
             if not self._invocation_accepts_work(run):
                 return
@@ -960,7 +1061,7 @@ class GroupManager:
                     "Group %s: injecting %d-char reply from %s",
                     run.group_id, len(reply_text), agent_name,
                 )
-                await self._inject_agent_reply(
+                routing_message_seq = await self._inject_agent_reply(
                     run.group_session_id, agent_id, agent_name, reply_text
                 )
                 hold = parse_group_hold(reply_text)
@@ -990,7 +1091,7 @@ class GroupManager:
                             remedial_text = self._strip_completion_token(
                                 remedial.text
                             )
-                            await self._inject_agent_reply(
+                            routing_message_seq = await self._inject_agent_reply(
                                 run.group_session_id,
                                 agent_id,
                                 agent_name,
@@ -1032,6 +1133,7 @@ class GroupManager:
                 spawner_agent_ids=spawner_agent_ids,
                 depth=depth,
                 reply_text=routing_text or "",
+                trigger_message_seq=routing_message_seq,
                 turn=routing_turn,
             )
         except asyncio.CancelledError:
@@ -1165,6 +1267,7 @@ class GroupManager:
         spawner_agent_ids: frozenset[str],
         depth: int,
         reply_text: str,
+        trigger_message_seq: int | None = None,
         turn: AgentTurnResult | None = None,
     ) -> None:
         """Parse the spawned agent's reply for @-mentions of other
@@ -1214,6 +1317,7 @@ class GroupManager:
                 )
                 continue
             target_id = target["id"]
+            target_directives: list[str] = []
             if target_id == spawner_agent_id:
                 logger.info(
                     "Group %s: @%s self-mention in own reply; skipping",
@@ -1309,12 +1413,24 @@ class GroupManager:
                     "if you are adding new substance; otherwise summarize, "
                     "choose a different target, or stop passing the task back.",
                 )
+                target_directives.append(
+                    self.prompt_governance.render_dynamic(
+                        "pingpong_warning",
+                        from_agent=spawner_agent_name,
+                        target_agent=target["name"],
+                        count=pair_count,
+                    )
+                )
 
             item = MentionWorkItem(
                 agent=target,
                 spawner_agent_ids=chain_agent_ids,
                 spawner_agent_name=spawner_agent_name,
                 depth=depth + 1,
+                current_message=reply_text,
+                current_message_seq=trigger_message_seq,
+                current_source=f"Agent {spawner_agent_name}",
+                dynamic_directives=tuple(target_directives),
             )
             has_viable_target = True
             if count_pingpong:
@@ -1333,6 +1449,10 @@ class GroupManager:
                 spawner_agent_name=item.spawner_agent_name,
                 depth=item.depth,
                 prompt_override=item.prompt_override,
+                current_message=item.current_message,
+                current_message_seq=item.current_message_seq,
+                current_source=item.current_source,
+                dynamic_directives=item.dynamic_directives,
             )
         if (
             run.invocation_id
@@ -1475,12 +1595,8 @@ class GroupManager:
             "Agent handoffs must put each @Agent at the start of its own line. "
             "A one-time automatic routing correction is being requested.",
         )
-        prompt = (
-            "[Routing guard] Your previous reply attempted an inline handoff "
-            f"to {handles}, which does not route in group chat.\n"
-            "Reply with only the corrected handoff line or lines. Put each "
-            "@Agent at the start of its own line. Do not repeat your analysis "
-            "or any completed work."
+        prompt = self.prompt_governance.render_dynamic(
+            "routing_correction", invalid_handles=handles
         )
         try:
             remedial = await self._collect_agent_reply(
@@ -1605,85 +1721,80 @@ class GroupManager:
     # Prompt assembly
     # ------------------------------------------------------------------
 
-    def _build_augmented_prompt(
+    def _build_group_delta_payload(
         self,
-        agent_name: str,
-        group_name: str,
+        messages: list[dict[str, Any]],
         member_agents: list[dict[str, Any]],
-        context: str,
         *,
-        direct_message_from: str | None = None,
-    ) -> str:
-        """Build the augmented prompt sent to the mentioned agent.
+        after_seq: int,
+        before_seq: int | None,
+        current_agent_id: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int, int, int]:
+        """Build structured D-layer history strictly between cursor and trigger."""
+        names = {str(agent["id"]): str(agent["name"]) for agent in member_agents}
+        observed_seqs: list[int] = []
+        payload: list[dict[str, Any]] = []
+        for message in messages:
+            seq = message.get("seq")
+            if not isinstance(seq, int) or seq <= after_seq:
+                continue
+            if before_seq is not None and seq >= before_seq:
+                continue
+            observed_seqs.append(seq)
+            if (
+                message.get("type") != "text"
+                or message.get("role") not in ("user", "assistant")
+            ):
+                continue
+            content = str(message.get("content") or "")
+            if content.startswith((
+                "[agent-routing-warning:",
+                "[group-invocation:",
+            )):
+                continue
+            reply = self._parse_reply_prefix(content)
+            error = self._parse_error_prefix(content)
+            if (
+                reply is not None
+                and current_agent_id is not None
+                and str(message.get("agent_id") or "") == current_agent_id
+            ):
+                continue
+            if reply is not None:
+                source, body = reply
+                kind = "agent_reply"
+            elif error is not None:
+                source, body = error
+                kind = "agent_error"
+            elif message.get("agent_id"):
+                source = names.get(
+                    str(message["agent_id"]), str(message["agent_id"])
+                )
+                body = content
+                kind = "agent_message"
+            elif message.get("role") == "user":
+                source = "User"
+                body = content
+                kind = "user_message"
+            else:
+                source = "Assistant"
+                body = content
+                kind = "assistant_message"
+            payload.append({
+                "seq": seq,
+                "source": source,
+                "kind": kind,
+                "content": body,
+            })
 
-        Includes identity injection, a teammate roster, the relevant group
-        transcript window as context, and clear instructions. This follows
-        clowder-ai patterns:
-        mechanical routing + identity context so the agent knows who it is
-        and who its teammates are.
-
-        The agent's own prior turns are carried by its `--resume` JSONL
-        transcript (since the (group × agent) session is reused). The
-        augmented prompt's role is reduced to *group-wide* context: who the
-        other members are and what's happening in the group right now.
-
-        ``direct_message_from`` is the name of the agent whose reply
-        @-mentioned this target (the ``directMessageFrom`` field from
-        clowder-ai). When set, the prompt includes "You were @-mentioned
-        by @{name}" so the agent knows who specifically called on it.
-        """
-        roster = self._format_roster(member_agents)
-        exact_handles = ", ".join(
-            f"@{handle}" for handle in member_canonical_handles(member_agents)
-        )
-        identity_handles = f"@{agent_name}"
-        exit_check = GROUP_PRE_SEND_EXIT_CHECK.format(
-            valid_handles=exact_handles,
-            self_handles=identity_handles,
-        )
-        origin_line = (
-            f"You were @-mentioned by @{direct_message_from} — respond "
-            f"to their message. You may @mention another listed agent by "
-            f"name to include them."
-            if direct_message_from
-            else "You were @-mentioned — respond to the message that "
-            "mentions you. You may @mention another listed agent by name "
-            "to include them."
-        )
-        return (
-            f"You are {identity_handles}, responding in the group chat "
-            f"\"{group_name}\".\n\n"
-            f"Group members: {roster}\n\n"
-            f"Valid routing handles for this turn: {exact_handles}\n\n"
-            f"Use canonical Agent names for identity, conversation, and A2A "
-            f"handoffs. Aliases are user-only input shortcuts and are not "
-            f"Agent names. Ignore any former aliases remembered from earlier "
-            f"resumed turns; the canonical roster above is authoritative.\n\n"
-            f"Below is the relevant group transcript window. {origin_line}\n\n"
-            f"<group_transcript>\n{context}\n</group_transcript>\n\n"
-            f"Respond now under the mandatory group routing protocol already "
-            f"present in your system instructions. If no teammate meets the "
-            f"pre-send exit-check conditions, end naturally with no @handle "
-            f"and no completion token. If a teammate must be routed, use a "
-            f"final paragraph whose lines begin with exact handles from the "
-            f"list above and explain the action, awareness, or work impact. "
-            f"If progress must pause, use "
-            f"[group-hold:SECONDS] reason. Do not @User, do not @ yourself, "
-            f"and use teammate names without @ in explanatory prose. HOLD "
-            f"seconds must be between {GROUP_HOLD_MIN_SECONDS} and "
-            f"{GROUP_HOLD_MAX_SECONDS}.\n\n"
-            f"{exit_check}"
-        )
-
-    def _format_roster(
-        self, member_agents: list[dict[str, Any]],
-    ) -> str:
-        """Format the teammate roster for the augmented prompt."""
-        parts: list[str] = []
-        for a in member_agents:
-            backend_label = "Codex" if a.get("backend") == "codex" else "Claude"
-            parts.append(f"@{a['name']} ({backend_label})")
-        return ", ".join(parts)
+        if len(payload) > MAX_GROUP_CONTEXT_MESSAGES:
+            omitted = len(payload) - MAX_GROUP_CONTEXT_MESSAGES
+            payload = [
+                {"kind": "history_truncated", "omitted_messages": omitted},
+                *payload[-MAX_GROUP_CONTEXT_MESSAGES:],
+            ]
+        highwater = max(observed_seqs, default=after_seq)
+        return payload, after_seq + 1, highwater, highwater
 
     # ------------------------------------------------------------------
     # Injection helpers
@@ -1692,12 +1803,12 @@ class GroupManager:
     async def _inject_agent_reply(
         self, group_session_id: str, agent_id: str,
         agent_name: str, text: str,
-    ) -> None:
+    ) -> int | None:
         if not self.session_manager:
-            return
+            return None
         prompt = f"[agent-reply:{agent_name}]\n\n{text}"
         try:
-            await self.session_manager.inject_message(
+            return await self.session_manager.inject_message(
                 group_session_id, "user", prompt, agent_id=agent_id
             )
         except Exception:
@@ -1705,6 +1816,7 @@ class GroupManager:
                 "Failed to inject %s reply into group %s",
                 agent_name, group_session_id,
             )
+            return None
 
     async def _inject_agent_error(
         self, group_session_id: str, agent_name: str, error_msg: str,
@@ -1961,9 +2073,12 @@ class GroupManager:
         run.pending.insert(0, MentionWorkItem(
             agent=agent,
             depth=max(1, run.depth),
-            prompt_override=(
-                "[Group invocation resumed by the user] Continue the held "
-                f"work now. User note: {reason or 'No additional note.'}"
+            current_message=reason or "Resume the held group invocation.",
+            current_source="User",
+            dynamic_directives=(
+                self.prompt_governance.render_dynamic(
+                    "hold_resume", reason=reason or "No additional note."
+                ),
             ),
         ))
         self._runs[group_id] = run
@@ -2136,66 +2251,6 @@ class GroupManager:
             for run in self._group_invocation_runs(group_id)
             for entry in run.worklist
         )
-
-    def _format_group_context(
-        self, messages: list[dict[str, Any]], current_agent_name: str,
-        member_agents: list[dict[str, Any]] | None = None,
-        *,
-        current_agent_id: str | None = None,
-    ) -> str:
-        text_msgs = [
-            m for m in messages
-            if m.get("type") == "text" and m.get("role") in ("user", "assistant")
-        ]
-        last_own_reply_idx: int | None = None
-        if current_agent_id:
-            for idx in range(len(text_msgs) - 1, -1, -1):
-                msg = text_msgs[idx]
-                if (
-                    msg.get("agent_id") == current_agent_id
-                    and msg.get("role") == "user"
-                    and self._parse_reply_prefix(msg.get("content", "") or "")
-                    is not None
-                ):
-                    last_own_reply_idx = idx
-                    break
-        if last_own_reply_idx is None:
-            recent = text_msgs[-MAX_GROUP_CONTEXT_MESSAGES:]
-        else:
-            recent = text_msgs[last_own_reply_idx + 1:]
-        # Build agent_id -> name lookup for attribution.
-        agent_names: dict[str, str] = {}
-        if member_agents:
-            for a in member_agents:
-                agent_names[a["id"]] = a["name"]
-        lines: list[str] = []
-        for m in recent:
-            role = m.get("role", "unknown")
-            content = m.get("content", "") or ""
-            agent_id = m.get("agent_id")
-            if role == "user":
-                reply = self._parse_reply_prefix(content)
-                err = self._parse_error_prefix(content)
-                if reply is not None:
-                    rname, rtext = reply
-                    lines.append(f"[Agent {rname}]: {rtext}")
-                elif err is not None:
-                    ename, etext = err
-                    lines.append(f"[Agent {ename}] (error): {etext}")
-                else:
-                    lines.append(f"[User]: {content}")
-            elif agent_id and agent_id in agent_names:
-                lines.append(f"[Agent {agent_names[agent_id]}]: {content}")
-            elif agent_id:
-                lines.append(f"[Agent {agent_id}]: {content}")
-            else:
-                lines.append(f"[Assistant]: {content}")
-        if not lines:
-            return (
-                f"No new group messages since @{current_agent_name}'s previous "
-                "turn. Continue from your resumed private context."
-            )
-        return "\n".join(lines)
 
     @staticmethod
     def _strip_completion_token(text: str) -> str:

@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # Globally installed persona packages. Each imported GitHub repository is
     # pinned to a commit and unpacked under `<personas_dir>/<persona_id>/`.
     personas_dir: str = "~/.octopus/personas"
+    # Generated, auditable group roster snapshots used by prompt governance.
+    # These are derived runtime state; the database remains authoritative.
+    group_prompt_state_dir: str = "~/.chaintogether/groups"
 
     # Dev mode (enables uvicorn reload)
     debug: bool = False

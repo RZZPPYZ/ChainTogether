@@ -87,6 +87,8 @@ their Sessions, Schedules, and bridge bindings. A protected **Default Agent**
 | `crypto.py` | Fernet encryption (keyed off `OCTOPUS_AUTH_TOKEN`) for secrets at rest. |
 | `models.py` | Pydantic request/response models + enums (`SessionStatus`, `MessageRole`, agent/schedule/connector/credential DTOs). |
 | `session_manager.py` | Core turn engine. Owns in-memory `Session` objects, drives each turn through the **Harness**, persists + broadcasts events to WebSocket clients and bridges, runs tool-result forwarding, interactive questions, mid-turn interrupt, the per-session message queue, premature-exit auto-respawn, and large-prompt spill. |
+| `group_manager.py` | Group CRUD, default responder selection, user/A2A `@` routing, group-member reuse sessions, routing guards, and D-layer cursor advancement. |
+| `prompt_governance.py` + `assets/` | Compiles versioned prompt templates and machine routing policy once, renders per-turn L0/D prompts, and derives per-group roster snapshots from canonical database rows. |
 | `harness/` | The single boundary for all model/runtime interaction (see below). |
 | `agent_manager.py` | Agent CRUD (the durable assistant definitions). |
 | `agent_memory.py` | Per-agent native memory provisioning (`<agents_dir>/<id>/memory/`). |
@@ -105,6 +107,36 @@ their Sessions, Schedules, and bridge bindings. A protected **Default Agent**
 | `fork_helpers.py` | Pure helpers for `/rewind`: git-anchor capture at turn-start, side-effect classification over parent rows, safe-revert preflight + git-stash execution. |
 | `research/` | Native deep research orchestration (see below). |
 | `cli.py` | `octopus serve` (`--tunnel`), `octopus handoff`, `octopus pull`. |
+
+### Group prompt governance (L0/D)
+
+Group-member sessions resume their own backend transcript, so the controller
+does not replay the full group transcript on every turn. Prompt governance is
+split into two layers with different lifetimes:
+
+- **L0 (system layer):** `server/assets/prompts/l0/system-prompt-l0.md` is
+  compiled at process startup and rendered for each member turn with canonical
+  agent identity, group identity, roster version, teammates, and routing
+  limits. `harness/assembly.py` appends the rendered contract last in the
+  system prompt, after persona, tools, connectors, memory, and fork notes.
+- **D (dynamic user layer):** `server/assets/prompts/dynamic/turn.md` wraps
+  runtime directives, a structured group-message delta, and the current
+  triggering message as separate JSON blocks. Ping-pong warnings, routing
+  correction, and HOLD resumption are selected dynamic templates rather than
+  permanent system text.
+- **Incremental cursor:** `group_agent_sessions.last_seen_group_seq` stores the
+  highest group sequence successfully shown to each member. The cursor advances
+  monotonically only after a successful backend turn. The current trigger is
+  excluded from the delta, preventing repeated recursive prompt growth.
+- **Derived roster:** `~/.chaintogether/groups/<group-id>/group-members.json`
+  is regenerated from the database at startup and on group membership/config
+  changes. It carries canonical names and backends but no aliases. It is
+  observable runtime state, not user-editable configuration or a source of
+  truth.
+
+The template manifest and machine thresholds live in `server/assets/` and ship
+as Python package data. Project-local prompt fragments remain optional
+extensions; they do not replace the core identity and routing contract.
 
 ### Harness layer (`server/harness/`)
 
@@ -433,6 +465,7 @@ provisioned on agent create, kept on archive, removed on hard delete.
 | `host` / `port` | `0.0.0.0` / `8000` | Bind address. |
 | `default_working_dir` | `.` | Working dir for new sessions. |
 | `db_path` | `octopus.db` | SQLite file. |
+| `group_prompt_state_dir` | `~/.chaintogether/groups` | Derived per-group roster snapshots used to audit L0 rendering. |
 | `attachments_dir` / `large_prompts_dir` / `agents_dir` / `codex_home_dir` | under `~/.octopus/` | Upload cache · large-prompt spill · agent memory roots · per-credential Codex auth. |
 | `enable_tunnel` | `false` | Start a Cloudflare Tunnel. |
 | `telegram_bot_token` / `telegram_allowed_chat_ids` / `telegram_api_base_url` | — | Telegram bridge (enabled when token set). |

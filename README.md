@@ -23,8 +23,12 @@ Current focus areas:
   `@mention`.
 - Per-agent resumed sessions, so agents can keep their own private working
   context instead of repeatedly receiving the full group transcript.
-- Project-level rules and system prompt fragments loaded from local config,
-  such as `.chaintogether/agents.toml` and `.chaintogether/rules.md`.
+- Two-layer group prompt governance: a versioned L0 system contract for
+  identity/routing, plus a D-layer turn envelope containing only new group
+  messages and the current trigger.
+- Optional project-specific prompt additions loaded from
+  `.chaintogether/agents.toml`; core routing rules live in packaged assets and
+  are not duplicated in project files.
 - A shared persona library imported from complete GitHub skill repositories,
   with several personas assignable to an agent and at most one active at once.
 - Live group execution blocks showing agent phase, elapsed time, tool calls,
@@ -56,7 +60,9 @@ runtime for multi-agent work:
 
 - Agent CLI backend detection and spawning through `server/harness/` for Claude Code and Codex CLI.
 - Agent definitions, per-agent memory roots, credentials, and backend selection.
-- Group chat/session routing through `server/group_manager.py`, `server/group_protocol.py`, and `server/routers/groups.py`.
+- Group chat/session routing through `server/group_manager.py`,
+  `server/prompt_governance.py`, packaged `server/assets/` policy/templates,
+  and `server/routers/groups.py`.
 - Built-in MCP servers for background tasks, user questions, agent-to-agent delegation, connectors, and research under `server/mcp_servers/`.
 - Agent delegation lifecycle through `server/delegations.py` and `server/routers/delegations.py`.
 - Slash-command workflows implemented in the session/group/bridge paths, including `/schedule`, `/research`, `/archive`, `/rewind`, bridge commands, and related frontend command menu source.
@@ -65,6 +71,26 @@ runtime for multi-agent work:
 The frontend source is included so the extracted runtime can still serve and
 evolve a UI. Dependency folders, local databases, virtual environments, and
 build artifacts should remain untracked.
+
+## Group Prompt Governance
+
+Group turns use two deliberately separate prompt layers:
+
+- **L0** is a packaged, versioned system-prompt template. On every member turn
+  ChainTogether renders the agent's canonical identity, current group roster,
+  and the shared `@`/handoff/HOLD contract, then appends it last in the system
+  prompt so it takes precedence over persona and project additions.
+- **D** is a user-message envelope. It contains controller directives, only
+  the group messages newer than that member's persistent cursor, and the
+  current triggering message in its own JSON block. The agent's resumed CLI
+  session remains responsible for its private earlier context.
+
+Static templates and machine-readable thresholds live under
+`server/assets/`. Derived roster snapshots are regenerated from the database
+at startup and whenever group membership changes; by default they are written
+to `~/.chaintogether/groups/<group-id>/group-members.json`. The snapshot is
+diagnostic runtime state, not a second source of truth, and intentionally omits
+user-only aliases.
 
 ## Backend Start
 
@@ -109,6 +135,13 @@ Put the desired agent CLIs on `PATH` before starting the server:
 
 - `claude` for Claude Code style sessions.
 - `codex` for Codex sessions.
+
+On Windows, install the standalone Codex CLI (for example with
+`npm install --global @openai/codex`). The executable bundled inside the
+Microsoft Store Codex desktop app is under a protected `WindowsApps` package:
+PowerShell can broker-launch it, but a Python service cannot start it with
+`CreateProcess`. ChainTogether automatically prefers the native executable
+inside the official npm package and ignores the inaccessible desktop binary.
 
 On the original machine, the JS toolchain and `codex` may live under `~/.nvm/versions/node/*/bin`; prepend that directory to `PATH` when needed.
 
