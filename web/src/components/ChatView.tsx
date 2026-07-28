@@ -28,6 +28,8 @@ import {
 } from "./SlashCommandMenu";
 import { Button } from "./ui/button";
 import { isSessionBusy } from "../lib/deferredFork";
+import { MessageNavigator } from "./MessageNavigator";
+import { buildUserMessageMarkers } from "../lib/messageNavigation";
 
 const EMPTY_MESSAGES: Message[] = [];
 
@@ -155,6 +157,24 @@ export function ChatView({
     forkAttempts.current.delete(sid);
   };
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const [visibleRange, setVisibleRange] = useState({
+    startIndex: 0,
+    endIndex: 0,
+  });
+  const userMessageMarkers = useMemo(
+    () => buildUserMessageMarkers(messages),
+    [messages],
+  );
+  const activeUserMessageIndex = useMemo(() => {
+    if (userMessageMarkers.length === 0) return null;
+    const viewportCenter = (visibleRange.startIndex + visibleRange.endIndex) / 2;
+    return userMessageMarkers.reduce((closest, marker) =>
+      Math.abs(marker.index - viewportCenter) <
+      Math.abs(closest.index - viewportCenter)
+        ? marker
+        : closest,
+    ).index;
+  }, [userMessageMarkers, visibleRange]);
 
   // Scroll to the bottom when switching into a session whose history has
   // already loaded. `initialTopMostItemIndex` is captured at mount time, so
@@ -1325,16 +1345,31 @@ export function ChatView({
         </div>
       )}
 
-      <Virtuoso
-        ref={virtuosoRef}
-        className="chat-messages flex-1 min-h-0"
-        data={messages}
-        itemContent={renderMessage}
-        initialTopMostItemIndex={messages.length ? messages.length - 1 : 0}
-        followOutput="smooth"
-        increaseViewportBy={{ top: 400, bottom: 400 }}
-        components={{ Footer: footer }}
-      />
+      <div className="message-pane relative flex-1 min-h-0">
+        <Virtuoso
+          ref={virtuosoRef}
+          className="chat-messages h-full min-h-0"
+          data={messages}
+          itemContent={renderMessage}
+          initialTopMostItemIndex={messages.length ? messages.length - 1 : 0}
+          followOutput="smooth"
+          increaseViewportBy={{ top: 400, bottom: 400 }}
+          components={{ Footer: footer }}
+          rangeChanged={(range) => setVisibleRange(range)}
+        />
+        <MessageNavigator
+          markers={userMessageMarkers}
+          totalItems={messages.length}
+          activeIndex={activeUserMessageIndex}
+          onNavigate={(index) =>
+            virtuosoRef.current?.scrollToIndex({
+              index,
+              behavior: "smooth",
+              align: "center",
+            })
+          }
+        />
+      </div>
 
       {isWaitingForResponse && (
         <div className="waiting-hint shrink-0 px-4 py-1.5 text-center text-xs text-muted-foreground border-t border-border bg-muted/30">

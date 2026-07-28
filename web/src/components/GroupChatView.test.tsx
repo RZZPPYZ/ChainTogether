@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   GroupAgentRunBlock,
@@ -188,5 +188,64 @@ describe("group execution controls", () => {
     const send = screen.getByRole("button", { name: "Send message" });
     expect(stop.closest(".chat-composer")).not.toBeNull();
     expect(send.closest(".chat-composer")).toBe(stop.closest(".chat-composer"));
+  });
+});
+
+describe("group message navigation", () => {
+  beforeEach(() => {
+    useSessionStore.setState({
+      token: "",
+      agents: [],
+      activeGroupId: "group-1",
+      groups: [
+        {
+          id: "group-1",
+          name: "Build Team",
+          agentIds: [],
+          createdAt: "2026-07-26T00:00:00Z",
+          sessionId: "group-session-1",
+          defaultAgentId: null,
+          workingDir: "F:/workspace",
+        },
+      ],
+      messages: {
+        "group-session-1": [
+          { role: "user", type: "text", content: "First request" },
+          {
+            role: "user",
+            type: "text",
+            content: "[agent-reply:Builder]\n\nFirst response",
+          },
+          { role: "user", type: "text", content: "Follow-up request" },
+        ],
+      },
+      groupInvocations: { "group-1": [] },
+      groupTypingAgents: {},
+      groupStreamingReplies: {},
+    });
+  });
+
+  it("marks only human messages and scrolls to the selected turn", () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    render(<GroupChatView onToggleSidebar={() => {}} />);
+
+    const markers = screen.getAllByRole("button", {
+      name: /Jump to your message/,
+    });
+    expect(markers).toHaveLength(2);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Jump to your message 2: Follow-up request",
+      }),
+    );
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "center",
+    });
   });
 });

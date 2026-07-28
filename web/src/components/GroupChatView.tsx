@@ -36,6 +36,8 @@ import {
   type Message,
 } from "../stores/sessionStore";
 import { Button } from "./ui/button";
+import { MessageNavigator } from "./MessageNavigator";
+import { buildUserMessageMarkers } from "../lib/messageNavigation";
 
 const API = window.location.origin;
 
@@ -718,8 +720,60 @@ export function GroupChatView({
   const [showMentions, setShowMentions] = useState(false);
   const [invocationAction, setInvocationAction] = useState<string | null>(null);
   const [defaultSaving, setDefaultSaving] = useState(false);
+  const [activeUserMessageIndex, setActiveUserMessageIndex] = useState<
+    number | null
+  >(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const activeMessageFrameRef = useRef<number | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const userMessageMarkers = useMemo(
+    () => buildUserMessageMarkers(sessionMessages),
+    [sessionMessages],
+  );
+
+  const updateActiveUserMessage = useCallback(() => {
+    const container = scrollRef.current;
+    if (!container || userMessageMarkers.length === 0) {
+      setActiveUserMessageIndex(null);
+      return;
+    }
+
+    const containerRect = container.getBoundingClientRect();
+    const viewportCenter = containerRect.top + containerRect.height / 2;
+    let closestIndex: number | null = null;
+    let closestDistance = Number.POSITIVE_INFINITY;
+    for (const marker of userMessageMarkers) {
+      const element = container.querySelector<HTMLElement>(
+        `[data-message-index="${marker.index}"]`,
+      );
+      if (!element) continue;
+      const rect = element.getBoundingClientRect();
+      const distance = Math.abs(rect.top + rect.height / 2 - viewportCenter);
+      if (distance < closestDistance) {
+        closestDistance = distance;
+        closestIndex = marker.index;
+      }
+    }
+    setActiveUserMessageIndex((current) =>
+      current === closestIndex ? current : closestIndex,
+    );
+  }, [userMessageMarkers]);
+
+  const scheduleActiveUserMessageUpdate = useCallback(() => {
+    if (activeMessageFrameRef.current !== null) return;
+    activeMessageFrameRef.current = requestAnimationFrame(() => {
+      activeMessageFrameRef.current = null;
+      updateActiveUserMessage();
+    });
+  }, [updateActiveUserMessage]);
+
+  const navigateToUserMessage = useCallback((index: number) => {
+    const target = scrollRef.current?.querySelector<HTMLElement>(
+      `[data-message-index="${index}"]`,
+    );
+    target?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setActiveUserMessageIndex(index);
+  }, []);
 
   const visibleInvocations = useMemo(
     () => (activeGroupId ? groupInvocations[activeGroupId] ?? [] : []).filter(
@@ -786,6 +840,16 @@ export function GroupChatView({
       container.scrollTop = container.scrollHeight;
     }
   }, [sessionMessages.length, typingNames.length, streamingReplies]);
+
+  useEffect(() => {
+    scheduleActiveUserMessageUpdate();
+    return () => {
+      if (activeMessageFrameRef.current !== null) {
+        cancelAnimationFrame(activeMessageFrameRef.current);
+        activeMessageFrameRef.current = null;
+      }
+    };
+  }, [scheduleActiveUserMessageUpdate]);
 
   const handleInputChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -1133,10 +1197,12 @@ export function GroupChatView({
       )}
 
       {/* Messages */}
-      <div
-        ref={scrollRef}
-        className="group-messages flex-1 min-h-0 overflow-y-auto px-4 py-3"
-      >
+      <div className="message-pane relative flex-1 min-h-0">
+        <div
+          ref={scrollRef}
+          className="group-messages h-full min-h-0 overflow-y-auto px-4 py-3"
+          onScroll={scheduleActiveUserMessageUpdate}
+        >
         {sessionMessages.length === 0 && (
           <div className="mx-4 mt-3 shrink-0 rounded-lg border border-dashed border-border bg-accent/40 px-4 py-3">
             <p className="text-sm text-muted-foreground leading-relaxed">
@@ -1147,7 +1213,18 @@ export function GroupChatView({
             </p>
           </div>
         )}
-        {sessionMessages.map((msg, i) => renderMessage(msg, i))}
+        {sessionMessages.map((msg, i) => {
+          const rendered = renderMessage(msg, i);
+          return rendered ? (
+            <div
+              key={`group-message-${msg.seq ?? i}`}
+              className="group-message-anchor"
+              data-message-index={i}
+            >
+              {rendered}
+            </div>
+          ) : null;
+        })}
 
         {/* Streaming agent replies — live bubbles that grow as the
          * backend streams chunks. Cleared when the final
@@ -1196,6 +1273,13 @@ export function GroupChatView({
             <span className="animate-pulse">is typing…</span>
           </div>
         )}
+        </div>
+        <MessageNavigator
+          markers={userMessageMarkers}
+          totalItems={sessionMessages.length}
+          activeIndex={activeUserMessageIndex}
+          onNavigate={navigateToUserMessage}
+        />
       </div>
 
       {/* Composer with @-mention autocomplete */}
