@@ -35,6 +35,8 @@ Current focus areas:
   bounded inputs/results, and streamed response text while a turn is running.
 - Better guardrails around agent-to-agent routing, completion tokens, holds,
   and noisy model output.
+- A group-first feature lifecycle that carries one canonical Feature Doc across
+  discovery, implementation, independent review, merge, and vision acceptance.
 
 ## Personas
 
@@ -91,6 +93,25 @@ at startup and whenever group membership changes; by default they are written
 to `~/.chaintogether/groups/<group-id>/group-members.json`. The snapshot is
 diagnostic runtime state, not a second source of truth, and intentionally omits
 user-only aliases.
+
+## Feature Lifecycle and Shared Skills
+
+Long-running work is tracked as a `FeatureRun`, separate from the custody state
+of any one group message. Link a group send to a feature and every routed agent
+receives the same feature ID, stage, role, gate, canonical doc path, and required
+skill. See [the lifecycle guide](docs/feature-lifecycle.md) for the full
+discovery-to-delivery process and review handoff contract.
+
+Project skills have one canonical source under `.chaintogether/skills/` and a
+machine-readable catalog at `.chaintogether/skills.yaml`. Generated
+`.claude/skills/` and `.codex/skills/` views keep Claude Code and Codex aligned:
+
+```powershell
+python scripts/check-skills.py
+python scripts/sync-skills.py
+python scripts/sync-skills.py --check
+python scripts/check-features.py --write-index
+```
 
 ## Backend Start
 

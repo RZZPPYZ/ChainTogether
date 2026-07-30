@@ -1,0 +1,4 @@
+interface:
+  display_name: "Worktree"
+  short_description: "Prepare a safe isolated worktree for feature development."
+  default_prompt: "Use $worktree to create an isolated development worktree for this feature."

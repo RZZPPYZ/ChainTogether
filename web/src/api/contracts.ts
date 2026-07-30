@@ -1417,6 +1417,92 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/groups/{group_id}/features": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Group Features */
+        get: operations["list_group_features_api_groups__group_id__features_get"];
+        put?: never;
+        /** Create Feature */
+        post: operations["create_feature_api_groups__group_id__features_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/features/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Feature */
+        get: operations["get_feature_api_features__run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/features/{run_id}/roles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Feature Roles */
+        patch: operations["update_feature_roles_api_features__run_id__roles_patch"];
+        trace?: never;
+    };
+    "/api/features/{run_id}/transition": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Transition Feature */
+        post: operations["transition_feature_api_features__run_id__transition_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/features/{run_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Feature Events */
+        get: operations["list_feature_events_api_features__run_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/backends": {
         parameters: {
             query?: never;
@@ -1969,6 +2055,99 @@ export interface components {
             /** Label */
             label?: string | null;
         };
+        /** FeatureRolesUpdate */
+        FeatureRolesUpdate: {
+            /** Owner Agent Id */
+            owner_agent_id?: string | null;
+            /** Reviewer Agent Id */
+            reviewer_agent_id?: string | null;
+            /** Vision Guardian Agent Id */
+            vision_guardian_agent_id?: string | null;
+        };
+        /** FeatureRunEventInfo */
+        FeatureRunEventInfo: {
+            /** Id */
+            id: number;
+            /** Feature Run Id */
+            feature_run_id: string;
+            /** From Stage */
+            from_stage: string;
+            /** To Stage */
+            to_stage: string;
+            /** Result */
+            result: string;
+            /** Actor Agent Id */
+            actor_agent_id?: string | null;
+            /** Reason */
+            reason: string;
+            /** Evidence Refs */
+            evidence_refs: string[];
+            /** Created At */
+            created_at: string;
+        };
+        /** FeatureRunInfo */
+        FeatureRunInfo: {
+            /** Id */
+            id: string;
+            /** Feature Id */
+            feature_id: string;
+            /** Group Id */
+            group_id: string;
+            /** Working Dir */
+            working_dir: string;
+            /** Feature Doc Path */
+            feature_doc_path: string;
+            /** Title */
+            title: string;
+            /** Stage */
+            stage: string;
+            /** State */
+            state: string;
+            /** Priority */
+            priority: string;
+            /** Owner Agent Id */
+            owner_agent_id?: string | null;
+            /** Reviewer Agent Id */
+            reviewer_agent_id?: string | null;
+            /** Vision Guardian Agent Id */
+            vision_guardian_agent_id?: string | null;
+            /** Current Gate */
+            current_gate?: string | null;
+            /**
+             * Operator Quote
+             * @default
+             */
+            operator_quote: string;
+            /** Origin Message Seq */
+            origin_message_seq?: number | null;
+            /** Artifact Refs */
+            artifact_refs?: string[];
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+            /** Completed At */
+            completed_at?: string | null;
+        };
+        /** FeatureTransitionRequest */
+        FeatureTransitionRequest: {
+            /** To Stage */
+            to_stage: string;
+            /**
+             * Result
+             * @default
+             */
+            result: string;
+            /** Actor Agent Id */
+            actor_agent_id?: string | null;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /** Evidence Refs */
+            evidence_refs?: string[];
+        };
         /**
          * FollowUpDelegationRequest
          * @description Body for the continuation mode of `mcp__ask_agent__ask`
@@ -2036,6 +2215,25 @@ export interface components {
             /** Working Dir */
             working_dir?: string | null;
         };
+        /** GroupFeatureCreate */
+        GroupFeatureCreate: {
+            /** Title */
+            title: string;
+            /**
+             * Priority
+             * @default P1
+             */
+            priority: string;
+            /** Owner Agent Id */
+            owner_agent_id?: string | null;
+            /**
+             * Operator Quote
+             * @default
+             */
+            operator_quote: string;
+            /** Origin Message Seq */
+            origin_message_seq?: number | null;
+        };
         /** GroupInfo */
         GroupInfo: {
             /** Id */
@@ -2084,6 +2282,8 @@ export interface components {
             updated_at: string;
             /** Completed At */
             completed_at?: string | null;
+            /** Feature Run Id */
+            feature_run_id?: string | null;
         };
         /** GroupInvocationResumeRequest */
         GroupInvocationResumeRequest: {
@@ -2107,6 +2307,8 @@ export interface components {
              * @default []
              */
             attachment_ids: string[];
+            /** Feature Run Id */
+            feature_run_id?: string | null;
         };
         /** GroupUpdate */
         GroupUpdate: {
@@ -5704,6 +5906,204 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GroupInvocationInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_group_features_api_groups__group_id__features_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                group_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeatureRunInfo"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_feature_api_groups__group_id__features_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                group_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GroupFeatureCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeatureRunInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_feature_api_features__run_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeatureRunInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_feature_roles_api_features__run_id__roles_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FeatureRolesUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeatureRunInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    transition_feature_api_features__run_id__transition_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FeatureTransitionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeatureRunInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_feature_events_api_features__run_id__events_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeatureRunEventInfo"][];
                 };
             };
             /** @description Validation Error */

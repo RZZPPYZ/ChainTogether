@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "id": "feature-lifecycle",
+  "initial_stage": "discovery",
+  "terminal_stages": ["done"],
+  "states": ["active", "blocked", "done"],
+  "stages": {
+    "discovery": {
+      "skill": "feature-discovery",
+      "gate": "discovery-readiness"
+    },
+    "design": {
+      "skill": "design-gate",
+      "gate": "design-verdict"
+    },
+    "planning": {
+      "skill": "writing-plans",
+      "gate": "plan-readiness"
+    },
+    "implementation": {
+      "skills": ["worktree", "tdd"],
+      "gate": "implementation-complete"
+    },
+    "quality": {
+      "skill": "quality-gate",
+      "gate": "quality-report"
+    },
+    "review": {
+      "skills": ["request-review", "review-feature", "receive-review"],
+      "gate": "review-verdict"
+    },
+    "merge": {
+      "skill": "merge-gate",
+      "gate": "merge-evidence-manifest"
+    },
+    "acceptance": {
+      "skill": "vision-gate",
+      "gate": "vision-verdict"
+    },
+    "closure": {
+      "skill": "close-feature",
+      "gate": "feature-truth"
+    },
+    "done": {
+      "skill": "feature-lifecycle"
+    }
+  },
+  "transitions": [
+    {"from": "discovery", "to": "design"},
+    {"from": "design", "to": "discovery", "result": "changes_required"},
+    {"from": "design", "to": "planning", "result": "approved"},
+    {"from": "planning", "to": "design", "result": "design_gap"},
+    {"from": "planning", "to": "implementation"},
+    {"from": "implementation", "to": "quality"},
+    {"from": "quality", "to": "implementation", "result": "failed"},
+    {"from": "quality", "to": "review", "result": "passed"},
+    {"from": "review", "to": "implementation", "result": "request_changes"},
+    {"from": "review", "to": "merge", "result": "approved"},
+    {"from": "merge", "to": "review", "result": "stale_review"},
+    {"from": "merge", "to": "acceptance", "result": "merged"},
+    {"from": "acceptance", "to": "discovery", "result": "vision_gap"},
+    {"from": "acceptance", "to": "implementation", "result": "delivery_gap"},
+    {"from": "acceptance", "to": "closure", "result": "accepted"},
+    {"from": "closure", "to": "done", "result": "closed"}
+  ],
+  "role_constraints": [
+    {"type": "different", "left": "owner_agent_id", "right": "reviewer_agent_id"},
+    {"type": "different", "left": "owner_agent_id", "right": "vision_guardian_agent_id"},
+    {"type": "different", "left": "reviewer_agent_id", "right": "vision_guardian_agent_id"}
+  ],
+  "evidence_required_for": [
+    "quality->review",
+    "review->merge",
+    "merge->acceptance",
+    "acceptance->closure",
+    "closure->done"
+  ]
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Quality Gate"
+  short_description: "Verify vision, requirements, evidence, and completeness."
+  default_prompt: "Use $quality-gate to verify this implementation before independent review."

@@ -87,7 +87,8 @@ their Sessions, Schedules, and bridge bindings. A protected **Default Agent**
 | `crypto.py` | Fernet encryption (keyed off `OCTOPUS_AUTH_TOKEN`) for secrets at rest. |
 | `models.py` | Pydantic request/response models + enums (`SessionStatus`, `MessageRole`, agent/schedule/connector/credential DTOs). |
 | `session_manager.py` | Core turn engine. Owns in-memory `Session` objects, drives each turn through the **Harness**, persists + broadcasts events to WebSocket clients and bridges, runs tool-result forwarding, interactive questions, mid-turn interrupt, the per-session message queue, premature-exit auto-respawn, and large-prompt spill. |
-| `group_manager.py` | Group CRUD, default responder selection, user/A2A `@` routing, group-member reuse sessions, routing guards, and D-layer cursor advancement. |
+| `group_manager.py` | Group CRUD, default responder selection, user/A2A `@` routing, group-member reuse sessions, routing guards, D-layer cursor advancement, and optional FeatureRun context injection. |
+| `feature_manager.py` | Durable group-first feature control plane: canonical dossier creation, role separation, workflow transitions, gate evidence, event history, and per-agent lifecycle context. See [`feature-lifecycle.md`](feature-lifecycle.md). |
 | `prompt_governance.py` + `assets/` | Compiles versioned prompt templates and machine routing policy once, renders per-turn L0/D prompts, and derives per-group roster snapshots from canonical database rows. |
 | `harness/` | The single boundary for all model/runtime interaction (see below). |
 | `agent_manager.py` | Agent CRUD (the durable assistant definitions). |
@@ -124,6 +125,10 @@ split into two layers with different lifetimes:
   triggering message as separate JSON blocks. Ping-pong warnings, routing
   correction, and HOLD resumption are selected dynamic templates rather than
   permanent system text.
+- **Feature directive:** when a group invocation carries `feature_run_id`, D
+  also names the durable FeatureRun/Feature, current stage and gate, the
+  receiving agent's lifecycle role, required project skill, and canonical
+  Feature Doc. Invocation custody and feature progress remain separate states.
 - **Incremental cursor:** `group_agent_sessions.last_seen_group_seq` stores the
   highest group sequence successfully shown to each member. The cursor advances
   monotonically only after a successful backend turn. The current trigger is
@@ -387,6 +392,14 @@ GET                /api/sessions/{id}/research                   # list jobs for
 GET                /api/sessions/{id}/research/{rid}             # job detail + phase progress
 POST               /api/sessions/{id}/research/{rid}/cancel      # cancel in-flight job
 
+# Groups + durable feature lifecycle
+POST               /api/groups/{id}/send                         # optional feature_run_id
+GET/POST            /api/groups/{id}/features
+GET                 /api/features/{run_id}
+PATCH               /api/features/{run_id}/roles
+POST                /api/features/{run_id}/transition
+GET                 /api/features/{run_id}/events
+
 # Schedules (interval + cron), credentials, connectors, notifiers
 GET/POST           /api/schedules
 GET/PATCH/DELETE   /api/schedules/{id}
@@ -441,6 +454,13 @@ migrations (never re-create or duplicate the schema in docs).
 - **`bg_tasks`** — cross-turn background task state (`status`, `exit_code`,
   captured stdio, timestamps).
 - **`research_jobs`** — native deep-research job state: `question`, `status` (`running`|`completed`|`cancelled`|`failed`|`interrupted`), `phase`, `completed_at`, `injection_status` / `injected_at` / `delivery_error` (delivery tracked separately from completion so a job can be "done but report queued"), `report_path`, and per-phase progress counters. A boot sweep marks any `running` row `interrupted`.
+- **`feature_runs`** — long-lived feature state scoped to a group and working
+  directory: canonical dossier, stage/state, independent lifecycle roles,
+  current gate, origin, and accumulated artifact references.
+- **`feature_run_events`** — append-only stage transition audit with actor,
+  result, reason, evidence references, and timestamp.
+- **`feature_invocation_links`** — optional relation from one short-lived
+  `group_invocation` custody chain to the FeatureRun it advances.
 
 ## Memory
 

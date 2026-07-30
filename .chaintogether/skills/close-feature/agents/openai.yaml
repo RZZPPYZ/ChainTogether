@@ -1,0 +1,4 @@
+interface:
+  display_name: "Close Feature"
+  short_description: "Close an accepted feature and synchronize durable truth."
+  default_prompt: "Use $close-feature to close this merged and vision-accepted feature."

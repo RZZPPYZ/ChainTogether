@@ -447,6 +447,68 @@ CREATE INDEX IF NOT EXISTS idx_group_invocations_group
   ON group_invocations(group_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_group_invocations_status
   ON group_invocations(status, updated_at);
+
+-- Long-lived feature lifecycle state. This is intentionally separate from
+-- group_invocations: an invocation lasts for one routed group message, while
+-- a feature run survives many messages, agents, worktrees, reviews and PRs.
+CREATE TABLE IF NOT EXISTS feature_runs (
+    id TEXT PRIMARY KEY,
+    feature_id TEXT NOT NULL,
+    group_id TEXT NOT NULL,
+    working_dir TEXT NOT NULL,
+    feature_doc_path TEXT NOT NULL,
+    title TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    state TEXT NOT NULL,
+    priority TEXT NOT NULL,
+    owner_agent_id TEXT,
+    reviewer_agent_id TEXT,
+    vision_guardian_agent_id TEXT,
+    current_gate TEXT,
+    operator_quote TEXT NOT NULL DEFAULT '',
+    origin_message_seq INTEGER,
+    artifact_refs TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    UNIQUE(working_dir, feature_id),
+    FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (owner_agent_id) REFERENCES agents(id) ON DELETE SET NULL,
+    FOREIGN KEY (reviewer_agent_id) REFERENCES agents(id) ON DELETE SET NULL,
+    FOREIGN KEY (vision_guardian_agent_id) REFERENCES agents(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_feature_runs_group
+  ON feature_runs(group_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_feature_runs_state
+  ON feature_runs(state, stage, updated_at);
+
+CREATE TABLE IF NOT EXISTS feature_run_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    feature_run_id TEXT NOT NULL,
+    from_stage TEXT NOT NULL,
+    to_stage TEXT NOT NULL,
+    result TEXT NOT NULL DEFAULT '',
+    actor_agent_id TEXT,
+    reason TEXT NOT NULL DEFAULT '',
+    evidence_refs TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (feature_run_id) REFERENCES feature_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY (actor_agent_id) REFERENCES agents(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_feature_run_events_run
+  ON feature_run_events(feature_run_id, id);
+
+CREATE TABLE IF NOT EXISTS feature_invocation_links (
+    invocation_id TEXT PRIMARY KEY,
+    feature_run_id TEXT NOT NULL,
+    FOREIGN KEY (invocation_id) REFERENCES group_invocations(id) ON DELETE CASCADE,
+    FOREIGN KEY (feature_run_id) REFERENCES feature_runs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_feature_invocation_links_run
+  ON feature_invocation_links(feature_run_id);
 """
 
 
@@ -959,6 +1021,7 @@ class Database:
         group_id: str,
         root_content: str,
         created_at: str,
+        feature_run_id: str | None = None,
     ) -> dict[str, Any]:
         await self._ensure_connected()
         await self._conn.execute(
@@ -967,6 +1030,12 @@ class Database:
             "created_at, updated_at) VALUES (?, ?, ?, 'running', 'new', 0, ?, ?)",
             (invocation_id, group_id, root_content, created_at, created_at),
         )
+        if feature_run_id is not None:
+            await self._conn.execute(
+                "INSERT INTO feature_invocation_links "
+                "(invocation_id, feature_run_id) VALUES (?, ?)",
+                (invocation_id, feature_run_id),
+            )
         await self._conn.commit()
         row = await self.get_group_invocation(invocation_id)
         assert row is not None
@@ -998,7 +1067,9 @@ class Database:
         cursor = await self._conn.execute(
             "SELECT id, group_id, root_content, status, custody_state, "
             "current_agent_id, depth, held_until, hold_reason, error, "
-            "created_at, updated_at, completed_at "
+            "created_at, updated_at, completed_at, "
+            "(SELECT feature_run_id FROM feature_invocation_links "
+            " WHERE invocation_id = group_invocations.id) "
             "FROM group_invocations WHERE id = ?",
             (invocation_id,),
         )
@@ -1012,7 +1083,9 @@ class Database:
         sql = (
             "SELECT id, group_id, root_content, status, custody_state, "
             "current_agent_id, depth, held_until, hold_reason, error, "
-            "created_at, updated_at, completed_at "
+            "created_at, updated_at, completed_at, "
+            "(SELECT feature_run_id FROM feature_invocation_links "
+            " WHERE invocation_id = group_invocations.id) "
             "FROM group_invocations WHERE group_id = ?"
         )
         params: list[Any] = [group_id]
@@ -1027,7 +1100,10 @@ class Database:
         cursor = await self._conn.execute(
             "SELECT id, group_id, root_content, status, custody_state, "
             "current_agent_id, depth, held_until, hold_reason, error, "
-            "created_at, updated_at, completed_at FROM group_invocations "
+            "created_at, updated_at, completed_at, "
+            "(SELECT feature_run_id FROM feature_invocation_links "
+            " WHERE invocation_id = group_invocations.id) "
+            "FROM group_invocations "
             "WHERE status IN ('running', 'held') ORDER BY created_at"
         )
         return [self._group_invocation_row(row) for row in await cursor.fetchall()]
@@ -1048,6 +1124,203 @@ class Database:
             "created_at": row[10],
             "updated_at": row[11],
             "completed_at": row[12],
+            "feature_run_id": row[13],
+        }
+
+    # ------------------------------------------------------------------
+    # Durable feature lifecycle
+    # ------------------------------------------------------------------
+
+    _FEATURE_RUN_COLUMNS = (
+        "id, feature_id, group_id, working_dir, feature_doc_path, title, "
+        "stage, state, priority, owner_agent_id, reviewer_agent_id, "
+        "vision_guardian_agent_id, current_gate, operator_quote, "
+        "origin_message_seq, artifact_refs, created_at, updated_at, completed_at"
+    )
+
+    async def create_feature_run(
+        self,
+        *,
+        run_id: str,
+        feature_id: str,
+        group_id: str,
+        working_dir: str,
+        feature_doc_path: str,
+        title: str,
+        stage: str,
+        state: str,
+        priority: str,
+        owner_agent_id: str | None,
+        current_gate: str | None,
+        operator_quote: str,
+        origin_message_seq: int | None,
+        artifact_refs: list[str],
+        created_at: str,
+    ) -> dict[str, Any]:
+        await self._ensure_connected()
+        await self._conn.execute(
+            "INSERT INTO feature_runs "
+            "(id, feature_id, group_id, working_dir, feature_doc_path, title, "
+            " stage, state, priority, owner_agent_id, current_gate, "
+            " operator_quote, origin_message_seq, artifact_refs, created_at, "
+            " updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                run_id,
+                feature_id,
+                group_id,
+                working_dir,
+                feature_doc_path,
+                title,
+                stage,
+                state,
+                priority,
+                owner_agent_id,
+                current_gate,
+                operator_quote,
+                origin_message_seq,
+                json.dumps(artifact_refs),
+                created_at,
+                created_at,
+            ),
+        )
+        await self._conn.commit()
+        row = await self.get_feature_run(run_id)
+        assert row is not None
+        return row
+
+    async def get_feature_run(self, run_id: str) -> dict[str, Any] | None:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            f"SELECT {self._FEATURE_RUN_COLUMNS} FROM feature_runs WHERE id = ?",
+            (run_id,),
+        )
+        row = await cursor.fetchone()
+        return self._feature_run_row(row) if row else None
+
+    async def list_feature_runs(
+        self,
+        *,
+        group_id: str | None = None,
+        working_dir: str | None = None,
+    ) -> list[dict[str, Any]]:
+        await self._ensure_connected()
+        where: list[str] = []
+        params: list[Any] = []
+        if group_id is not None:
+            where.append("group_id = ?")
+            params.append(group_id)
+        if working_dir is not None:
+            where.append("working_dir = ?")
+            params.append(working_dir)
+        sql = f"SELECT {self._FEATURE_RUN_COLUMNS} FROM feature_runs"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY updated_at DESC, feature_id"
+        cursor = await self._conn.execute(sql, params)
+        return [self._feature_run_row(row) for row in await cursor.fetchall()]
+
+    async def update_feature_run(self, run_id: str, **fields: Any) -> None:
+        allowed = {
+            "stage",
+            "state",
+            "owner_agent_id",
+            "reviewer_agent_id",
+            "vision_guardian_agent_id",
+            "current_gate",
+            "artifact_refs",
+            "updated_at",
+            "completed_at",
+        }
+        updates = {key: value for key, value in fields.items() if key in allowed}
+        if not updates:
+            return
+        if isinstance(updates.get("artifact_refs"), list):
+            updates["artifact_refs"] = json.dumps(updates["artifact_refs"])
+        await self._ensure_connected()
+        assignments = ", ".join(f"{key} = ?" for key in updates)
+        await self._conn.execute(
+            f"UPDATE feature_runs SET {assignments} WHERE id = ?",
+            (*updates.values(), run_id),
+        )
+        await self._conn.commit()
+
+    async def append_feature_run_event(
+        self,
+        *,
+        run_id: str,
+        from_stage: str,
+        to_stage: str,
+        result: str,
+        actor_agent_id: str | None,
+        reason: str,
+        evidence_refs: list[str],
+        created_at: str,
+    ) -> None:
+        await self._ensure_connected()
+        await self._conn.execute(
+            "INSERT INTO feature_run_events "
+            "(feature_run_id, from_stage, to_stage, result, actor_agent_id, "
+            " reason, evidence_refs, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                run_id,
+                from_stage,
+                to_stage,
+                result,
+                actor_agent_id,
+                reason,
+                json.dumps(evidence_refs),
+                created_at,
+            ),
+        )
+        await self._conn.commit()
+
+    async def list_feature_run_events(
+        self, run_id: str,
+    ) -> list[dict[str, Any]]:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT id, feature_run_id, from_stage, to_stage, result, "
+            "actor_agent_id, reason, evidence_refs, created_at "
+            "FROM feature_run_events WHERE feature_run_id = ? ORDER BY id",
+            (run_id,),
+        )
+        return [
+            {
+                "id": row[0],
+                "feature_run_id": row[1],
+                "from_stage": row[2],
+                "to_stage": row[3],
+                "result": row[4],
+                "actor_agent_id": row[5],
+                "reason": row[6],
+                "evidence_refs": json.loads(row[7] or "[]"),
+                "created_at": row[8],
+            }
+            for row in await cursor.fetchall()
+        ]
+
+    @staticmethod
+    def _feature_run_row(row: Any) -> dict[str, Any]:
+        return {
+            "id": row[0],
+            "feature_id": row[1],
+            "group_id": row[2],
+            "working_dir": row[3],
+            "feature_doc_path": row[4],
+            "title": row[5],
+            "stage": row[6],
+            "state": row[7],
+            "priority": row[8],
+            "owner_agent_id": row[9],
+            "reviewer_agent_id": row[10],
+            "vision_guardian_agent_id": row[11],
+            "current_gate": row[12],
+            "operator_quote": row[13],
+            "origin_message_seq": row[14],
+            "artifact_refs": json.loads(row[15] or "[]"),
+            "created_at": row[16],
+            "updated_at": row[17],
+            "completed_at": row[18],
         }
 
     async def _column_info(self, table: str) -> list[tuple[Any, ...]]:

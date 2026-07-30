@@ -1,0 +1,4 @@
+interface:
+  display_name: "Writing Plans"
+  short_description: "Build a testable plan from an approved feature spec."
+  default_prompt: "Use $writing-plans to create an implementation plan for this approved feature."

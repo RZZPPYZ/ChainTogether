@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Feature"
+  short_description: "Review requirements and code against an exact HEAD SHA."
+  default_prompt: "Use $review-feature to review this feature and return a SHA-bound verdict."

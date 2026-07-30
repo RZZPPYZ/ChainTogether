@@ -1,0 +1,4 @@
+interface:
+  display_name: "TDD"
+  short_description: "Implement behavior with red-green-refactor discipline."
+  default_prompt: "Use $tdd to implement this feature from failing tests to verified code."

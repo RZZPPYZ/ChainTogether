@@ -1,0 +1,4 @@
+interface:
+  display_name: "Receive Review"
+  short_description: "Verify and resolve findings with reviewer continuity."
+  default_prompt: "Use $receive-review to process the review findings for this feature."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Design Gate"
+  short_description: "Approve scope, journeys, architecture, and risks."
+  default_prompt: "Use $design-gate to decide whether this feature is ready for planning and implementation."
