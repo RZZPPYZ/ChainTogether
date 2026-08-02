@@ -1082,6 +1082,24 @@ class Database:
         rows = await cursor.fetchall()
         return [r[0] for r in rows]
 
+    async def list_live_group_members(
+        self, group_id: str,
+    ) -> list[dict[str, str]]:
+        """Return stable, dispatch-eligible members for role resolution."""
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT a.id, a.name, gm.joined_at "
+            "FROM group_members gm "
+            "JOIN agents a ON a.id = gm.agent_id "
+            "WHERE gm.group_id = ? AND a.archived = 0 "
+            "ORDER BY gm.joined_at, a.id",
+            (group_id,),
+        )
+        return [
+            {"id": str(row[0]), "name": str(row[1]), "joined_at": str(row[2])}
+            for row in await cursor.fetchall()
+        ]
+
     # ------------------------------------------------------------------
     # (group × agent) long-lived member sessions (group-session-reuse.md)
     # ------------------------------------------------------------------
@@ -1413,6 +1431,200 @@ class Database:
             (run_id,),
         )
         return [self._feature_dispatch_row(row) for row in await cursor.fetchall()]
+
+    async def create_feature_delivery_checkpoint(
+        self,
+        *,
+        request_key: str,
+        requirement: str,
+        requirement_hash: str,
+        authorization: dict[str, Any],
+        run_id: str,
+        feature_id: str,
+        group_id: str,
+        working_dir: str,
+        feature_doc_path: str,
+        feature_doc_absolute_path: str,
+        document_content: str,
+        title: str,
+        stage: str,
+        priority: str,
+        owner_agent_id: str,
+        reviewer_agent_id: str,
+        vision_guardian_agent_id: str,
+        current_gate: str | None,
+        operator_quote: str,
+        origin_message_seq: int | None,
+        dispatch_id: str,
+        created_at: str,
+    ) -> dict[str, Any]:
+        """Create the complete `/feature` start checkpoint in one transaction.
+
+        The return status is one of created, replayed, request_conflict, or
+        active_conflict. Callers perform filesystem and launch delivery only
+        after this transaction commits.
+        """
+        await self._ensure_connected()
+        async with self._feature_write_lock:
+            try:
+                await self._conn.execute("BEGIN IMMEDIATE")
+                cursor = await self._conn.execute(
+                    f"SELECT {self._FEATURE_START_COLUMNS} "
+                    "FROM feature_start_requests WHERE request_key = ?",
+                    (request_key,),
+                )
+                existing_row = await cursor.fetchone()
+                if existing_row is not None:
+                    existing = self._feature_start_row(existing_row)
+                    await self._conn.rollback()
+                    if (
+                        existing["group_id"] != group_id
+                        or existing["requirement_hash"] != requirement_hash
+                    ):
+                        return {
+                            "status": "request_conflict",
+                            "feature_run_id": existing["feature_run_id"],
+                        }
+                    return {
+                        "status": "replayed",
+                        "feature_run_id": existing["feature_run_id"],
+                    }
+
+                cursor = await self._conn.execute(
+                    "SELECT gaf.feature_run_id, fr.state "
+                    "FROM group_active_features gaf "
+                    "JOIN feature_runs fr ON fr.id = gaf.feature_run_id "
+                    "WHERE gaf.group_id = ?",
+                    (group_id,),
+                )
+                active = await cursor.fetchone()
+                if active is not None and str(active[1]) != "done":
+                    await self._conn.rollback()
+                    return {
+                        "status": "active_conflict",
+                        "feature_run_id": str(active[0]),
+                    }
+                if active is not None:
+                    await self._conn.execute(
+                        "DELETE FROM group_active_features WHERE group_id = ?",
+                        (group_id,),
+                    )
+
+                artifact_refs = json.dumps([feature_doc_path])
+                await self._conn.execute(
+                    "INSERT INTO feature_runs "
+                    "(id, feature_id, group_id, working_dir, feature_doc_path, "
+                    " title, stage, state, priority, owner_agent_id, "
+                    " reviewer_agent_id, vision_guardian_agent_id, current_gate, "
+                    " operator_quote, origin_message_seq, artifact_refs, "
+                    " created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, "
+                    " ?, ?, ?, ?)",
+                    (
+                        run_id,
+                        feature_id,
+                        group_id,
+                        working_dir,
+                        feature_doc_path,
+                        title,
+                        stage,
+                        priority,
+                        owner_agent_id,
+                        reviewer_agent_id,
+                        vision_guardian_agent_id,
+                        current_gate,
+                        operator_quote,
+                        origin_message_seq,
+                        artifact_refs,
+                        created_at,
+                        created_at,
+                    ),
+                )
+                await self._conn.execute(
+                    "INSERT INTO feature_run_events "
+                    "(feature_run_id, from_stage, to_stage, result, "
+                    " actor_agent_id, reason, evidence_refs, revision, created_at) "
+                    "VALUES (?, '', ?, 'created', ?, ?, ?, '', ?)",
+                    (
+                        run_id,
+                        stage,
+                        owner_agent_id,
+                        "Feature created from autonomous group command",
+                        artifact_refs,
+                        created_at,
+                    ),
+                )
+                await self._conn.execute(
+                    "INSERT INTO group_active_features "
+                    "(group_id, feature_run_id, updated_at) VALUES (?, ?, ?)",
+                    (group_id, run_id, created_at),
+                )
+                await self._conn.execute(
+                    "INSERT INTO feature_start_requests "
+                    "(request_key, group_id, feature_run_id, requirement, "
+                    " requirement_hash, authorization, state, created_at, "
+                    " updated_at) VALUES (?, ?, ?, ?, ?, ?, 'doc_pending', ?, ?)",
+                    (
+                        request_key,
+                        group_id,
+                        run_id,
+                        requirement,
+                        requirement_hash,
+                        json.dumps(authorization, sort_keys=True),
+                        created_at,
+                        created_at,
+                    ),
+                )
+                await self._conn.execute(
+                    "INSERT INTO feature_doc_syncs "
+                    "(feature_run_id, feature_doc_path, content, base_hash, "
+                    " sync_mode, updated_at) "
+                    "VALUES (?, ?, ?, '', 'create_only', ?)",
+                    (
+                        run_id,
+                        feature_doc_absolute_path,
+                        document_content,
+                        created_at,
+                    ),
+                )
+                await self._conn.execute(
+                    "INSERT INTO feature_dispatches "
+                    "(id, feature_run_id, observed_stage, observed_revision, "
+                    " purpose, generation, target_role, target_agent_id, state, "
+                    " capability_hash, attempt_count, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, 'stage', 1, 'owner', ?, 'pending', '', "
+                    " 0, ?, ?)",
+                    (
+                        dispatch_id,
+                        run_id,
+                        stage,
+                        created_at,
+                        owner_agent_id,
+                        created_at,
+                        created_at,
+                    ),
+                )
+                await self._conn.commit()
+                return {"status": "created", "feature_run_id": run_id}
+            except Exception:
+                await self._conn.rollback()
+                raise
+
+    async def update_feature_start_state(
+        self,
+        run_id: str,
+        *,
+        state: str,
+        error: str | None,
+        updated_at: str,
+    ) -> None:
+        await self._ensure_connected()
+        await self._conn.execute(
+            "UPDATE feature_start_requests SET state = ?, error = ?, "
+            "updated_at = ? WHERE feature_run_id = ?",
+            (state, error, updated_at, run_id),
+        )
+        await self._conn.commit()
 
     async def list_feature_runs(
         self,

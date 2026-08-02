@@ -38,6 +38,8 @@ class FeatureValidatorTests(unittest.TestCase):
             "TITLE": "Example",
             "PRIORITY": "P1",
             "OWNER": "owner",
+            "REVIEWER": "",
+            "VISION_GUARDIAN": "",
             "ORIGIN_KIND": "test",
             "GROUP_ID": "group",
             "MESSAGE_SEQ": "1",

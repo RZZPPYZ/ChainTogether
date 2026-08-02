@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import logging
+import os
 import re
 import subprocess
 import uuid
@@ -104,6 +105,97 @@ class FeatureManager:
         number = max(used, default=0) + 1
         return f"F{number:03d}"
 
+    @staticmethod
+    def _render_initial_document(
+        *,
+        feature_id: str,
+        title: str,
+        priority: str,
+        owner_agent_id: str,
+        reviewer_agent_id: str,
+        vision_guardian_agent_id: str,
+        group_id: str,
+        origin_message_seq: int | None,
+        created_at: str,
+        operator_quote: str,
+    ) -> str:
+        substitutions = {
+            "FEATURE_ID": feature_id,
+            "TITLE": json.dumps(title, ensure_ascii=False)[1:-1],
+            "PRIORITY": priority,
+            "OWNER": json.dumps(owner_agent_id, ensure_ascii=False)[1:-1],
+            "REVIEWER": json.dumps(reviewer_agent_id, ensure_ascii=False)[1:-1],
+            "VISION_GUARDIAN": json.dumps(
+                vision_guardian_agent_id, ensure_ascii=False
+            )[1:-1],
+            "ORIGIN_KIND": "group_message",
+            "GROUP_ID": group_id,
+            "MESSAGE_SEQ": (
+                str(origin_message_seq)
+                if origin_message_seq is not None
+                else "null"
+            ),
+            "CREATED_AT": created_at,
+            "OPERATOR_QUOTE": json.dumps(
+                operator_quote.strip(), ensure_ascii=False
+            )[1:-1],
+        }
+        template = _TEMPLATE_PATH.read_text(encoding="utf-8")
+        for key, value in substitutions.items():
+            template = template.replace("{{" + key + "}}", value)
+        return template
+
+    async def prepare_autonomous_start(
+        self,
+        group: dict[str, Any],
+        *,
+        title: str,
+        priority: str,
+        owner_agent_id: str,
+        reviewer_agent_id: str,
+        vision_guardian_agent_id: str,
+        operator_quote: str,
+        origin_message_seq: int | None,
+        created_at: str,
+    ) -> dict[str, Any]:
+        """Render initial Feature truth without touching DB or filesystem."""
+        workflow = self._load_workflow(str(group["working_dir"]))
+        feature_id = await self._next_feature_id(str(group["working_dir"]))
+        relative_path = (
+            Path("docs")
+            / "features"
+            / f"{feature_id}-{self._slug(title)}"
+            / "feature.md"
+        )
+        absolute_path = Path(str(group["working_dir"])) / relative_path
+        if absolute_path.exists():
+            raise FeatureError(
+                f"Feature document already exists: {absolute_path}",
+                status_code=409,
+            )
+        initial_stage = str(workflow.get("initial_stage", "discovery"))
+        stage_spec = workflow["stages"].get(initial_stage) or {}
+        content = self._render_initial_document(
+            feature_id=feature_id,
+            title=title,
+            priority=priority,
+            owner_agent_id=owner_agent_id,
+            reviewer_agent_id=reviewer_agent_id,
+            vision_guardian_agent_id=vision_guardian_agent_id,
+            group_id=str(group["id"]),
+            origin_message_seq=origin_message_seq,
+            created_at=created_at,
+            operator_quote=operator_quote,
+        )
+        return {
+            "feature_id": feature_id,
+            "feature_doc_path": relative_path.as_posix(),
+            "feature_doc_absolute_path": str(absolute_path),
+            "document_content": content,
+            "stage": initial_stage,
+            "current_gate": stage_spec.get("gate"),
+        }
+
     async def _validate_agent_role(
         self, group: dict[str, Any], agent_id: str | None, role: str
     ) -> None:
@@ -165,6 +257,8 @@ class FeatureManager:
             "TITLE": json.dumps(title, ensure_ascii=False)[1:-1],
             "PRIORITY": priority,
             "OWNER": json.dumps(owner, ensure_ascii=False)[1:-1],
+            "REVIEWER": "",
+            "VISION_GUARDIAN": "",
             "ORIGIN_KIND": "group_message",
             "GROUP_ID": group_id,
             "MESSAGE_SEQ": (
@@ -577,6 +671,18 @@ class FeatureManager:
             if temporary.exists():
                 temporary.unlink()
 
+    @staticmethod
+    def _write_doc_create_only(path: Path, content: str) -> None:
+        """Publish a complete document without ever replacing an existing one."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_text(content, encoding="utf-8")
+            os.link(temporary, path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
     def _assert_document_baseline(
         self, path: Path, expected_hash: str
     ) -> None:
@@ -614,10 +720,43 @@ class FeatureManager:
     async def _flush_doc_sync(self, run_id: str) -> bool:
         def deliver(pending: dict[str, str]) -> bool:
             path = Path(pending["feature_doc_path"])
+            desired_hash = self._document_hash(pending["content"])
+            if pending.get("sync_mode", "update") == "create_only":
+                try:
+                    disk_content = path.read_text(encoding="utf-8-sig")
+                except FileNotFoundError:
+                    try:
+                        self._write_doc_create_only(path, pending["content"])
+                    except FileExistsError:
+                        try:
+                            disk_content = path.read_text(encoding="utf-8-sig")
+                        except OSError:
+                            return False
+                        return self._document_hash(disk_content) == desired_hash
+                    except OSError:
+                        logger.exception(
+                            "Feature %s create-only document sync remains pending",
+                            run_id,
+                        )
+                        return False
+                    return True
+                except OSError:
+                    logger.exception(
+                        "Feature %s create-only document sync remains pending",
+                        run_id,
+                    )
+                    return False
+                if self._document_hash(disk_content) != desired_hash:
+                    logger.error(
+                        "Feature %s create-only document conflicts with an "
+                        "existing file",
+                        run_id,
+                    )
+                    return False
+                return True
             try:
                 disk_content = path.read_text(encoding="utf-8-sig")
                 disk_hash = self._document_hash(disk_content)
-                desired_hash = self._document_hash(pending["content"])
                 if disk_hash != desired_hash:
                     if (
                         not pending["base_hash"]
@@ -637,6 +776,9 @@ class FeatureManager:
             return True
 
         return await self._db().deliver_feature_doc_sync(run_id, deliver)
+
+    async def deliver_pending_document(self, run_id: str) -> bool:
+        return await self._flush_doc_sync(run_id)
 
     async def reconcile_document_syncs(self) -> None:
         for pending in await self._db().list_feature_doc_syncs():
