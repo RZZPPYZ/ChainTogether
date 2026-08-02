@@ -92,8 +92,10 @@ stage with a reason; it never silently edits history to look linear.
 5. Record evidence in the repository, then request a transition through
    `POST /api/sessions/{session_id}/features/{run_id}/transition`. The control
    plane requires the live session's unlisted
-   `X-Octopus-Session-Capability`, injected into that Agent's MCP subprocess,
-   and derives the actor from the bound group-agent session instead of
+   `X-Octopus-Session-Capability`. The value is placed in the parent Harness
+   process environment—not provider CLI arguments—and inherited by that
+   Agent's MCP subprocess. The control plane derives the actor from the bound
+   group-agent session instead of
    accepting a caller-selected identity. It validates the edge, optimistic
    revision, role separation, existing evidence paths, exact Git revision, and
    structured canonical-document provenance.

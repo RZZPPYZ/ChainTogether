@@ -73,31 +73,14 @@ def select_mcp_servers(
     `mcp_servers` (e.g. a legacy `"viewer"` from before the viewer became a
     client-only flow) are silently filtered."""
     builtin_specs: dict[str, dict[str, Any]] = {
-        "bg": {
+        key: {
             "command": sys.executable,
-            "args": ["-m", _BUILTIN_MODULES["bg"]],
-            "env": dict(callback_env),
-        },
-        "ask": {
-            "command": sys.executable,
-            "args": ["-m", _BUILTIN_MODULES["ask"]],
-            "env": dict(callback_env),
-        },
-        "ask_agent": {
-            "command": sys.executable,
-            "args": ["-m", _BUILTIN_MODULES["ask_agent"]],
-            "env": dict(callback_env),
-        },
-        "research": {
-            "command": sys.executable,
-            "args": ["-m", _BUILTIN_MODULES["research"]],
-            "env": dict(callback_env),
-        },
-        "persona": {
-            "command": sys.executable,
-            "args": ["-m", _BUILTIN_MODULES["persona"]],
-            "env": dict(callback_env),
-        },
+            "args": ["-m", module],
+            # Built-ins inherit callback values from the harness process. Keep
+            # secrets out of Claude/Codex MCP config command-line arguments.
+            "env": {},
+        }
+        for key, module in _BUILTIN_MODULES.items()
     }
     if mcp_servers is not None:
         selected = {k: v for k, v in builtin_specs.items() if k in mcp_servers}
@@ -112,8 +95,13 @@ def select_mcp_servers(
     # Agent-enabled connectors (connectors.md §5.6). Each contributes one
     # per-installation entry keyed `<kind>_<id6>` so two accounts of one
     # kind don't collide; the connector builds the {command,args,env} shape.
+    connector_callback_env = {
+        key: value
+        for key, value in callback_env.items()
+        if key != "OCTOPUS_SESSION_CAPABILITY"
+    }
     for connector, installation in connectors:
-        entry = connector.mcp_entry(installation, callback_env)
+        entry = connector.mcp_entry(installation, connector_callback_env)
         entries.append(
             McpServerEntry(
                 key=connector.mcp_key(installation),

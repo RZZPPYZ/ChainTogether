@@ -337,6 +337,7 @@ class HarnessRun:
             tool_deny=self._config.tool_deny,
             mcp_servers=mcp_servers,
             credential=credential,
+            callback_env=callback_env,
             memory_dir=self._config.memory_dir,
             web_research=self._config.web_research,
         )

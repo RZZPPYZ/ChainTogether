@@ -55,5 +55,8 @@
 - Chain later document mutations from the pending outbox image, retain a disk
   baseline hash, and fail closed on conflicting operator edits or unverifiable
   Git repositories.
+- Validate protected gates from the exact queued document snapshot, recheck its
+  baseline hash and Git HEAD immediately before the FeatureRun CAS, recover
+  legacy pending rows, and keep Session capabilities out of provider CLI argv.
 - Reproduce every review finding with a failing test, rerun the full Quality
   Gate, and return the new exact HEAD to the same independent reviewer.

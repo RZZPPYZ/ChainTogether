@@ -8,7 +8,7 @@
   per-turn D14 workflow injection, role-aware Skill routing, lifecycle Skill
   contracts, validators, document-sync recovery, session-bound transitions,
   revision provenance, documentation, tests, and generated API contracts.
-- **Independent review:** `89b070f` and `2e91354` received
+- **Independent review:** `89b070f`, `2e91354`, and `de1502c` received
   `request_changes`; the next corrected exact HEAD requires re-review by the
   same reviewer. This report permits `request-review` only.
 
@@ -28,7 +28,7 @@
 | Command | Result |
 |---|---|
 | `.venv\\Scripts\\python.exe -m compileall -q server tests` | passed |
-| `.venv\\Scripts\\python.exe -m unittest discover -s tests -v` | 55 passed; 1 environment-gated live GitHub smoke skipped |
+| `.venv\\Scripts\\python.exe -m unittest discover -s tests -v` | 56 passed; 1 environment-gated live GitHub smoke skipped |
 | `.venv\\Scripts\\python.exe scripts\\check-skills.py` | 13 Skills, 10 stages, 16 transitions passed |
 | `.venv\\Scripts\\python.exe scripts\\sync-skills.py --check` | 26 provider mounts passed |
 | `.venv\\Scripts\\python.exe scripts\\check-features.py` | 1 Feature passed |
@@ -55,6 +55,11 @@
    and Vision transitions additionally require existing evidence, a Git-resolved
    exact revision, and structured independent-role provenance.
 8. Reaching `done` clears the group's current Feature.
+9. Gate fields are evaluated from the exact document image queued by the
+   transition; the disk baseline and protected Git HEAD are revalidated before
+   the database CAS. Legacy pending rows receive a usable migration baseline.
+10. Session capabilities are inherited through the Harness process environment
+   and are absent from Claude and Codex command-line MCP configuration.
 
 ## Residual risk disposition
 

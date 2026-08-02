@@ -94,6 +94,10 @@ their Sessions, Schedules, and bridge bindings. A protected **Default Agent**
 | `agent_manager.py` | Agent CRUD (the durable assistant definitions). |
 | `agent_memory.py` | Per-agent native memory provisioning (`<agents_dir>/<id>/memory/`). |
 | `delegations.py` | Agent-to-agent delegation manager ([`plans/agent-collaboration.md`](plans/agent-collaboration.md)) — `mcp__ask_agent__ask` lets one agent spawn a child session under another agent, or continue a prior delegation in the same child session by passing its `delegation_id`. Subscribes to the session-manager broadcast bus; on the child's terminal event (`result` / `error` / `question_request`) injects an `[agent-reply:…]` / `[agent-error:…]` / `[agent-question:…]` turn back into the parent. Owns cycle + depth-3 guards (with DB fallback for archived ancestors), single-inject idempotency, same-session follow-up reset, cascade-cancel of descendants, and child auto-archive after terminal delivery. |
+
+Session-scoped control-plane capabilities are supplied through the spawned
+Harness process environment. Built-in MCP children inherit them; provider CLI
+arguments and connector MCP configuration never contain those capabilities.
 | `scheduler.py` | `ScheduleRunner` — APScheduler runner for recurring prompts, **interval and cron**, fired per agent into fresh auto-archiving sessions. |
 | `schedule_ai.py` | Natural-language `/schedule` parsing — turns "every weekday at 9am" into a cron/interval spec via the agent's own harness (backend-agnostic). |
 | `database.py` | SQLite (`aiosqlite`, WAL, FK cascade). `_SCHEMA` defines all tables; idempotent `_apply_migrations` / `_migrate_*` evolve existing DBs additively. |

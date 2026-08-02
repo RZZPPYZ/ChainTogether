@@ -298,6 +298,7 @@ class FeatureManager:
                 "updated_at": updated_at,
             },
         )
+        self._assert_document_baseline(doc_path, doc_base_hash)
         updated = await self._db().update_feature_roles_with_doc_sync(
             run_id,
             expected_updated_at=row["updated_at"],
@@ -413,12 +414,6 @@ class FeatureManager:
         if edge in set(workflow.get("evidence_required_for", [])) and not evidence:
             raise FeatureError(f"Transition {edge} requires evidence_refs")
         revision = self._validate_revision(row, edge, revision)
-        self._assert_doc_gate(
-            row,
-            edge,
-            actor_agent_id=actor_agent_id,
-            revision=revision,
-        )
 
         updated_at = _now()
         state = "done" if to_stage in workflow.get("terminal_stages", []) else "active"
@@ -429,6 +424,23 @@ class FeatureManager:
             row,
             {"stage": to_stage, "state": state, "updated_at": updated_at},
         )
+        self._assert_doc_gate(
+            row,
+            edge,
+            text=doc_content,
+            actor_agent_id=actor_agent_id,
+            revision=revision,
+        )
+        self._assert_document_baseline(doc_path, doc_base_hash)
+        if edge in {
+            "review->merge",
+            "merge->acceptance",
+            "acceptance->closure",
+            "closure->done",
+        } and self._git_head(row["working_dir"]) != revision:
+            raise FeatureError(
+                f"Transition {edge} Git HEAD changed before commit"
+            )
         transitioned = await self._db().transition_feature_run(
             run_id,
             expected_stage=row["stage"],
@@ -555,6 +567,21 @@ class FeatureManager:
             if temporary.exists():
                 temporary.unlink()
 
+    def _assert_document_baseline(
+        self, path: Path, expected_hash: str
+    ) -> None:
+        try:
+            current = path.read_text(encoding="utf-8-sig")
+        except OSError as exc:
+            raise FeatureError(
+                f"Cannot revalidate canonical Feature Doc: {path}"
+            ) from exc
+        if self._document_hash(current) != expected_hash:
+            raise FeatureError(
+                "Canonical Feature Doc changed before control-plane commit; "
+                "reload and retry"
+            )
+
     async def _flush_doc_sync(self, run_id: str) -> bool:
         pending = await self._db().get_feature_doc_sync(run_id)
         if pending is None:
@@ -607,15 +634,11 @@ class FeatureManager:
         row: dict[str, Any],
         edge: str,
         *,
+        text: str,
         actor_agent_id: str | None,
         revision: str,
     ) -> None:
-        """Require verdict-bearing transitions in the canonical Feature Doc."""
-        path = Path(row["working_dir"]) / row["feature_doc_path"]
-        try:
-            text = path.read_text(encoding="utf-8-sig")
-        except OSError as exc:
-            raise FeatureError(f"Cannot read canonical Feature Doc: {path}") from exc
+        """Validate gates from the exact document image queued by transition."""
 
         required_verdicts = {
             "design->planning": ("Design Gate", "approved"),

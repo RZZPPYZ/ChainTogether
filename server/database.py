@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import aiosqlite
@@ -642,6 +644,29 @@ class Database:
             await self._conn.execute(
                 "ALTER TABLE feature_doc_syncs ADD COLUMN "
                 "base_hash TEXT NOT NULL DEFAULT ''"
+            )
+        cursor = await self._conn.execute(
+            "SELECT feature_run_id, feature_doc_path FROM feature_doc_syncs "
+            "WHERE base_hash = ''"
+        )
+        for run_id, feature_doc_path in await cursor.fetchall():
+            try:
+                disk_content = Path(feature_doc_path).read_text(
+                    encoding="utf-8-sig"
+                )
+            except OSError:
+                logger.warning(
+                    "Legacy Feature Doc sync %s has no readable baseline",
+                    run_id,
+                )
+                continue
+            base_hash = hashlib.sha256(
+                disk_content.encode("utf-8")
+            ).hexdigest()
+            await self._conn.execute(
+                "UPDATE feature_doc_syncs SET base_hash = ? "
+                "WHERE feature_run_id = ? AND base_hash = ''",
+                (base_hash, run_id),
             )
 
         # agents.backend — default harness for an agent's new sessions. DEFAULT

@@ -18,6 +18,7 @@ from server.config import settings
 from server.database import Database
 from server.feature_manager import FeatureError, FeatureManager
 from server.group_manager import AgentTurnResult, GroupManager
+from server.harness import RunConfig, get_harness
 from server.harness.assembly import build_callback_env
 from server.routers import features as feature_routes
 from server.session_manager import SessionManager
@@ -551,6 +552,63 @@ class FeatureWorkflowTests(unittest.IsolatedAsyncioTestCase):
             "review",
         )
 
+    async def test_gate_snapshot_change_is_rejected_before_commit(self) -> None:
+        run, doc = await self._advance_to_quality()
+        quality_ref = self._write_evidence(run, "quality-report.md")
+        await self.feature_manager.transition(
+            str(run["id"]),
+            to_stage="review",
+            result="passed",
+            evidence_refs=[quality_ref],
+        )
+        self._set_section_fields(
+            doc,
+            "Review Provenance",
+            {
+                "Reviewer": str(self.reviewer["id"]),
+                "Base SHA": self.git_head,
+                "Reviewed HEAD": self.git_head,
+                "Verdict": "approved",
+            },
+        )
+        review_ref = self._write_evidence(run, "review.md")
+        original_read = Path.read_text
+        mutated = False
+
+        def racing_read(path: Path, *args, **kwargs) -> str:
+            nonlocal mutated
+            text = original_read(path, *args, **kwargs)
+            if path.resolve() == doc.resolve() and not mutated:
+                mutated = True
+                doc.write_text(
+                    text.replace(
+                        "- **Verdict**: approved",
+                        "- **Verdict**: pending",
+                        1,
+                    ),
+                    encoding="utf-8",
+                )
+            return text
+
+        with mock.patch.object(Path, "read_text", new=racing_read):
+            with self.assertRaisesRegex(FeatureError, "changed before"):
+                await self.feature_manager.transition(
+                    str(run["id"]),
+                    to_stage="merge",
+                    result="approved",
+                    actor_agent_id=self.reviewer["id"],
+                    evidence_refs=[review_ref],
+                    revision=self.git_head,
+                )
+
+        self.assertEqual(
+            (await self.feature_manager.get(str(run["id"])))["stage"],
+            "review",
+        )
+        self.assertIn(
+            "- **Verdict**: pending", doc.read_text(encoding="utf-8")
+        )
+
     async def test_session_bound_transition_derives_actor(self) -> None:
         run, doc = await self._advance_to_quality()
         quality_ref = self._write_evidence(run, "quality-report.md")
@@ -646,11 +704,32 @@ class FeatureWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 reviewer_session.id, reviewer_session._capability_token
             )
 
+        for backend in ("claude-code", "codex"):
+            run = get_harness(backend).create_run(
+                RunConfig(
+                    session_id=reviewer_session.id,
+                    session_capability=reviewer_session._capability_token,
+                    mcp_servers=["ask"],
+                )
+            )
+            argv, kwargs = run.build_argv(
+                "verify callback isolation", str(self.workspace)
+            )
+            self.assertNotIn(
+                reviewer_session._capability_token, "\0".join(argv)
+            )
+            self.assertEqual(
+                kwargs["env"]["OCTOPUS_SESSION_CAPABILITY"],
+                reviewer_session._capability_token,
+            )
+
 
 class FeatureDatabaseMigrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_legacy_doc_outbox_gains_base_hash(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             db_path = Path(directory) / "legacy.db"
+            feature_doc = Path(directory) / "feature.md"
+            feature_doc.write_text("old disk\n", encoding="utf-8")
             legacy = sqlite3.connect(db_path)
             legacy.execute(
                 "CREATE TABLE feature_doc_syncs ("
@@ -658,6 +737,12 @@ class FeatureDatabaseMigrationTests(unittest.IsolatedAsyncioTestCase):
                 "feature_doc_path TEXT NOT NULL, "
                 "content TEXT NOT NULL, "
                 "updated_at TEXT NOT NULL)"
+            )
+            legacy.execute(
+                "INSERT INTO feature_doc_syncs "
+                "(feature_run_id, feature_doc_path, content, updated_at) "
+                "VALUES (?, ?, ?, ?)",
+                ("legacy-run", str(feature_doc), "desired disk\n", "v1"),
             )
             legacy.commit()
             legacy.close()
@@ -669,6 +754,18 @@ class FeatureDatabaseMigrationTests(unittest.IsolatedAsyncioTestCase):
                     await database._has_column(
                         "feature_doc_syncs", "base_hash"
                     )
+                )
+                pending = await database.get_feature_doc_sync("legacy-run")
+                self.assertIsNotNone(pending)
+                self.assertTrue(pending["base_hash"])
+                manager = FeatureManager()
+                manager.bind(database)
+                self.assertTrue(await manager._flush_doc_sync("legacy-run"))
+                self.assertEqual(
+                    feature_doc.read_text(encoding="utf-8"), "desired disk\n"
+                )
+                self.assertIsNone(
+                    await database.get_feature_doc_sync("legacy-run")
                 )
             finally:
                 await database.close()
