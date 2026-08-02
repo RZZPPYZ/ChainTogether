@@ -41,3 +41,15 @@
 - Standardize all lifecycle skills with `Use when`, `Not for`, `Output`, and
   `Next step` contracts and enforce them in validation.
 - Add red/green regression tests, refresh evidence, and return F001 to Quality.
+
+## Task 7: Independent-review hardening
+
+- Linearize competing role and stage writes with compare-and-swap semantics.
+- Commit the FeatureRun update, immutable event, and Feature Doc outbox item in
+  one transaction; atomically deliver and reconcile pending document updates.
+- Bind public transitions to the caller's group-agent session instead of a
+  caller-supplied actor ID.
+- Require real repository evidence, exact Git revisions, and structured
+  Reviewer or Guardian provenance at protected gates.
+- Reproduce every review finding with a failing test, rerun the full Quality
+  Gate, and return the new exact HEAD to the same independent reviewer.

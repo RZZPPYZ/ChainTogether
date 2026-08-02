@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class SessionStatus(str, Enum):
@@ -657,11 +657,13 @@ class FeatureRolesUpdate(BaseModel):
 
 
 class FeatureTransitionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     to_stage: str = Field(min_length=1, max_length=40)
     result: str = Field(default="", max_length=80)
-    actor_agent_id: str | None = None
     reason: str = Field(default="", max_length=4000)
     evidence_refs: list[str] = Field(default_factory=list)
+    revision: str = Field(default="", max_length=64)
 
 
 class FeatureRunEventInfo(BaseModel):
@@ -673,4 +675,5 @@ class FeatureRunEventInfo(BaseModel):
     actor_agent_id: str | None = None
     reason: str
     evidence_refs: list[str]
+    revision: str
     created_at: str

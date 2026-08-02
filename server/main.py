@@ -99,6 +99,7 @@ async def lifespan(app: FastAPI):
 
     # Feature lifecycle is durable across many short-lived group invocations.
     feature_manager.bind(db)
+    await feature_manager.reconcile_document_syncs()
     features_router.set_feature_manager(feature_manager)
     app.state.feature_manager = feature_manager
 

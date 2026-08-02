@@ -400,7 +400,7 @@ GET/POST            /api/groups/{id}/features
 GET/PUT             /api/groups/{id}/active-feature
 GET                 /api/features/{run_id}
 PATCH               /api/features/{run_id}/roles
-POST                /api/features/{run_id}/transition
+POST                /api/sessions/{session_id}/features/{run_id}/transition
 GET                 /api/features/{run_id}/events
 
 # Schedules (interval + cron), credentials, connectors, notifiers

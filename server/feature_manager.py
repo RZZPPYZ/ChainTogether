@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +11,9 @@ from typing import Any
 
 from .database import Database
 from .prompt_governance import get_prompt_registry
+
+
+logger = logging.getLogger(__name__)
 
 
 _FEATURE_DIR_RE = re.compile(r"^F(\d{3,})-")
@@ -204,6 +209,7 @@ class FeatureManager:
             actor_agent_id=owner_agent_id,
             reason="Feature created from group context",
             evidence_refs=[relative_path.as_posix()],
+            revision="",
             created_at=created_at,
         )
         await db.set_group_active_feature(group_id, run_id, created_at)
@@ -282,10 +288,7 @@ class FeatureManager:
             roles[field] = value
         self._validate_distinct_roles(roles)
         updated_at = _now()
-        await self._db().update_feature_run(
-            run_id, **roles, updated_at=updated_at
-        )
-        await self._sync_doc(
+        doc_path, doc_content = self._prepare_doc_sync(
             row,
             {
                 "owner": roles["owner_agent_id"] or "",
@@ -294,7 +297,52 @@ class FeatureManager:
                 "updated_at": updated_at,
             },
         )
+        updated = await self._db().update_feature_roles_with_doc_sync(
+            run_id,
+            expected_updated_at=row["updated_at"],
+            fields={**roles, "updated_at": updated_at},
+            feature_doc_path=str(doc_path),
+            document_content=doc_content,
+            updated_at=updated_at,
+        )
+        if not updated:
+            raise FeatureError(
+                "Feature roles changed concurrently; reload and retry",
+                status_code=409,
+            )
+        await self._flush_doc_sync(run_id)
         return await self.get(run_id)
+
+    async def transition_for_session(
+        self,
+        run_id: str,
+        actor_session_id: str,
+        *,
+        to_stage: str,
+        result: str = "",
+        reason: str = "",
+        evidence_refs: list[str] | None = None,
+        revision: str = "",
+    ) -> dict[str, Any]:
+        """Transition using the server-owned group-session identity."""
+        row = await self.get(run_id)
+        actor_agent_id = await self._db().get_group_agent_by_session(
+            row["group_id"], actor_session_id
+        )
+        if actor_agent_id is None:
+            raise FeatureError(
+                "Actor session is not bound to this FeatureRun group",
+                status_code=403,
+            )
+        return await self.transition(
+            run_id,
+            to_stage=to_stage,
+            result=result,
+            actor_agent_id=actor_agent_id,
+            reason=reason,
+            evidence_refs=evidence_refs,
+            revision=revision,
+        )
 
     async def transition(
         self,
@@ -305,6 +353,7 @@ class FeatureManager:
         actor_agent_id: str | None = None,
         reason: str = "",
         evidence_refs: list[str] | None = None,
+        revision: str = "",
     ) -> dict[str, Any]:
         row = await self.get(run_id)
         if row["state"] == "done":
@@ -357,44 +406,57 @@ class FeatureManager:
                     "Only the assigned vision guardian may issue an acceptance verdict"
                 )
 
-        evidence = list(dict.fromkeys(evidence_refs or []))
+        evidence = self._validate_evidence_refs(row, evidence_refs or [])
         edge = f"{row['stage']}->{to_stage}"
         if edge in set(workflow.get("evidence_required_for", [])) and not evidence:
             raise FeatureError(f"Transition {edge} requires evidence_refs")
-        self._assert_doc_gate(row, edge)
+        revision = self._validate_revision(row, edge, revision)
+        self._assert_doc_gate(
+            row,
+            edge,
+            actor_agent_id=actor_agent_id,
+            revision=revision,
+        )
 
         updated_at = _now()
         state = "done" if to_stage in workflow.get("terminal_stages", []) else "active"
         completed_at = updated_at if state == "done" else None
         stage_spec = stages.get(to_stage) or {}
         artifact_refs = list(dict.fromkeys([*row["artifact_refs"], *evidence]))
-        await self._db().update_feature_run(
-            run_id,
-            stage=to_stage,
-            state=state,
-            current_gate=stage_spec.get("gate"),
-            artifact_refs=artifact_refs,
-            updated_at=updated_at,
-            completed_at=completed_at,
+        doc_path, doc_content = self._prepare_doc_sync(
+            row,
+            {"stage": to_stage, "state": state, "updated_at": updated_at},
         )
-        await self._db().append_feature_run_event(
-            run_id=run_id,
+        transitioned = await self._db().transition_feature_run(
+            run_id,
+            expected_stage=row["stage"],
+            expected_updated_at=row["updated_at"],
+            fields={
+                "stage": to_stage,
+                "state": state,
+                "current_gate": stage_spec.get("gate"),
+                "artifact_refs": artifact_refs,
+                "updated_at": updated_at,
+                "completed_at": completed_at,
+            },
             from_stage=row["stage"],
             to_stage=to_stage,
             result=result,
             actor_agent_id=actor_agent_id,
             reason=reason.strip(),
             evidence_refs=evidence,
+            revision=revision,
             created_at=updated_at,
+            feature_doc_path=str(doc_path),
+            document_content=doc_content,
+            clear_active_group_id=row["group_id"] if state == "done" else None,
         )
-        await self._sync_doc(
-            row,
-            {"stage": to_stage, "state": state, "updated_at": updated_at},
-        )
-        if state == "done":
-            await self._db().clear_group_active_feature(
-                row["group_id"], run_id=run_id
+        if not transitioned:
+            raise FeatureError(
+                "Stale feature transition; stage changed concurrently",
+                status_code=409,
             )
+        await self._flush_doc_sync(run_id)
         return await self.get(run_id)
 
     async def list_events(self, run_id: str) -> list[dict[str, Any]]:
@@ -439,9 +501,9 @@ class FeatureManager:
             next_step=stage_spec.get("next_step") or "Consult the Feature Doc.",
         )
 
-    async def _sync_doc(
+    def _prepare_doc_sync(
         self, row: dict[str, Any], values: dict[str, Any]
-    ) -> None:
+    ) -> tuple[Path, str]:
         path = Path(row["working_dir"]) / row["feature_doc_path"]
         try:
             text = path.read_text(encoding="utf-8-sig")
@@ -453,7 +515,39 @@ class FeatureManager:
             if not pattern.search(text):
                 raise FeatureError(f"Feature Doc frontmatter lacks {key}: {path}")
             text = pattern.sub(replacement, text, count=1)
-        path.write_text(text, encoding="utf-8")
+        return path, text
+
+    @staticmethod
+    def _write_doc_content(path: Path, content: str) -> None:
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_text(content, encoding="utf-8")
+            temporary.replace(path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
+    async def _flush_doc_sync(self, run_id: str) -> bool:
+        pending = await self._db().get_feature_doc_sync(run_id)
+        if pending is None:
+            return True
+        try:
+            self._write_doc_content(
+                Path(pending["feature_doc_path"]), pending["content"]
+            )
+        except OSError:
+            logger.exception(
+                "Feature %s document sync remains pending", run_id
+            )
+            return False
+        await self._db().complete_feature_doc_sync(
+            run_id, pending["updated_at"]
+        )
+        return True
+
+    async def reconcile_document_syncs(self) -> None:
+        for pending in await self._db().list_feature_doc_syncs():
+            await self._flush_doc_sync(pending["feature_run_id"])
 
     @staticmethod
     def _section_body(text: str, heading: str) -> str:
@@ -464,7 +558,21 @@ class FeatureManager:
         )
         return match.group(1).strip() if match else ""
 
-    def _assert_doc_gate(self, row: dict[str, Any], edge: str) -> None:
+    @staticmethod
+    def _section_field(section: str, label: str) -> str:
+        match = re.search(
+            rf"(?m)^- \*\*{re.escape(label)}\*\*:\s*(.*?)\s*$", section
+        )
+        return match.group(1).strip() if match else ""
+
+    def _assert_doc_gate(
+        self,
+        row: dict[str, Any],
+        edge: str,
+        *,
+        actor_agent_id: str | None,
+        revision: str,
+    ) -> None:
         """Require verdict-bearing transitions in the canonical Feature Doc."""
         path = Path(row["working_dir"]) / row["feature_doc_path"]
         try:
@@ -490,6 +598,40 @@ class FeatureManager:
                     f"Transition {edge} requires {heading} verdict={verdict} "
                     "in the canonical Feature Doc"
                 )
+        if edge == "review->merge":
+            section = self._section_body(text, "Review Provenance")
+            reviewer = self._section_field(section, "Reviewer")
+            base_sha = self._section_field(section, "Base SHA")
+            reviewed_head = self._section_field(section, "Reviewed HEAD")
+            if reviewer != str(row["reviewer_agent_id"] or ""):
+                raise FeatureError(
+                    "Review Provenance Reviewer must match the assigned reviewer"
+                )
+            if actor_agent_id != row["reviewer_agent_id"]:
+                raise FeatureError(
+                    "Review Provenance actor must be the assigned reviewer"
+                )
+            if not re.fullmatch(r"[0-9a-fA-F]{7,64}", base_sha):
+                raise FeatureError("Review Provenance Base SHA is required")
+            if reviewed_head.lower() != revision.lower():
+                raise FeatureError(
+                    "Review Provenance Reviewed HEAD must match transition revision"
+                )
+        if edge in {"acceptance->closure", "closure->done"}:
+            section = self._section_body(text, "Vision Gate")
+            guardian = self._section_field(section, "Guardian")
+            merged_revision = self._section_field(section, "Merged revision")
+            journey_evidence = self._section_field(section, "Journey evidence")
+            if guardian != str(row["vision_guardian_agent_id"] or ""):
+                raise FeatureError(
+                    "Vision Gate Guardian must match the assigned guardian"
+                )
+            if merged_revision.lower() != revision.lower():
+                raise FeatureError(
+                    "Vision Gate Merged revision must match transition revision"
+                )
+            if not journey_evidence:
+                raise FeatureError("Vision Gate Journey evidence is required")
         if edge == "closure->done":
             unchecked = re.findall(r"^-\s*\[ \]\s+AC-", text, re.MULTILINE)
             if unchecked:
@@ -503,6 +645,71 @@ class FeatureManager:
                 raise FeatureError(
                     "Feature cannot close without an accepted Vision Gate"
                 )
+
+    @staticmethod
+    def _git_head(working_dir: str) -> str | None:
+        try:
+            completed = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=working_dir,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        value = completed.stdout.strip()
+        return value if completed.returncode == 0 and value else None
+
+    def _validate_revision(
+        self, row: dict[str, Any], edge: str, revision: str
+    ) -> str:
+        revision = revision.strip()
+        required = {
+            "review->merge",
+            "merge->acceptance",
+            "acceptance->closure",
+            "closure->done",
+        }
+        if edge not in required:
+            return revision
+        if not re.fullmatch(r"[0-9a-fA-F]{7,64}", revision):
+            raise FeatureError(f"Transition {edge} requires a valid revision")
+        current = self._git_head(row["working_dir"])
+        if current is not None and current.lower() != revision.lower():
+            raise FeatureError(
+                f"Transition {edge} revision does not match current HEAD"
+            )
+        return revision
+
+    def _validate_evidence_refs(
+        self, row: dict[str, Any], refs: list[str]
+    ) -> list[str]:
+        root = Path(row["working_dir"]).resolve()
+        feature_dir = (root / row["feature_doc_path"]).resolve().parent
+        valid: list[str] = []
+        for value in refs:
+            ref = str(value).strip()
+            if not ref:
+                raise FeatureError("Evidence references must be non-empty")
+            if re.fullmatch(r"https?://\S+", ref):
+                valid.append(ref)
+                continue
+            candidate = Path(ref)
+            if not candidate.is_absolute():
+                candidate = (
+                    root / candidate
+                    if candidate.parts and candidate.parts[0] == "docs"
+                    else feature_dir / candidate
+                )
+            resolved = candidate.resolve()
+            if not resolved.is_relative_to(root) or not resolved.is_file():
+                raise FeatureError(
+                    f"Invalid or missing evidence reference: {ref}"
+                )
+            valid.append(ref)
+        return list(dict.fromkeys(valid))
 
 
 feature_manager = FeatureManager()

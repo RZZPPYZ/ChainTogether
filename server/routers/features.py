@@ -125,20 +125,25 @@ async def update_feature_roles(
         raise _http_error(error)
 
 
-@router.post("/features/{run_id}/transition", response_model=FeatureRunInfo)
+@router.post(
+    "/sessions/{session_id}/features/{run_id}/transition",
+    response_model=FeatureRunInfo,
+)
 async def transition_feature(
+    session_id: str,
     run_id: str,
     request: FeatureTransitionRequest,
     _: str = Depends(verify_token),
 ):
     try:
-        return await _get_manager().transition(
+        return await _get_manager().transition_for_session(
             run_id,
+            session_id,
             to_stage=request.to_stage,
             result=request.result,
-            actor_agent_id=request.actor_agent_id,
             reason=request.reason,
             evidence_refs=request.evidence_refs,
+            revision=request.revision,
         )
     except FeatureError as error:
         raise _http_error(error)

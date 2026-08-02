@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import re
 import shutil
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 from server.agent_manager import AgentManager
 from server.config import settings
@@ -89,6 +93,52 @@ class FeatureWorkflowTests(unittest.IsolatedAsyncioTestCase):
         )
         path.write_text(text, encoding="utf-8")
 
+    @staticmethod
+    def _set_section_fields(
+        path: Path, heading: str, values: dict[str, str]
+    ) -> None:
+        text = path.read_text(encoding="utf-8")
+        start = text.index(f"## {heading}")
+        next_heading = text.find("\n## ", start + 3)
+        end = len(text) if next_heading < 0 else next_heading
+        section = text[start:end]
+        for label, value in values.items():
+            pattern = re.compile(rf"(?m)^- \*\*{re.escape(label)}\*\*:.*$")
+            if not pattern.search(section):
+                raise AssertionError(f"Missing field {label!r} in {heading}")
+            section = pattern.sub(f"- **{label}**: {value}", section, count=1)
+        path.write_text(text[:start] + section + text[end:], encoding="utf-8")
+
+    def _write_evidence(
+        self, run: dict[str, object], name: str, content: str = "verified"
+    ) -> str:
+        feature_dir = (self.workspace / str(run["feature_doc_path"])).parent
+        evidence_dir = feature_dir / "evidence"
+        evidence_dir.mkdir(exist_ok=True)
+        (evidence_dir / name).write_text(content, encoding="utf-8")
+        return f"evidence/{name}"
+
+    async def _advance_to_quality(self) -> tuple[dict[str, object], Path]:
+        run = await self._create_feature()
+        doc = self.workspace / str(run["feature_doc_path"])
+        await self.feature_manager.update_roles(
+            str(run["id"]),
+            {
+                "reviewer_agent_id": self.reviewer["id"],
+                "vision_guardian_agent_id": self.guardian["id"],
+            },
+        )
+        await self.feature_manager.transition(str(run["id"]), to_stage="design")
+        self._set_section_verdict(doc, "Design Gate", "approved")
+        await self.feature_manager.transition(
+            str(run["id"]), to_stage="planning", result="approved"
+        )
+        await self.feature_manager.transition(
+            str(run["id"]), to_stage="implementation"
+        )
+        await self.feature_manager.transition(str(run["id"]), to_stage="quality")
+        return run, doc
+
     async def test_feature_doc_roles_events_and_hard_gates(self) -> None:
         run = await self._create_feature()
         doc = self.workspace / str(run["feature_doc_path"])
@@ -134,11 +184,12 @@ class FeatureWorkflowTests(unittest.IsolatedAsyncioTestCase):
             await self.feature_manager.transition(
                 str(run["id"]), to_stage="review", result="passed"
             )
+        quality_ref = self._write_evidence(run, "quality-report.md")
         await self.feature_manager.transition(
             str(run["id"]),
             to_stage="review",
             result="passed",
-            evidence_refs=["evidence/quality-report.md"],
+            evidence_refs=[quality_ref],
         )
         reviewer_hint = await self.feature_manager.render_turn_context(
             str(run["id"]), self.group["id"], self.reviewer["id"]
@@ -151,38 +202,64 @@ class FeatureWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("$request-review", owner_hint)
         self.assertIn("$receive-review", owner_hint)
         self.assertNotIn("$review-feature", owner_hint)
-        self._set_section_verdict(doc, "Review Provenance", "approved")
+        review_revision = "89b070fe5b3dcc587fd62d1a16949034d8f658f2"
+        self._set_section_fields(
+            doc,
+            "Review Provenance",
+            {
+                "Reviewer": str(self.reviewer["id"]),
+                "Base SHA": "13253f3",
+                "Reviewed HEAD": review_revision,
+                "Verdict": "approved",
+            },
+        )
+        review_ref = self._write_evidence(run, "review.md")
         with self.assertRaisesRegex(FeatureError, "assigned reviewer"):
             await self.feature_manager.transition(
                 str(run["id"]),
                 to_stage="merge",
                 result="approved",
                 actor_agent_id=self.owner["id"],
-                evidence_refs=["evidence/review.md"],
+                evidence_refs=[review_ref],
+                revision=review_revision,
             )
         merged = await self.feature_manager.transition(
             str(run["id"]),
             to_stage="merge",
             result="approved",
             actor_agent_id=self.reviewer["id"],
-            evidence_refs=["evidence/review.md"],
+            evidence_refs=[review_ref],
+            revision=review_revision,
         )
         self.assertEqual(merged["stage"], "merge")
         self.assertEqual(
             merged["artifact_refs"],
             [
                 str(run["feature_doc_path"]),
-                "evidence/quality-report.md",
-                "evidence/review.md",
+                quality_ref,
+                review_ref,
             ],
         )
+        merged_revision = "aabbccddeeff00112233445566778899aabbccdd"
+        merge_ref = self._write_evidence(run, "merge.md")
         await self.feature_manager.transition(
             str(run["id"]),
             to_stage="acceptance",
             result="merged",
-            evidence_refs=["evidence/merge.md"],
+            evidence_refs=[merge_ref],
+            revision=merged_revision,
         )
-        self._set_section_verdict(doc, "Vision Gate", "accepted")
+        vision_ref = self._write_evidence(run, "vision.md")
+        self._set_section_fields(
+            doc,
+            "Vision Gate",
+            {
+                "Guardian": str(self.guardian["id"]),
+                "Merged revision": merged_revision,
+                "Verdict": "accepted",
+                "Journey evidence": vision_ref,
+            },
+        )
         text = doc.read_text(encoding="utf-8")
         doc.write_text(text.replace("- [ ] AC-1:", "- [x] AC-1:"), encoding="utf-8")
         await self.feature_manager.transition(
@@ -190,14 +267,17 @@ class FeatureWorkflowTests(unittest.IsolatedAsyncioTestCase):
             to_stage="closure",
             result="accepted",
             actor_agent_id=self.guardian["id"],
-            evidence_refs=["evidence/vision.md"],
+            evidence_refs=[vision_ref],
+            revision=merged_revision,
         )
+        closure_ref = self._write_evidence(run, "closure.md")
         done = await self.feature_manager.transition(
             str(run["id"]),
             to_stage="done",
             result="closed",
             actor_agent_id=self.owner["id"],
-            evidence_refs=["evidence/closure.md"],
+            evidence_refs=[closure_ref],
+            revision=merged_revision,
         )
         self.assertEqual(done["state"], "done")
         self.assertIsNone(
@@ -235,6 +315,167 @@ class FeatureWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Suggested skill(s): $feature-discovery", captured["prompt"])
         self.assertIn("Next step:", captured["prompt"])
         self.assertIn(str(run["feature_doc_path"]), captured["prompt"])
+
+    async def test_concurrent_transitions_use_compare_and_swap(self) -> None:
+        run, _doc = await self._advance_to_quality()
+        quality_ref = self._write_evidence(run, "quality-report.md")
+
+        results = await asyncio.gather(
+            self.feature_manager.transition(
+                str(run["id"]),
+                to_stage="review",
+                result="passed",
+                evidence_refs=[quality_ref],
+            ),
+            self.feature_manager.transition(
+                str(run["id"]),
+                to_stage="implementation",
+                result="failed",
+            ),
+            return_exceptions=True,
+        )
+
+        self.assertEqual(sum(isinstance(item, FeatureError) for item in results), 1)
+        events = await self.feature_manager.list_events(str(run["id"]))
+        quality_events = [item for item in events if item["from_stage"] == "quality"]
+        self.assertEqual(len(quality_events), 1)
+        current = await self.feature_manager.get(str(run["id"]))
+        self.assertEqual(current["stage"], quality_events[0]["to_stage"])
+
+    async def test_doc_preflight_failure_does_not_advance_database(self) -> None:
+        run = await self._create_feature()
+        doc = self.workspace / str(run["feature_doc_path"])
+        await self.feature_manager.transition(str(run["id"]), to_stage="design")
+        text = doc.read_text(encoding="utf-8")
+        doc.write_text(
+            re.sub(r"(?m)^updated_at:.*\n", "", text), encoding="utf-8"
+        )
+
+        with self.assertRaisesRegex(FeatureError, "lacks updated_at"):
+            await self.feature_manager.transition(
+                str(run["id"]),
+                to_stage="discovery",
+                result="changes_required",
+            )
+
+        current = await self.feature_manager.get(str(run["id"]))
+        self.assertEqual(current["stage"], "design")
+        events = await self.feature_manager.list_events(str(run["id"]))
+        self.assertEqual(events[-1]["to_stage"], "design")
+
+    async def test_failed_doc_delivery_is_recovered_from_outbox(self) -> None:
+        run = await self._create_feature()
+        doc = self.workspace / str(run["feature_doc_path"])
+        await self.feature_manager.transition(str(run["id"]), to_stage="design")
+
+        with mock.patch.object(
+            FeatureManager,
+            "_write_doc_content",
+            side_effect=OSError("simulated filesystem failure"),
+        ):
+            transitioned = await self.feature_manager.transition(
+                str(run["id"]),
+                to_stage="discovery",
+                result="changes_required",
+            )
+
+        self.assertEqual(transitioned["stage"], "discovery")
+        self.assertIn("stage: \"design\"", doc.read_text(encoding="utf-8"))
+        self.assertIsNotNone(
+            await self.db.get_feature_doc_sync(str(run["id"]))
+        )
+
+        await self.feature_manager.reconcile_document_syncs()
+        self.assertIn("stage: \"discovery\"", doc.read_text(encoding="utf-8"))
+        self.assertIsNone(await self.db.get_feature_doc_sync(str(run["id"])))
+
+    async def test_evidence_and_provenance_cannot_be_faked(self) -> None:
+        run, _doc = await self._advance_to_quality()
+        with self.assertRaisesRegex(FeatureError, "evidence reference"):
+            await self.feature_manager.transition(
+                str(run["id"]),
+                to_stage="review",
+                result="passed",
+                evidence_refs=["evidence/does-not-exist.md"],
+            )
+        self.assertEqual(
+            (await self.feature_manager.get(str(run["id"])))["stage"],
+            "quality",
+        )
+
+        quality_ref = self._write_evidence(run, "quality-report.md")
+        await self.feature_manager.transition(
+            str(run["id"]),
+            to_stage="review",
+            result="passed",
+            evidence_refs=[quality_ref],
+        )
+        doc = self.workspace / str(run["feature_doc_path"])
+        self._set_section_verdict(doc, "Review Provenance", "approved")
+        review_ref = self._write_evidence(run, "review.md")
+        with self.assertRaisesRegex(FeatureError, "Reviewer"):
+            await self.feature_manager.transition(
+                str(run["id"]),
+                to_stage="merge",
+                result="approved",
+                actor_agent_id=self.reviewer["id"],
+                evidence_refs=[review_ref],
+                revision="89b070fe5b3dcc587fd62d1a16949034d8f658f2",
+            )
+
+    async def test_session_bound_transition_derives_actor(self) -> None:
+        run, doc = await self._advance_to_quality()
+        quality_ref = self._write_evidence(run, "quality-report.md")
+        await self.feature_manager.transition(
+            str(run["id"]),
+            to_stage="review",
+            result="passed",
+            evidence_refs=[quality_ref],
+        )
+        revision = "89b070fe5b3dcc587fd62d1a16949034d8f658f2"
+        self._set_section_fields(
+            doc,
+            "Review Provenance",
+            {
+                "Reviewer": str(self.reviewer["id"]),
+                "Base SHA": "13253f3",
+                "Reviewed HEAD": revision,
+                "Verdict": "approved",
+            },
+        )
+        review_ref = self._write_evidence(run, "review.md")
+        owner_session = await self.session_manager.create_session(
+            agent_id=str(self.owner["id"]), working_dir=str(self.workspace)
+        )
+        reviewer_session = await self.session_manager.create_session(
+            agent_id=str(self.reviewer["id"]), working_dir=str(self.workspace)
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        await self.db.upsert_group_agent_session(
+            self.group["id"], str(self.owner["id"]), owner_session.id, now
+        )
+        await self.db.upsert_group_agent_session(
+            self.group["id"], str(self.reviewer["id"]), reviewer_session.id, now
+        )
+
+        with self.assertRaisesRegex(FeatureError, "assigned reviewer"):
+            await self.feature_manager.transition_for_session(
+                str(run["id"]),
+                owner_session.id,
+                to_stage="merge",
+                result="approved",
+                evidence_refs=[review_ref],
+                revision=revision,
+            )
+        merged = await self.feature_manager.transition_for_session(
+            str(run["id"]),
+            reviewer_session.id,
+            to_stage="merge",
+            result="approved",
+            evidence_refs=[review_ref],
+            revision=revision,
+        )
+        self.assertEqual(merged["stage"], "merge")
 
 
 if __name__ == "__main__":

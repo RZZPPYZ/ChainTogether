@@ -1487,7 +1487,7 @@ export interface paths {
         patch: operations["update_feature_roles_api_features__run_id__roles_patch"];
         trace?: never;
     };
-    "/api/features/{run_id}/transition": {
+    "/api/sessions/{session_id}/features/{run_id}/transition": {
         parameters: {
             query?: never;
             header?: never;
@@ -1497,7 +1497,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** Transition Feature */
-        post: operations["transition_feature_api_features__run_id__transition_post"];
+        post: operations["transition_feature_api_sessions__session_id__features__run_id__transition_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2100,6 +2100,8 @@ export interface components {
             reason: string;
             /** Evidence Refs */
             evidence_refs: string[];
+            /** Revision */
+            revision: string;
             /** Created At */
             created_at: string;
         };
@@ -2156,8 +2158,6 @@ export interface components {
              * @default
              */
             result: string;
-            /** Actor Agent Id */
-            actor_agent_id?: string | null;
             /**
              * Reason
              * @default
@@ -2165,6 +2165,11 @@ export interface components {
             reason: string;
             /** Evidence Refs */
             evidence_refs?: string[];
+            /**
+             * Revision
+             * @default
+             */
+            revision: string;
         };
         /**
          * FollowUpDelegationRequest
@@ -6140,11 +6145,12 @@ export interface operations {
             };
         };
     };
-    transition_feature_api_features__run_id__transition_post: {
+    transition_feature_api_sessions__session_id__features__run_id__transition_post: {
         parameters: {
             query?: never;
             header?: never;
             path: {
+                session_id: string;
                 run_id: string;
             };
             cookie?: never;

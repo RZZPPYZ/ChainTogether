@@ -90,13 +90,21 @@ stage with a reason; it never silently edits history to look linear.
    names FeatureRun/Feature, stage/state, receiving role, canonical doc, gate,
    role-aware suggested skill, and the stage's concrete next step.
 5. Record evidence in the repository, then request a transition through
-   `POST /api/features/{run_id}/transition`. The control plane validates the
-   edge, actor, role separation, evidence, and canonical document verdict.
+   `POST /api/sessions/{session_id}/features/{run_id}/transition`. The control
+   plane derives the actor from the bound group-agent session instead of
+   accepting a caller-supplied Agent ID. It validates the edge, optimistic
+   revision, role separation, existing evidence paths, exact Git revision, and
+   structured canonical-document provenance.
 6. Audit the immutable trail with `GET /api/features/{run_id}/events`.
 
 An invocation may pass among several group agents without changing the feature
 stage. Conversely, one feature stage may span many invocations. Agents report
-evidence; only the control plane records the transition.
+evidence; only the control plane records the transition. Each accepted
+transition uses compare-and-swap against the observed stage and `updated_at`,
+appends its event, and queues the matching Feature Doc update in one database
+transaction. A durable outbox retries document delivery after a process or
+filesystem failure, so the database and canonical dossier converge without
+accepting the same transition twice.
 
 D14 is a per-turn advisory signboard, not a scheduler: it tells the Agent where
 the group is and which skill fits its assigned role, while leaving execution and
