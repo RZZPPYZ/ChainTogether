@@ -10,10 +10,10 @@
 | Group active pointer | F001/DB | one selected FeatureRun per group | Claimed with `INSERT ... ON CONFLICT DO NOTHING`; losing starts roll back. |
 | Feature Doc outbox | F001/DB | exact create/update image and disk baseline mode | Create-only or update delivery is idempotent; conflict fails closed. |
 | Role assignment | FeatureRun | owner/reviewer/guardian IDs | Three distinct live group members; operator can patch before the affected protected action. |
-| FeatureDispatch | FeatureDeliveryManager/DB | revision, purpose, generation, target, lease, invocation ID, state | One pending/leased/active dispatch per run; stale revision is superseded; dead/failed is retryable. |
+| FeatureDispatch | FeatureDeliveryManager/DB | revision, purpose, generation, target, lease, invocation ID, capability hash, predecessor/successor link, state | One invocation-bearing predecessor and one waiting/pending successor may coexist; stale revision is superseded; dead/failed is retryable. |
 | GroupInvocation | GroupManager | one depth-bounded A2A custody segment linked to FeatureRun/dispatch | Each successor dispatch creates a new depth-zero invocation; terminal callback releases the dispatch. |
-| Group-agent Session | SessionManager/DB | group, agent, Session ID, ephemeral capability in live process | Server derives actor; missing Session/role membership blocks dispatch/transition. |
-| Feature MCP process | Harness assembly | stateless stdio child with Session env | Calls Session-bound REST only; no direct DB access. |
+| Group-agent Session | SessionManager/DB | group, agent, Session ID, ephemeral capability in live process | Server derives actor; Session identity alone never authorizes a dispatch mutation. |
+| Feature MCP process | Harness assembly | stateless stdio child with Session env plus one-turn dispatch capability | Calls Session-and-dispatch-bound REST only; no direct DB access; raw dispatch token is absent from argv/config. |
 
 ## Required actor matrix
 
@@ -53,22 +53,27 @@ the Feature write transaction; a uniqueness loser rolls back all rows.
 
 | State | Event | Guard | Next/effect |
 |---|---|---|---|
-| none | stage transition committed | target stage has successor actor | insert revision-bound `pending` dispatch in same transition transaction |
-| none | owner requests independent review | run is review at exact revision; packet/evidence valid | insert `review_request` dispatch to reviewer |
-| none | operator resumes | no pending/leased/active dispatch and no live linked invocation | insert next generation `resume` dispatch |
+| none | stage transition committed | current dispatch is `active`, both capabilities valid, target stage has successor actor | atomically consume capability, mark predecessor `handoff_committed`, insert revision-bound `waiting` successor |
+| none | owner requests independent review | current dispatch is `active`, both capabilities valid, run is review at exact revision, packet/evidence valid | atomically consume capability, mark predecessor `handoff_committed`, insert `review_request` successor in `waiting` |
+| none | operator resumes | no invocation-bearing dispatch and no waiting/pending successor or live linked invocation | insert next generation `pending` resume dispatch |
 | `pending` | lease | lease absent/expired; observed run revision still current | `leased` |
 | `leased` | invocation reserve/inject/launch | deterministic dispatch marker/ID; target live | `active`, persist invocation ID |
 | `leased` | stale revision/role | FeatureRun or assignment changed | `superseded`, recompute from current run |
-| `active` | invocation resolved/completed | terminal GroupInvocation | `completed`; wait for transition-created successor or explicit resume |
+| `active` | accepted transition or `request_review` | Session capability, dispatch capability, role, revision, evidence and edge all valid | `handoff_committed`; capability consumed; one `waiting` successor inserted in same transaction |
+| `active` | second mutation/replay | capability consumed or dispatch not active | reject 409/403; no lifecycle/dispatch change |
+| `handoff_committed` | predecessor invocation terminal | callback dispatch ID and state CAS match | predecessor `completed`; promote linked successor `waiting` -> `pending` |
+| `active` | invocation resolved with no accepted handoff | terminal GroupInvocation | `completed`; status exposes incomplete stage and explicit resume |
 | `active` | invocation dead/failed/blocked | no accepted successor transition | `failed`; status exposes retry/blocker; resume may create next generation |
 | `leased` | process crash | lease expires | another worker resumes same deterministic dispatch |
 
 The group message contains a deterministic `[feature-dispatch:<id>]` marker.
-Launch checks both the dispatch row and existing invocation/message marker so a
-retry can finish a partially launched dispatch without injecting a second user
-message. A pending successor waits until the current invocation is terminal;
-the MCP tells the current Agent to end its turn after a successful transition
-or `request_review`.
+Launch creates a random dispatch capability, persists only its hash, and passes
+the raw value through the server-owned per-turn harness environment alongside
+the Session capability. Launch also checks the dispatch row and existing
+invocation/message marker so a retry can finish a partial launch without a
+second user message. A `waiting` successor cannot be leased until the exact
+predecessor invocation is terminal; MCP tells the current Agent to end its turn
+after transition or `request_review`.
 
 ## Numbered invariants
 
@@ -81,22 +86,30 @@ or `request_review`.
    at assignment and are revalidated before protected action/dispatch.
 5. Stable fallback order is `(joined_at, agent_id)`; a valid non-archived group
    default Agent is owner, otherwise the first row wins.
-6. At most one FeatureDispatch is pending, leased, or active for a FeatureRun.
+6. At most one invocation-bearing dispatch (`leased`, `active`, or
+   `handoff_committed`) and at most one unlaunched successor (`waiting` or
+   `pending`) exist for a FeatureRun. The intentional handoff pair is one of
+   each; a successor cannot lease until its predecessor is terminal.
 7. Every dispatch is bound to exact FeatureRun `updated_at`, stage, purpose,
    target role, and generation. A stale binding can only be superseded.
 8. Every launched successor GroupInvocation is linked to its FeatureRun and
    dispatch and begins at A2A depth zero.
-9. Actor identity comes only from the capability-bound live group-agent
-   Session. MCP does not accept caller-supplied agent/group/role authority.
-10. MCP transition calls exactly the F001 transition service and cannot update
+9. Actor identity comes from the capability-bound live group-agent Session;
+   mutation authority additionally requires the random capability bound to the
+   exact active dispatch/invocation generation. MCP accepts no caller-supplied
+   agent/group/role/dispatch authority.
+10. A dispatch capability authorizes at most one transition or Review request.
+    Consumption, predecessor `handoff_committed`, lifecycle mutation (when
+    applicable), and successor insert commit or roll back together.
+11. MCP transition calls exactly the F001 transition service and cannot update
     lifecycle tables directly.
-11. Protected Review/Vision evidence and Git provenance remain fail-closed;
+12. Protected Review/Vision evidence and Git provenance remain fail-closed;
     owner-stage edges additionally require the assigned owner.
-12. A role loss blocks the affected dispatch or edge. Only authenticated
+13. A role loss blocks the affected dispatch or edge. Only authenticated
     operator role patching can reassign; no Agent self-reassigns through MCP.
-13. Successful closure leaves no active group pointer or pending/active
+14. Successful closure leaves no active group pointer or live/waiting
     dispatch, and status reports terminal truth.
-14. `/feature` merge authorization applies only after green Quality, Review,
+15. `/feature` merge authorization applies only after green Quality, Review,
     and Merge Gates and repository policy; force/policy bypass is never implied.
 
 ## Adversarial matrix
@@ -110,10 +123,15 @@ or `request_review`.
 | Two resumes race | one dispatch generation wins; both responses identify it |
 | Transition and resume race | transition revision wins; old resume is rejected/superseded; successor targets new stage |
 | Old leased worker wakes late | revision/lease CAS fails; it cannot launch or overwrite new target |
+| Same old turn calls transition twice | first call consumes dispatch capability and commits one waiting successor; second is rejected with no event/dispatch |
+| Resume after transition while predecessor is still active | returns the existing handoff pair; cannot add another successor or launch it early |
+| Predecessor terminal races successor lease | terminal CAS promotes waiting once; lease can win only after promotion; one invocation launches |
+| Old reused Session replays before/after new generation launch | old dispatch capability is consumed; Session capability alone cannot mutate either generation |
+| Late predecessor terminal callback | callback CAS can complete only its dispatch/link and cannot complete, supersede, or overwrite the successor |
 | Server restarts with running invocation | GroupManager marks it dead; dispatch becomes failed; resume recomputes target from current FeatureRun |
 | Owner fixes after Review request_changes | reviewer transition creates fresh owner invocation at depth zero; later review uses another new invocation |
 | Assigned Agent removed/archived/backend unavailable | dispatch/edge blocks with exact role; operator patches roles or restores Agent, then resumes |
-| Wrong Session/capability/group/run calls status or transition | 403/409; no dispatch, event, doc, or FeatureRun mutation |
+| Wrong Session/capability/dispatch token/group/run calls status or transition | 403/409; no dispatch, event, doc, or FeatureRun mutation |
 | Owner attempts self-review or reviewer attempts Vision | existing F001 gate rejects; no successor dispatch is inserted |
 | Feature MCP omitted from stored Agent selection | still present because it is mandatory core assembly, not a selectable connector |
 | Merge Gate red/protected policy denies merge | Feature remains merge/blocked; no force or policy override |

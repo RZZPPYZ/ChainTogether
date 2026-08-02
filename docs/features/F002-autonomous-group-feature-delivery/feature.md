@@ -16,7 +16,7 @@ updated_at: 2026-08-02
 related_features: ["F001"]
 blocked_by: []
 research_refs: ["docs/features/F002-autonomous-group-feature-delivery/evidence/discovery.md", "docs/features/F002-autonomous-group-feature-delivery/evidence/orchestration-design.md", "docs/features/F001-group-feature-lifecycle/evidence/vision-verdict-0c5482d.md"]
-decision_refs: ["docs/features/F002-autonomous-group-feature-delivery/evidence/discovery.md", "docs/features/F002-autonomous-group-feature-delivery/evidence/design-response-f662c20.md"]
+decision_refs: ["docs/features/F002-autonomous-group-feature-delivery/evidence/discovery.md", "docs/features/F002-autonomous-group-feature-delivery/evidence/design-response-f662c20.md", "docs/features/F002-autonomous-group-feature-delivery/evidence/design-response-ab83a23.md"]
 plan_refs: []
 pr_refs: []
 ---
@@ -81,11 +81,12 @@ transition API calls.
      required artifact/evidence, and calls the Feature MCP to inspect or
      transition the run. MCP calls use the live Session capability and cannot
      bypass the existing transition API or role gates.
-  5. A transition transaction records one revision-bound successor dispatch.
-     Each dispatch waits for the current invocation to end, then starts a fresh
-     depth-zero GroupInvocation for the required actor. Review preparation uses
-     an explicit MCP `request_review` dispatch; fixes route to owner and can
-     repeat without exhausting the A2A depth cap.
+  5. The current turn's one-time dispatch capability authorizes one transition
+     or Review request. That transaction consumes it, marks the predecessor
+     `handoff_committed`, and creates one revision-bound `waiting` successor.
+     After the exact predecessor invocation ends, the successor becomes
+     dispatchable and starts a fresh depth-zero GroupInvocation for the required
+     actor. Fix/Review cycles can repeat without exhausting A2A depth.
   6. If an invocation stops or the server restarts, `/feature status` exposes
      durable start/dispatch state and `/feature resume` recomputes the actor
      from current FeatureRun truth, leases one dispatch generation, and cannot
@@ -128,16 +129,18 @@ transition API calls.
 - [ ] AC-5: Every group Agent receives the mandatory core Feature MCP with
   `status`, `transition`, and `request_review` tools; tool results identify the
   run, stage, role, suggested Skill, next step, dispatch state, and required
-  successor actor.
-- [ ] AC-6: MCP derives identity from `OCTOPUS_SESSION_ID` plus the unlisted
-  Session capability and calls the existing control-plane transition path;
-  wrong Session/capability, wrong assigned role, missing evidence, stale Git,
-  or invalid edge remains fail-closed.
-- [ ] AC-7: Start, each accepted transition, and `request_review` create an
-  idempotent revision-bound successor dispatch. After the current invocation
-  ends, it launches one fresh depth-zero invocation for owner, reviewer, or
-  guardian according to the actor matrix; multi-round Review/fix chains reach
-  Vision without the single-invocation A2A depth cap.
+  successor actor. Each dispatched turn additionally receives an unlisted,
+  one-time dispatch capability through process env, absent from argv/config.
+- [ ] AC-6: MCP derives identity from `OCTOPUS_SESSION_ID` plus the Session
+  capability and binds mutation to the exact active invocation generation with
+  its dispatch capability. The first transition/request consumes that token in
+  the same transaction as lifecycle change and successor insert; replay, wrong
+  Session/token/role, missing evidence, stale Git, or invalid edge fails closed.
+- [ ] AC-7: Start creates an initial dispatch. Each accepted transition or
+  `request_review` atomically marks its active predecessor
+  `handoff_committed` and creates one `waiting` revision-bound successor. Only
+  the exact predecessor terminal callback promotes it; one fresh depth-zero
+  invocation then launches for the actor matrix, supporting multi-round Review.
 - [ ] AC-8: The group header/composer shows active Feature ID, stage, state, and
   role assignments, and reflects start/status/resume failures without losing
   the operator's requirement.
@@ -145,9 +148,10 @@ transition API calls.
   active-pointer winner; retries return the same checkpoint/run and explicit
   status/resume path rather than creating another doc, run, or invocation.
 - [ ] AC-10: Dispatch state, revision, lease, target, purpose, generation, and
-  invocation link survive restart. Two resumes, transition-vs-resume, and a
-  late old worker converge to one current actor invocation; dead/blocked runs
-  recompute from FeatureRun stage/roles instead of trusting stale custody.
+  invocation/predecessor link and capability hash survive restart. Two resumes,
+  transition-vs-resume, double transition from an old turn, terminal-vs-lease,
+  token replay, and a late callback converge to one current actor invocation;
+  dead/blocked runs recompute from FeatureRun truth.
 - [ ] AC-11: Claude Code and Codex always expose Feature MCP as an unremovable
   core control-plane server without leaking Session capability in argv or
   connector configuration, regardless of an Agent's optional MCP selection.
@@ -197,15 +201,16 @@ transition API calls.
 
 - **State census, event tables, actor matrix, invariants, recovery and bypass
   tests**: `evidence/orchestration-design.md`
-- **Design Gate response**: `evidence/design-response-f662c20.md`
+- **Design Gate responses**: `evidence/design-response-f662c20.md`,
+  `evidence/design-response-ab83a23.md`
 - **Merge authorization**: the operator's explicit one-sentence-to-delivery
   request is interpreted as the policy-bounded decision in AC-14.
 
 ## Design Gate
 
 - **Verdict**: pending
-- **Feature Doc revision**: discovery revision after `f662c20` changes_required
-- **Evidence**: `evidence/discovery.md`, `evidence/orchestration-design.md`, `evidence/design-response-f662c20.md`
+- **Feature Doc revision**: discovery revision after `ab83a23` changes_required
+- **Evidence**: `evidence/discovery.md`, `evidence/orchestration-design.md`, `evidence/design-response-f662c20.md`, `evidence/design-response-ab83a23.md`
 
 ## Delivery
 
@@ -248,3 +253,5 @@ transition API calls.
 | 2026-08-02 | Discovery converged role fallback, MCP boundary, and resume semantics | `evidence/discovery.md` |
 | 2026-08-02 | Independent Design Gate requested durable successor dispatch, atomic start, concurrency/restart semantics, actor matrix, Session-bound status, and merge authorization | `evidence/design-response-f662c20.md` |
 | 2026-08-02 | Discovery revised state census, dispatch protocol, invariants, adversarial matrix, and policy-bounded authorization | `evidence/orchestration-design.md` |
+| 2026-08-02 | Second Design Gate requested an explicit handoff pair invariant and invocation-generation authorization | `evidence/design-response-ab83a23.md` |
+| 2026-08-02 | Discovery added handoff-committed/waiting successor protocol and one-time dispatch capability | `evidence/orchestration-design.md` |
