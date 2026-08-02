@@ -9,6 +9,7 @@ test-results/
 .claude/
 .codex/skills/
 .pytest_cache/
+.worktrees/
 octopus.db*
 octopus-dev.db*
 chaintogether.db*
