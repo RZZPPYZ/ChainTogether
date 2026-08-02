@@ -2,7 +2,7 @@
 schema_version: 1
 id: F002
 title: "Autonomous Group Feature Delivery"
-stage: discovery
+stage: planning
 state: active
 priority: P1
 owner: "codex"
@@ -16,8 +16,8 @@ updated_at: 2026-08-02
 related_features: ["F001"]
 blocked_by: []
 research_refs: ["docs/features/F002-autonomous-group-feature-delivery/evidence/discovery.md", "docs/features/F002-autonomous-group-feature-delivery/evidence/orchestration-design.md", "docs/features/F001-group-feature-lifecycle/evidence/vision-verdict-0c5482d.md"]
-decision_refs: ["docs/features/F002-autonomous-group-feature-delivery/evidence/discovery.md", "docs/features/F002-autonomous-group-feature-delivery/evidence/design-response-f662c20.md", "docs/features/F002-autonomous-group-feature-delivery/evidence/design-response-ab83a23.md"]
-plan_refs: []
+decision_refs: ["docs/features/F002-autonomous-group-feature-delivery/evidence/discovery.md", "docs/features/F002-autonomous-group-feature-delivery/evidence/design-response-f662c20.md", "docs/features/F002-autonomous-group-feature-delivery/evidence/design-response-ab83a23.md", "docs/features/F002-autonomous-group-feature-delivery/evidence/design-verdict-ed9bda4.md"]
+plan_refs: ["docs/features/F002-autonomous-group-feature-delivery/plan.md"]
 pr_refs: []
 ---
 
@@ -208,13 +208,13 @@ transition API calls.
 
 ## Design Gate
 
-- **Verdict**: pending
-- **Feature Doc revision**: discovery revision after `ab83a23` changes_required
-- **Evidence**: `evidence/discovery.md`, `evidence/orchestration-design.md`, `evidence/design-response-f662c20.md`, `evidence/design-response-ab83a23.md`
+- **Verdict**: approved
+- **Feature Doc revision**: `ed9bda4072ebfdb633f9973545530a6c6aff6f8a`
+- **Evidence**: `evidence/design-verdict-ed9bda4.md`
 
 ## Delivery
 
-- **Plan**: pending Design Gate
+- **Plan**: `docs/features/F002-autonomous-group-feature-delivery/plan.md`
 - **Worktree**: pending plan
 - **Branch**: `codex/f002-autonomous-group-feature`
 
@@ -255,3 +255,4 @@ transition API calls.
 | 2026-08-02 | Discovery revised state census, dispatch protocol, invariants, adversarial matrix, and policy-bounded authorization | `evidence/orchestration-design.md` |
 | 2026-08-02 | Second Design Gate requested an explicit handoff pair invariant and invocation-generation authorization | `evidence/design-response-ab83a23.md` |
 | 2026-08-02 | Discovery added handoff-committed/waiting successor protocol and one-time dispatch capability | `evidence/orchestration-design.md` |
+| 2026-08-02 | Independent Design Gate approved exact Feature Doc revision `ed9bda4` | `evidence/design-verdict-ed9bda4.md` |
