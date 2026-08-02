@@ -1,0 +1,4 @@
+interface:
+  display_name: "Feature Discovery"
+  short_description: "Turn a group signal into an evidence-backed feature spec."
+  default_prompt: "Use $feature-discovery to interview, research, converge, and crystallize this feature."

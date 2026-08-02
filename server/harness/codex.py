@@ -155,6 +155,7 @@ def build_turn_argv(ctx: TurnContext) -> tuple[list[str], dict[str, Any]]:
         argv += ["--", ctx.prompt]
 
     env = os.environ.copy()
+    env.update(ctx.callback_env)
     _apply_home_dir(env, ctx.credential)
     return argv, {"cwd": ctx.working_dir, "env": env}
 

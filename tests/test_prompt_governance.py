@@ -64,6 +64,31 @@ class PromptGovernanceTests(unittest.TestCase):
 
         self.assertTrue(prompt.endswith("L0 governance"))
 
+    def test_d14_workflow_sop_is_a_registered_dynamic_template(self) -> None:
+        governance = GroupPromptGovernance()
+
+        prompt = governance.render_dynamic(
+            "update_workflow_sop",
+            feature_run_id="run-1",
+            feature_id="F001",
+            stage="implementation",
+            state="active",
+            role="owner",
+            canonical_doc="docs/features/F001-example/feature.md",
+            suggested_skills="$worktree, $tdd",
+            current_gate="implementation-complete",
+            next_step="Create the isolated worktree, then implement AC-6.",
+        )
+
+        self.assertIn("D14 — update-workflow-sop", prompt)
+        self.assertIn("FeatureRun: run-1 | Feature: F001", prompt)
+        self.assertIn("Stage: implementation | State: active | Role: owner", prompt)
+        self.assertIn("Suggested skill(s): $worktree, $tdd", prompt)
+        self.assertIn(
+            "Next step: Create the isolated worktree, then implement AC-6.",
+            prompt,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

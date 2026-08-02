@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "id": "feature-lifecycle",
+  "initial_stage": "discovery",
+  "terminal_stages": ["done"],
+  "states": ["active", "blocked", "done"],
+  "stages": {
+    "discovery": {
+      "skill": "feature-discovery",
+      "gate": "discovery-readiness",
+      "next_step": "Interview the operator, research material unknowns, converge decisions, and make every requirement traceable to an acceptance criterion."
+    },
+    "design": {
+      "skill": "design-gate",
+      "gate": "design-verdict",
+      "next_step": "Review scope, journeys, ownership, state invariants, and risks; record approved, changes_required, or blocked in the Feature Doc."
+    },
+    "planning": {
+      "skill": "writing-plans",
+      "gate": "plan-readiness",
+      "next_step": "Write an AC-complete red-green-refactor plan with exact files, commands, state invariants, and evidence outputs."
+    },
+    "implementation": {
+      "skills": ["worktree", "tdd"],
+      "gate": "implementation-complete",
+      "next_step": "Prepare or verify the isolated feature worktree, then implement the next unchecked AC through a red-green-refactor cycle."
+    },
+    "quality": {
+      "skill": "quality-gate",
+      "gate": "quality-report",
+      "next_step": "Run fresh AC, test, lint, typecheck, build, journey, and artifact checks; write the Quality Report and resolve every failure."
+    },
+    "review": {
+      "skills": ["request-review", "review-feature", "receive-review"],
+      "skills_by_role": {
+        "owner": ["request-review", "receive-review"],
+        "reviewer": ["review-feature"]
+      },
+      "gate": "review-verdict",
+      "next_step": "Owner: prepare the SHA-bound packet or resolve findings. Reviewer: independently review the exact HEAD and record a verdict."
+    },
+    "merge": {
+      "skill": "merge-gate",
+      "gate": "merge-evidence-manifest",
+      "next_step": "Verify review continuity, current HEAD, CI, local evidence, conflicts, and repository policy before performing the authorized merge."
+    },
+    "acceptance": {
+      "skill": "vision-gate",
+      "skills_by_role": {
+        "vision_guardian": ["vision-gate"]
+      },
+      "gate": "vision-verdict",
+      "next_step": "The independent vision guardian replays the original user journey against the merged revision and records accepted or changes_required."
+    },
+    "closure": {
+      "skill": "close-feature",
+      "skills_by_role": {
+        "owner": ["close-feature"]
+      },
+      "gate": "feature-truth",
+      "next_step": "Reconcile ACs, evidence, decisions, review, merge, vision verdict, timeline, and indexes before marking the feature done."
+    },
+    "done": {
+      "skill": "feature-lifecycle",
+      "next_step": "Do not continue implementation under this FeatureRun; route any new scope through discovery as a new or explicitly reopened feature."
+    }
+  },
+  "transitions": [
+    {"from": "discovery", "to": "design"},
+    {"from": "design", "to": "discovery", "result": "changes_required"},
+    {"from": "design", "to": "planning", "result": "approved"},
+    {"from": "planning", "to": "design", "result": "design_gap"},
+    {"from": "planning", "to": "implementation"},
+    {"from": "implementation", "to": "quality"},
+    {"from": "quality", "to": "implementation", "result": "failed"},
+    {"from": "quality", "to": "review", "result": "passed"},
+    {"from": "review", "to": "implementation", "result": "request_changes"},
+    {"from": "review", "to": "merge", "result": "approved"},
+    {"from": "merge", "to": "review", "result": "stale_review"},
+    {"from": "merge", "to": "acceptance", "result": "merged"},
+    {"from": "acceptance", "to": "discovery", "result": "vision_gap"},
+    {"from": "acceptance", "to": "implementation", "result": "delivery_gap"},
+    {"from": "acceptance", "to": "closure", "result": "accepted"},
+    {"from": "closure", "to": "done", "result": "closed"}
+  ],
+  "role_constraints": [
+    {"type": "different", "left": "owner_agent_id", "right": "reviewer_agent_id"},
+    {"type": "different", "left": "owner_agent_id", "right": "vision_guardian_agent_id"},
+    {"type": "different", "left": "reviewer_agent_id", "right": "vision_guardian_agent_id"}
+  ],
+  "evidence_required_for": [
+    "quality->review",
+    "review->merge",
+    "merge->acceptance",
+    "acceptance->closure",
+    "closure->done"
+  ]
+}

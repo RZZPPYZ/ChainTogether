@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class SessionStatus(str, Enum):
@@ -592,6 +592,7 @@ class GroupSendRequest(BaseModel):
 
     content: str = Field(min_length=1)
     attachment_ids: list[str] = []
+    feature_run_id: str | None = None
 
 
 class GroupInvocationInfo(BaseModel):
@@ -608,7 +609,71 @@ class GroupInvocationInfo(BaseModel):
     created_at: str
     updated_at: str
     completed_at: str | None = None
+    feature_run_id: str | None = None
 
 
 class GroupInvocationResumeRequest(BaseModel):
     reason: str = ""
+
+
+class FeatureRunInfo(BaseModel):
+    id: str
+    feature_id: str
+    group_id: str
+    working_dir: str
+    feature_doc_path: str
+    title: str
+    stage: str
+    state: str
+    priority: str
+    owner_agent_id: str | None = None
+    reviewer_agent_id: str | None = None
+    vision_guardian_agent_id: str | None = None
+    current_gate: str | None = None
+    operator_quote: str = ""
+    origin_message_seq: int | None = None
+    artifact_refs: list[str] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+    completed_at: str | None = None
+
+
+class GroupFeatureCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    priority: str = Field(default="P1", pattern=r"^P[0-3]$")
+    owner_agent_id: str | None = None
+    operator_quote: str = Field(default="", max_length=10000)
+    origin_message_seq: int | None = Field(default=None, ge=0)
+
+
+class GroupActiveFeatureUpdate(BaseModel):
+    feature_run_id: str | None = None
+
+
+class FeatureRolesUpdate(BaseModel):
+    owner_agent_id: str | None = None
+    reviewer_agent_id: str | None = None
+    vision_guardian_agent_id: str | None = None
+
+
+class FeatureTransitionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    to_stage: str = Field(min_length=1, max_length=40)
+    result: str = Field(default="", max_length=80)
+    reason: str = Field(default="", max_length=4000)
+    evidence_refs: list[str] = Field(default_factory=list)
+    revision: str = Field(default="", max_length=64)
+
+
+class FeatureRunEventInfo(BaseModel):
+    id: int
+    feature_run_id: str
+    from_stage: str
+    to_stage: str
+    result: str
+    actor_agent_id: str | None = None
+    reason: str
+    evidence_refs: list[str]
+    revision: str
+    created_at: str

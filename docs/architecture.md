@@ -87,12 +87,17 @@ their Sessions, Schedules, and bridge bindings. A protected **Default Agent**
 | `crypto.py` | Fernet encryption (keyed off `OCTOPUS_AUTH_TOKEN`) for secrets at rest. |
 | `models.py` | Pydantic request/response models + enums (`SessionStatus`, `MessageRole`, agent/schedule/connector/credential DTOs). |
 | `session_manager.py` | Core turn engine. Owns in-memory `Session` objects, drives each turn through the **Harness**, persists + broadcasts events to WebSocket clients and bridges, runs tool-result forwarding, interactive questions, mid-turn interrupt, the per-session message queue, premature-exit auto-respawn, and large-prompt spill. |
-| `group_manager.py` | Group CRUD, default responder selection, user/A2A `@` routing, group-member reuse sessions, routing guards, and D-layer cursor advancement. |
+| `group_manager.py` | Group CRUD, default responder selection, user/A2A `@` routing, group-member reuse sessions, routing guards, D-layer cursor advancement, and optional FeatureRun context injection. |
+| `feature_manager.py` | Durable group-first feature control plane: canonical dossier creation, role separation, workflow transitions, gate evidence, event history, and per-agent lifecycle context. See [`feature-lifecycle.md`](feature-lifecycle.md). |
 | `prompt_governance.py` + `assets/` | Compiles versioned prompt templates and machine routing policy once, renders per-turn L0/D prompts, and derives per-group roster snapshots from canonical database rows. |
 | `harness/` | The single boundary for all model/runtime interaction (see below). |
 | `agent_manager.py` | Agent CRUD (the durable assistant definitions). |
 | `agent_memory.py` | Per-agent native memory provisioning (`<agents_dir>/<id>/memory/`). |
 | `delegations.py` | Agent-to-agent delegation manager ([`plans/agent-collaboration.md`](plans/agent-collaboration.md)) — `mcp__ask_agent__ask` lets one agent spawn a child session under another agent, or continue a prior delegation in the same child session by passing its `delegation_id`. Subscribes to the session-manager broadcast bus; on the child's terminal event (`result` / `error` / `question_request`) injects an `[agent-reply:…]` / `[agent-error:…]` / `[agent-question:…]` turn back into the parent. Owns cycle + depth-3 guards (with DB fallback for archived ancestors), single-inject idempotency, same-session follow-up reset, cascade-cancel of descendants, and child auto-archive after terminal delivery. |
+
+Session-scoped control-plane capabilities are supplied through the spawned
+Harness process environment. Built-in MCP children inherit them; provider CLI
+arguments and connector MCP configuration never contain those capabilities.
 | `scheduler.py` | `ScheduleRunner` — APScheduler runner for recurring prompts, **interval and cron**, fired per agent into fresh auto-archiving sessions. |
 | `schedule_ai.py` | Natural-language `/schedule` parsing — turns "every weekday at 9am" into a cron/interval spec via the agent's own harness (backend-agnostic). |
 | `database.py` | SQLite (`aiosqlite`, WAL, FK cascade). `_SCHEMA` defines all tables; idempotent `_apply_migrations` / `_migrate_*` evolve existing DBs additively. |
@@ -124,6 +129,12 @@ split into two layers with different lifetimes:
   triggering message as separate JSON blocks. Ping-pong warnings, routing
   correction, and HOLD resumption are selected dynamic templates rather than
   permanent system text.
+- **D14 workflow directive:** `group_active_features` persists the group's
+  current FeatureRun. Each routed turn reloads it and renders the registered
+  `dynamic.update_workflow_sop` template with FeatureRun/Feature, stage/state,
+  receiving role, canonical doc, gate, role-aware suggested skill, and concrete
+  next step. An explicit `feature_run_id` switches the group context; later
+  messages inherit it. Invocation custody and feature progress remain separate.
 - **Incremental cursor:** `group_agent_sessions.last_seen_group_seq` stores the
   highest group sequence successfully shown to each member. The cursor advances
   monotonically only after a successful backend turn. The current trigger is
@@ -387,6 +398,15 @@ GET                /api/sessions/{id}/research                   # list jobs for
 GET                /api/sessions/{id}/research/{rid}             # job detail + phase progress
 POST               /api/sessions/{id}/research/{rid}/cancel      # cancel in-flight job
 
+# Groups + durable feature lifecycle
+POST               /api/groups/{id}/send                         # optional feature_run_id
+GET/POST            /api/groups/{id}/features
+GET/PUT             /api/groups/{id}/active-feature
+GET                 /api/features/{run_id}
+PATCH               /api/features/{run_id}/roles
+POST                /api/sessions/{session_id}/features/{run_id}/transition
+GET                 /api/features/{run_id}/events
+
 # Schedules (interval + cron), credentials, connectors, notifiers
 GET/POST           /api/schedules
 GET/PATCH/DELETE   /api/schedules/{id}
@@ -441,6 +461,18 @@ migrations (never re-create or duplicate the schema in docs).
 - **`bg_tasks`** — cross-turn background task state (`status`, `exit_code`,
   captured stdio, timestamps).
 - **`research_jobs`** — native deep-research job state: `question`, `status` (`running`|`completed`|`cancelled`|`failed`|`interrupted`), `phase`, `completed_at`, `injection_status` / `injected_at` / `delivery_error` (delivery tracked separately from completion so a job can be "done but report queued"), `report_path`, and per-phase progress counters. A boot sweep marks any `running` row `interrupted`.
+- **`feature_runs`** — long-lived feature state scoped to a group and working
+  directory: canonical dossier, stage/state, independent lifecycle roles,
+  current gate, origin, and accumulated artifact references.
+- **`feature_run_events`** — append-only stage transition audit with actor,
+  result, reason, evidence references, exact Git revision, and timestamp.
+- **`feature_doc_syncs`** — one durable canonical-document image per
+  FeatureRun, transactionally superseded with a preserved disk baseline hash;
+  delivery is retried and external-edit conflicts fail closed.
+- **`feature_invocation_links`** — optional relation from one short-lived
+  `group_invocation` custody chain to the FeatureRun it advances.
+- **`group_active_features`** — one persisted current FeatureRun per group,
+  read afresh for D14 on every routed turn and cleared when the feature is done.
 
 ## Memory
 

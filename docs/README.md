@@ -10,6 +10,11 @@ system works today; the rest is design history and reference.
   WebSocket protocol, the data model, and key decisions. The doc to read first.
 - **[connectors-setup.md](connectors-setup.md)** — user how-to for setting up
   GitHub / Gmail / custom OAuth connectors entirely from the browser.
+- **[feature-lifecycle.md](feature-lifecycle.md)** — the group-first path from
+  discovery to accepted delivery, including unified Claude/Codex skills,
+  FeatureRun gates, and the review handoff contract.
+- **[features/index.md](features/index.md)** — generated index of canonical
+  Feature Docs and their current stages.
 
 ## Design records — [`plans/`](plans/)
 

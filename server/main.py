@@ -16,6 +16,7 @@ from .auth import verify_token
 
 from .bg_tasks import bg_task_manager
 from .delegations import delegation_manager
+from .feature_manager import feature_manager
 from .group_manager import group_manager
 from .research import research_manager
 from .bridges.manager import BridgeManager
@@ -28,6 +29,7 @@ from .connector_manager import ConnectorManager
 from .persona_manager import persona_manager
 from .routers import agents, attachments, bg_tasks as bg_tasks_router, connectors, credentials, delegations as delegations_router, files, notifiers, personas, questions, research as research_router, schedules, sessions, ws
 from .routers import groups as groups_router
+from .routers import features as features_router
 from .scheduler import ScheduleRunner
 from .session_manager import session_manager
 
@@ -95,8 +97,16 @@ async def lifespan(app: FastAPI):
     # replies/errors back into the parent session as injected turns.
     delegation_manager.bind(session_mgr=session_manager, db=db)
 
+    # Feature lifecycle is durable across many short-lived group invocations.
+    feature_manager.bind(db)
+    await feature_manager.reconcile_document_syncs()
+    features_router.set_feature_manager(feature_manager)
+    app.state.feature_manager = feature_manager
+
     # Group chat manager (multi-agent @-mention routing groups.md).
-    group_manager.bind(session_mgr=session_manager, db=db)
+    group_manager.bind(
+        session_mgr=session_manager, db=db, feature_mgr=feature_manager
+    )
     groups_router.set_group_manager(group_manager)
     app.state.group_manager = group_manager
     await group_manager.initialize_prompt_assets()
@@ -164,6 +174,7 @@ app.include_router(connectors.agent_router)
 app.include_router(notifiers.router)
 app.include_router(ws.router)
 app.include_router(groups_router.router)
+app.include_router(features_router.router)
 
 
 @app.get("/api/backends")

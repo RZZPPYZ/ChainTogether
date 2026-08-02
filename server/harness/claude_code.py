@@ -231,6 +231,7 @@ def build_turn_argv(ctx: TurnContext) -> tuple[list[str], dict[str, Any]]:
     argv += ["--", ctx.prompt]
 
     env = os.environ.copy()
+    env.update(ctx.callback_env)
     _apply_env_credential(env, ctx.credential)
     # Per-agent memory (docs/plans/memory.md §3): point Claude's auto-memory
     # dir at the agent's canonical store via the dedicated override. We do NOT

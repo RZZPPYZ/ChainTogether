@@ -125,7 +125,10 @@ async def send_message(
     mgr = _get_manager()
     try:
         invocation = await mgr.send_message(
-            group_id, req.content, req.attachment_ids
+            group_id,
+            req.content,
+            req.attachment_ids,
+            feature_run_id=req.feature_run_id,
         )
     except GroupError as e:
         raise HTTPException(e.status_code, str(e))

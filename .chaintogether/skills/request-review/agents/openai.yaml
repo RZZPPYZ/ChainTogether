@@ -1,0 +1,4 @@
+interface:
+  display_name: "Request Review"
+  short_description: "Prepare a complete packet for an independent reviewer."
+  default_prompt: "Use $request-review to prepare a review packet for this feature."

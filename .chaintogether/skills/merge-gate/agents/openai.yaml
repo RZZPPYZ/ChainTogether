@@ -1,0 +1,4 @@
+interface:
+  display_name: "Merge Gate"
+  short_description: "Verify CI, review provenance, merge safety, and doc truth."
+  default_prompt: "Use $merge-gate to decide whether this reviewed feature may be merged."

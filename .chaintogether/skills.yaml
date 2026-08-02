@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "source_root": ".chaintogether/skills",
+  "provider_targets": {
+    "claude": ".claude/skills",
+    "codex": ".codex/skills"
+  },
+  "skills": {
+    "feature-lifecycle": {
+      "kind": "router",
+      "stages": ["*"],
+      "roles": ["coordinator"],
+      "outputs": ["lifecycle-routing"],
+      "next_skills": ["feature-discovery", "design-gate", "writing-plans", "worktree", "tdd", "quality-gate", "request-review", "review-feature", "receive-review", "merge-gate", "vision-gate", "close-feature"]
+    },
+    "feature-discovery": {
+      "kind": "stage",
+      "stages": ["discovery"],
+      "roles": ["discovery-lead", "researcher", "synthesizer"],
+      "outputs": ["feature-doc", "discovery-evidence"],
+      "next_skills": ["design-gate"]
+    },
+    "design-gate": {
+      "kind": "gate",
+      "stages": ["design"],
+      "roles": ["design-reviewer", "operator"],
+      "outputs": ["design-verdict"],
+      "next_skills": ["feature-discovery", "writing-plans"]
+    },
+    "writing-plans": {
+      "kind": "stage",
+      "stages": ["planning"],
+      "roles": ["planner"],
+      "outputs": ["implementation-plan"],
+      "next_skills": ["worktree"]
+    },
+    "worktree": {
+      "kind": "execution",
+      "stages": ["implementation"],
+      "roles": ["author"],
+      "outputs": ["worktree-record"],
+      "next_skills": ["tdd"]
+    },
+    "tdd": {
+      "kind": "execution",
+      "stages": ["implementation"],
+      "roles": ["author"],
+      "outputs": ["tests", "implementation"],
+      "next_skills": ["quality-gate"]
+    },
+    "quality-gate": {
+      "kind": "gate",
+      "stages": ["quality"],
+      "roles": ["author", "quality-reviewer"],
+      "outputs": ["quality-report"],
+      "next_skills": ["tdd", "request-review"]
+    },
+    "request-review": {
+      "kind": "handoff",
+      "stages": ["review"],
+      "roles": ["author"],
+      "outputs": ["review-packet"],
+      "next_skills": ["review-feature"]
+    },
+    "review-feature": {
+      "kind": "gate",
+      "stages": ["review"],
+      "roles": ["reviewer"],
+      "outputs": ["review-findings", "review-verdict"],
+      "next_skills": ["receive-review", "merge-gate"]
+    },
+    "receive-review": {
+      "kind": "feedback",
+      "stages": ["review"],
+      "roles": ["author"],
+      "outputs": ["finding-dispositions"],
+      "next_skills": ["request-review"]
+    },
+    "merge-gate": {
+      "kind": "gate",
+      "stages": ["merge"],
+      "roles": ["merge-owner"],
+      "outputs": ["merge-evidence-manifest"],
+      "next_skills": ["vision-gate"]
+    },
+    "vision-gate": {
+      "kind": "gate",
+      "stages": ["acceptance"],
+      "roles": ["vision-guardian"],
+      "outputs": ["vision-verdict"],
+      "next_skills": ["feature-discovery", "worktree", "tdd", "close-feature"]
+    },
+    "close-feature": {
+      "kind": "gate",
+      "stages": ["closure"],
+      "roles": ["coordinator"],
+      "outputs": ["closed-feature-doc"],
+      "next_skills": ["feature-lifecycle", "feature-discovery"]
+    }
+  }
+}

@@ -68,6 +68,9 @@ class TurnContext:
     tool_deny: list[str] | None
     mcp_servers: list[McpServerEntry]  # selected built-ins + connectors
     credential: HarnessCredential | None
+    # Sensitive callback values are inherited through the harness process
+    # environment, never rendered into provider CLI argv/MCP config flags.
+    callback_env: dict[str, str] = field(default_factory=dict)
     # Per-agent native memory (docs/plans/memory.md): the canonical markdown
     # dir both harnesses point at. None when there's no owning agent.
     memory_dir: str | None = None

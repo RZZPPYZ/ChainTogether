@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "features": [
+    {
+      "id": "F001",
+      "title": "Group Feature Lifecycle",
+      "stage": "review",
+      "state": "active",
+      "priority": "P1",
+      "file": "docs/features/F001-group-feature-lifecycle/feature.md"
+    }
+  ]
+}

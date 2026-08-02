@@ -13,9 +13,11 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from .prompt_governance import GroupPromptGovernance, get_prompt_registry
 from .session_manager import resolve_working_dir
+from .feature_manager import FeatureError
 
 if TYPE_CHECKING:
     from .database import Database
+    from .feature_manager import FeatureManager
     from .session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -224,6 +226,7 @@ class GroupRunState:
     group_id: str
     group_session_id: str    # the backing group session (origin='group')
     invocation_id: str = ""
+    feature_run_id: str | None = None
     root_content: str = ""
     root_message_seq: int | None = None
     worklist: list[WorklistEntry] = field(default_factory=list)
@@ -509,13 +512,20 @@ class GroupManager:
     def __init__(self) -> None:
         self.db: Database | None = None
         self.session_manager: SessionManager | None = None
+        self.feature_manager: FeatureManager | None = None
         self.prompt_governance = GroupPromptGovernance()
         self._runs: dict[str, GroupRunState] = {}
         self._invocations: dict[str, GroupRunState] = {}
 
-    def bind(self, session_mgr: "SessionManager", db: "Database") -> None:
+    def bind(
+        self,
+        session_mgr: "SessionManager",
+        db: "Database",
+        feature_mgr: "FeatureManager | None" = None,
+    ) -> None:
         self.db = db
         self.session_manager = session_mgr
+        self.feature_manager = feature_mgr
 
     async def initialize_prompt_assets(self) -> None:
         """Materialize roster snapshots for every persisted group at startup."""
@@ -744,6 +754,7 @@ class GroupManager:
     async def send_message(
         self, group_id: str, content: str,
         attachment_ids: list[str] | None = None,
+        feature_run_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Process a user message in the group.
 
@@ -759,6 +770,33 @@ class GroupManager:
         group = await self.db.get_group(group_id)
         if group is None:
             raise GroupError("Group not found", status_code=404)
+        resolved_feature_run_id = feature_run_id
+        if self.feature_manager is None:
+            if resolved_feature_run_id is not None:
+                raise GroupError(
+                    "Feature lifecycle is not initialized", status_code=503
+                )
+        else:
+            try:
+                if resolved_feature_run_id is not None:
+                    feature = await self.feature_manager.activate_for_group(
+                        resolved_feature_run_id, group_id
+                    )
+                else:
+                    feature = await self.feature_manager.get_active_for_group(
+                        group_id
+                    )
+                    if feature is not None:
+                        resolved_feature_run_id = feature["id"]
+            except FeatureError as exc:
+                raise GroupError(
+                    str(exc), status_code=exc.status_code
+                ) from exc
+            if feature is not None and feature["state"] == "done":
+                raise GroupError(
+                    "Completed feature runs cannot receive new invocations",
+                    status_code=409,
+                )
 
         group_session_id = group.get("session_id")
         if not group_session_id:
@@ -808,12 +846,17 @@ class GroupManager:
         invocation_id = uuid.uuid4().hex[:12]
         created_at = datetime.now(timezone.utc).isoformat()
         await self.db.create_group_invocation(
-            invocation_id, group_id, content, created_at
+            invocation_id,
+            group_id,
+            content,
+            created_at,
+            feature_run_id=resolved_feature_run_id,
         )
         run = GroupRunState(
             group_id=group_id,
             group_session_id=group_session_id,
             invocation_id=invocation_id,
+            feature_run_id=resolved_feature_run_id,
             root_content=content,
             root_message_seq=root_message_seq,
             created_at=created_at,
@@ -997,6 +1040,20 @@ class GroupManager:
             current_agent_id=agent_id,
         )
         directives = list(dynamic_directives)
+        if run.feature_run_id is not None:
+            if self.feature_manager is None:
+                raise GroupError(
+                    "Feature lifecycle is not initialized", status_code=503
+                )
+            try:
+                feature_context = await self.feature_manager.render_turn_context(
+                    run.feature_run_id, run.group_id, agent_id
+                )
+            except FeatureError as exc:
+                raise GroupError(
+                    str(exc), status_code=exc.status_code
+                ) from exc
+            directives.insert(0, feature_context)
         if prompt_override:
             directives.append(prompt_override)
         augmented = self.prompt_governance.assemble_dynamic_turn(
@@ -1884,6 +1941,7 @@ class GroupManager:
         return {
             "id": run.invocation_id,
             "group_id": run.group_id,
+            "feature_run_id": run.feature_run_id,
             "root_content": run.root_content,
             "status": run.status,
             "custody_state": run.custody_state,
@@ -2136,6 +2194,7 @@ class GroupManager:
             group_id=row["group_id"],
             group_session_id=session_id,
             invocation_id=row["id"],
+            feature_run_id=row.get("feature_run_id"),
             root_content=row["root_content"],
             status=row["status"],
             custody_state=row["custody_state"],

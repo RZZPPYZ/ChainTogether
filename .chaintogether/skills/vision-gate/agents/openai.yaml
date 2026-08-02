@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vision Gate"
+  short_description: "Validate delivered experience against original user intent."
+  default_prompt: "Use $vision-gate to perform independent vision acceptance for this feature."
