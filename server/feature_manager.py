@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import re
 import subprocess
@@ -288,7 +289,7 @@ class FeatureManager:
             roles[field] = value
         self._validate_distinct_roles(roles)
         updated_at = _now()
-        doc_path, doc_content = self._prepare_doc_sync(
+        doc_path, doc_content, doc_base_hash = await self._prepare_doc_sync(
             row,
             {
                 "owner": roles["owner_agent_id"] or "",
@@ -303,6 +304,7 @@ class FeatureManager:
             fields={**roles, "updated_at": updated_at},
             feature_doc_path=str(doc_path),
             document_content=doc_content,
+            document_base_hash=doc_base_hash,
             updated_at=updated_at,
         )
         if not updated:
@@ -423,7 +425,7 @@ class FeatureManager:
         completed_at = updated_at if state == "done" else None
         stage_spec = stages.get(to_stage) or {}
         artifact_refs = list(dict.fromkeys([*row["artifact_refs"], *evidence]))
-        doc_path, doc_content = self._prepare_doc_sync(
+        doc_path, doc_content, doc_base_hash = await self._prepare_doc_sync(
             row,
             {"stage": to_stage, "state": state, "updated_at": updated_at},
         )
@@ -449,6 +451,7 @@ class FeatureManager:
             created_at=updated_at,
             feature_doc_path=str(doc_path),
             document_content=doc_content,
+            document_base_hash=doc_base_hash,
             clear_active_group_id=row["group_id"] if state == "done" else None,
         )
         if not transitioned:
@@ -501,21 +504,46 @@ class FeatureManager:
             next_step=stage_spec.get("next_step") or "Consult the Feature Doc.",
         )
 
-    def _prepare_doc_sync(
+    @staticmethod
+    def _document_hash(content: str) -> str:
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    async def _prepare_doc_sync(
         self, row: dict[str, Any], values: dict[str, Any]
-    ) -> tuple[Path, str]:
+    ) -> tuple[Path, str, str]:
         path = Path(row["working_dir"]) / row["feature_doc_path"]
         try:
-            text = path.read_text(encoding="utf-8-sig")
+            disk_text = path.read_text(encoding="utf-8-sig")
         except OSError as exc:
             raise FeatureError(f"Cannot read canonical Feature Doc: {path}") from exc
+        pending = await self._db().get_feature_doc_sync(row["id"])
+        if pending is None:
+            text = disk_text
+            base_hash = self._document_hash(disk_text)
+        else:
+            pending_path = Path(pending["feature_doc_path"]).resolve()
+            if pending_path != path.resolve():
+                raise FeatureError(
+                    "Pending Feature Doc sync targets a different canonical path"
+                )
+            disk_hash = self._document_hash(disk_text)
+            pending_hash = self._document_hash(pending["content"])
+            if disk_hash not in {pending["base_hash"], pending_hash}:
+                raise FeatureError(
+                    "Canonical Feature Doc changed while document sync is pending; "
+                    "resolve the document conflict before retrying"
+                )
+            text = pending["content"]
+            base_hash = (
+                disk_hash if disk_hash == pending_hash else pending["base_hash"]
+            )
         for key, value in values.items():
             pattern = re.compile(_FRONTMATTER_LINE_RE.format(key=re.escape(key)))
             replacement = f"{key}: {_yaml_value(value)}"
             if not pattern.search(text):
                 raise FeatureError(f"Feature Doc frontmatter lacks {key}: {path}")
             text = pattern.sub(replacement, text, count=1)
-        return path, text
+        return path, text, base_hash
 
     @staticmethod
     def _write_doc_content(path: Path, content: str) -> None:
@@ -532,9 +560,18 @@ class FeatureManager:
         if pending is None:
             return True
         try:
-            self._write_doc_content(
-                Path(pending["feature_doc_path"]), pending["content"]
-            )
+            path = Path(pending["feature_doc_path"])
+            disk_content = path.read_text(encoding="utf-8-sig")
+            disk_hash = self._document_hash(disk_content)
+            desired_hash = self._document_hash(pending["content"])
+            if disk_hash != desired_hash:
+                if not pending["base_hash"] or disk_hash != pending["base_hash"]:
+                    logger.error(
+                        "Feature %s document sync conflicts with an external edit",
+                        run_id,
+                    )
+                    return False
+                self._write_doc_content(path, pending["content"])
         except OSError:
             logger.exception(
                 "Feature %s document sync remains pending", run_id
@@ -613,9 +650,20 @@ class FeatureManager:
                 )
             if not re.fullmatch(r"[0-9a-fA-F]{7,64}", base_sha):
                 raise FeatureError("Review Provenance Base SHA is required")
+            resolved_base = self._git_commit(row["working_dir"], base_sha)
+            if resolved_base is None:
+                raise FeatureError(
+                    "Review Provenance Base SHA is not a verifiable Git commit"
+                )
             if reviewed_head.lower() != revision.lower():
                 raise FeatureError(
                     "Review Provenance Reviewed HEAD must match transition revision"
+                )
+            if not self._git_is_ancestor(
+                row["working_dir"], resolved_base, revision
+            ):
+                raise FeatureError(
+                    "Review Provenance Base SHA must be an ancestor of Reviewed HEAD"
                 )
         if edge in {"acceptance->closure", "closure->done"}:
             section = self._section_body(text, "Vision Gate")
@@ -648,9 +696,13 @@ class FeatureManager:
 
     @staticmethod
     def _git_head(working_dir: str) -> str | None:
+        return FeatureManager._git_commit(working_dir, "HEAD")
+
+    @staticmethod
+    def _git_commit(working_dir: str, revision: str) -> str | None:
         try:
             completed = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
+                ["git", "rev-parse", "--verify", f"{revision}^{{commit}}"],
                 cwd=working_dir,
                 capture_output=True,
                 text=True,
@@ -660,7 +712,35 @@ class FeatureManager:
         except (OSError, subprocess.SubprocessError):
             return None
         value = completed.stdout.strip()
-        return value if completed.returncode == 0 and value else None
+        return (
+            value
+            if completed.returncode == 0
+            and re.fullmatch(r"[0-9a-fA-F]{40,64}", value)
+            else None
+        )
+
+    @staticmethod
+    def _git_is_ancestor(
+        working_dir: str, base_revision: str, head_revision: str
+    ) -> bool:
+        try:
+            completed = subprocess.run(
+                [
+                    "git",
+                    "merge-base",
+                    "--is-ancestor",
+                    base_revision,
+                    head_revision,
+                ],
+                cwd=working_dir,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return completed.returncode == 0
 
     def _validate_revision(
         self, row: dict[str, Any], edge: str, revision: str
@@ -676,12 +756,17 @@ class FeatureManager:
             return revision
         if not re.fullmatch(r"[0-9a-fA-F]{7,64}", revision):
             raise FeatureError(f"Transition {edge} requires a valid revision")
+        resolved = self._git_commit(row["working_dir"], revision)
         current = self._git_head(row["working_dir"])
-        if current is not None and current.lower() != revision.lower():
+        if resolved is None or current is None:
+            raise FeatureError(
+                f"Transition {edge} cannot verify revision and current Git HEAD"
+            )
+        if current.lower() != resolved.lower():
             raise FeatureError(
                 f"Transition {edge} revision does not match current HEAD"
             )
-        return revision
+        return resolved
 
     def _validate_evidence_refs(
         self, row: dict[str, Any], refs: list[str]

@@ -48,8 +48,12 @@
 - Commit the FeatureRun update, immutable event, and Feature Doc outbox item in
   one transaction; atomically deliver and reconcile pending document updates.
 - Bind public transitions to the caller's group-agent session instead of a
-  caller-supplied actor ID.
+  caller-supplied actor ID, and require an unlisted live-session capability in
+  addition to the shared application bearer.
 - Require real repository evidence, exact Git revisions, and structured
   Reviewer or Guardian provenance at protected gates.
+- Chain later document mutations from the pending outbox image, retain a disk
+  baseline hash, and fail closed on conflicting operator edits or unverifiable
+  Git repositories.
 - Reproduce every review finding with a failing test, rerun the full Quality
   Gate, and return the new exact HEAD to the same independent reviewer.

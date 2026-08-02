@@ -91,8 +91,10 @@ stage with a reason; it never silently edits history to look linear.
    role-aware suggested skill, and the stage's concrete next step.
 5. Record evidence in the repository, then request a transition through
    `POST /api/sessions/{session_id}/features/{run_id}/transition`. The control
-   plane derives the actor from the bound group-agent session instead of
-   accepting a caller-supplied Agent ID. It validates the edge, optimistic
+   plane requires the live session's unlisted
+   `X-Octopus-Session-Capability`, injected into that Agent's MCP subprocess,
+   and derives the actor from the bound group-agent session instead of
+   accepting a caller-selected identity. It validates the edge, optimistic
    revision, role separation, existing evidence paths, exact Git revision, and
    structured canonical-document provenance.
 6. Audit the immutable trail with `GET /api/features/{run_id}/events`.

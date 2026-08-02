@@ -44,7 +44,9 @@ def repo_root() -> str:
     return _REPO_ROOT
 
 
-def build_callback_env(session_id: str | None) -> dict[str, str]:
+def build_callback_env(
+    session_id: str | None, session_capability: str | None = None
+) -> dict[str, str]:
     """The env our bg/ask MCP servers use to call back into FastAPI."""
     from ..config import settings as _settings  # local import: avoid cycle at load
 
@@ -55,6 +57,8 @@ def build_callback_env(session_id: str | None) -> dict[str, str]:
     }
     if session_id:
         env["OCTOPUS_SESSION_ID"] = session_id
+    if session_capability:
+        env["OCTOPUS_SESSION_CAPABILITY"] = session_capability
     return env
 
 

@@ -461,7 +461,10 @@ migrations (never re-create or duplicate the schema in docs).
   directory: canonical dossier, stage/state, independent lifecycle roles,
   current gate, origin, and accumulated artifact references.
 - **`feature_run_events`** — append-only stage transition audit with actor,
-  result, reason, evidence references, and timestamp.
+  result, reason, evidence references, exact Git revision, and timestamp.
+- **`feature_doc_syncs`** — one durable canonical-document image per
+  FeatureRun, transactionally superseded with a preserved disk baseline hash;
+  delivery is retried and external-edit conflicts fail closed.
 - **`feature_invocation_links`** — optional relation from one short-lived
   `group_invocation` custody chain to the FeatureRun it advances.
 - **`group_active_features`** — one persisted current FeatureRun per group,

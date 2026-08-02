@@ -8,9 +8,9 @@
   per-turn D14 workflow injection, role-aware Skill routing, lifecycle Skill
   contracts, validators, document-sync recovery, session-bound transitions,
   revision provenance, documentation, tests, and generated API contracts.
-- **Independent review:** `89b070f` received `request_changes`; the corrected
-  exact HEAD requires re-review by the same reviewer. This report permits
-  `request-review` only.
+- **Independent review:** `89b070f` and `2e91354` received
+  `request_changes`; the next corrected exact HEAD requires re-review by the
+  same reviewer. This report permits `request-review` only.
 
 ## Acceptance evidence
 
@@ -28,7 +28,7 @@
 | Command | Result |
 |---|---|
 | `.venv\\Scripts\\python.exe -m compileall -q server tests` | passed |
-| `.venv\\Scripts\\python.exe -m unittest discover -s tests -v` | 50 passed; 1 environment-gated live GitHub smoke skipped |
+| `.venv\\Scripts\\python.exe -m unittest discover -s tests -v` | 55 passed; 1 environment-gated live GitHub smoke skipped |
 | `.venv\\Scripts\\python.exe scripts\\check-skills.py` | 13 Skills, 10 stages, 16 transitions passed |
 | `.venv\\Scripts\\python.exe scripts\\sync-skills.py --check` | 26 provider mounts passed |
 | `.venv\\Scripts\\python.exe scripts\\check-features.py` | 1 Feature passed |
@@ -48,10 +48,12 @@
 5. Competing transitions are compare-and-swap linearized; exactly one writer
    may advance an observed FeatureRun revision.
 6. An accepted mutation atomically persists the run, event, and document
-   outbox item; failed filesystem delivery is recoverable without replay.
-7. The public transition route derives actor identity from the bound group
-   session. Review and Vision transitions additionally require existing
-   evidence, the exact Git revision, and structured independent-role provenance.
+   outbox item. Failed delivery is recoverable, a later mutation chains from
+   the pending image, and a conflicting manual document edit fails closed.
+7. The public transition route requires the live Session's unlisted capability
+   and derives actor identity from that capability-bound group session. Review
+   and Vision transitions additionally require existing evidence, a Git-resolved
+   exact revision, and structured independent-role provenance.
 8. Reaching `done` clears the group's current Feature.
 
 ## Residual risk disposition

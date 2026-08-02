@@ -3,17 +3,23 @@ from __future__ import annotations
 import asyncio
 import re
 import shutil
+import sqlite3
+import subprocess
 import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
+from fastapi import HTTPException
+
 from server.agent_manager import AgentManager
 from server.config import settings
 from server.database import Database
 from server.feature_manager import FeatureError, FeatureManager
 from server.group_manager import AgentTurnResult, GroupManager
+from server.harness.assembly import build_callback_env
+from server.routers import features as feature_routes
 from server.session_manager import SessionManager
 
 
@@ -34,6 +40,33 @@ class FeatureWorkflowTests(unittest.IsolatedAsyncioTestCase):
             / "feature-lifecycle.yaml",
             workflow_dir / "feature-lifecycle.yaml",
         )
+        subprocess.run(
+            ["git", "init", "-q"], cwd=self.workspace, check=True
+        )
+        subprocess.run(
+            ["git", "add", "."], cwd=self.workspace, check=True
+        )
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=ChainTogether Tests",
+                "-c",
+                "user.email=tests@chaintogether.invalid",
+                "commit",
+                "-qm",
+                "test baseline",
+            ],
+            cwd=self.workspace,
+            check=True,
+        )
+        self.git_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.workspace,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
 
         self.old_agents_dir = settings.agents_dir
         self.old_group_prompt_state_dir = settings.group_prompt_state_dir
@@ -202,13 +235,13 @@ class FeatureWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("$request-review", owner_hint)
         self.assertIn("$receive-review", owner_hint)
         self.assertNotIn("$review-feature", owner_hint)
-        review_revision = "89b070fe5b3dcc587fd62d1a16949034d8f658f2"
+        review_revision = self.git_head
         self._set_section_fields(
             doc,
             "Review Provenance",
             {
                 "Reviewer": str(self.reviewer["id"]),
-                "Base SHA": "13253f3",
+                "Base SHA": self.git_head,
                 "Reviewed HEAD": review_revision,
                 "Verdict": "approved",
             },
@@ -240,7 +273,7 @@ class FeatureWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 review_ref,
             ],
         )
-        merged_revision = "aabbccddeeff00112233445566778899aabbccdd"
+        merged_revision = self.git_head
         merge_ref = self._write_evidence(run, "merge.md")
         await self.feature_manager.transition(
             str(run["id"]),
@@ -389,6 +422,64 @@ class FeatureWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("stage: \"discovery\"", doc.read_text(encoding="utf-8"))
         self.assertIsNone(await self.db.get_feature_doc_sync(str(run["id"])))
 
+    async def test_later_mutation_preserves_pending_document_image(self) -> None:
+        run = await self._create_feature()
+        doc = self.workspace / str(run["feature_doc_path"])
+        with mock.patch.object(
+            FeatureManager,
+            "_write_doc_content",
+            side_effect=OSError("simulated role delivery failure"),
+        ):
+            await self.feature_manager.update_roles(
+                str(run["id"]),
+                {
+                    "reviewer_agent_id": self.reviewer["id"],
+                    "vision_guardian_agent_id": self.guardian["id"],
+                },
+            )
+
+        self.assertIn('reviewer: ""', doc.read_text(encoding="utf-8"))
+        self.assertIsNotNone(await self.db.get_feature_doc_sync(str(run["id"])))
+
+        await self.feature_manager.transition(str(run["id"]), to_stage="design")
+
+        delivered = doc.read_text(encoding="utf-8")
+        self.assertIn(f'reviewer: "{self.reviewer["id"]}"', delivered)
+        self.assertIn(
+            f'vision_guardian: "{self.guardian["id"]}"', delivered
+        )
+        self.assertIn('stage: "design"', delivered)
+        self.assertIsNone(await self.db.get_feature_doc_sync(str(run["id"])))
+
+    async def test_manual_doc_edit_blocks_pending_image_supersession(self) -> None:
+        run = await self._create_feature()
+        doc = self.workspace / str(run["feature_doc_path"])
+        with mock.patch.object(
+            FeatureManager,
+            "_write_doc_content",
+            side_effect=OSError("simulated role delivery failure"),
+        ):
+            await self.feature_manager.update_roles(
+                str(run["id"]),
+                {"reviewer_agent_id": self.reviewer["id"]},
+            )
+        doc.write_text(
+            doc.read_text(encoding="utf-8") + "\nmanual operator note\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(FeatureError, "changed while document sync"):
+            await self.feature_manager.transition(
+                str(run["id"]), to_stage="design"
+            )
+
+        self.assertEqual(
+            (await self.feature_manager.get(str(run["id"])))["stage"],
+            "discovery",
+        )
+        self.assertIn("manual operator note", doc.read_text(encoding="utf-8"))
+        self.assertIsNotNone(await self.db.get_feature_doc_sync(str(run["id"])))
+
     async def test_evidence_and_provenance_cannot_be_faked(self) -> None:
         run, _doc = await self._advance_to_quality()
         with self.assertRaisesRegex(FeatureError, "evidence reference"):
@@ -420,8 +511,45 @@ class FeatureWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 result="approved",
                 actor_agent_id=self.reviewer["id"],
                 evidence_refs=[review_ref],
-                revision="89b070fe5b3dcc587fd62d1a16949034d8f658f2",
+                revision=self.git_head,
             )
+
+    async def test_protected_revision_fails_closed_without_git(self) -> None:
+        run, doc = await self._advance_to_quality()
+        quality_ref = self._write_evidence(run, "quality-report.md")
+        await self.feature_manager.transition(
+            str(run["id"]),
+            to_stage="review",
+            result="passed",
+            evidence_refs=[quality_ref],
+        )
+        self._set_section_fields(
+            doc,
+            "Review Provenance",
+            {
+                "Reviewer": str(self.reviewer["id"]),
+                "Base SHA": self.git_head,
+                "Reviewed HEAD": self.git_head,
+                "Verdict": "approved",
+            },
+        )
+        review_ref = self._write_evidence(run, "review.md")
+
+        with mock.patch.object(FeatureManager, "_git_commit", return_value=None):
+            with self.assertRaisesRegex(FeatureError, "cannot verify"):
+                await self.feature_manager.transition(
+                    str(run["id"]),
+                    to_stage="merge",
+                    result="approved",
+                    actor_agent_id=self.reviewer["id"],
+                    evidence_refs=[review_ref],
+                    revision="deadbee",
+                )
+
+        self.assertEqual(
+            (await self.feature_manager.get(str(run["id"])))["stage"],
+            "review",
+        )
 
     async def test_session_bound_transition_derives_actor(self) -> None:
         run, doc = await self._advance_to_quality()
@@ -432,13 +560,13 @@ class FeatureWorkflowTests(unittest.IsolatedAsyncioTestCase):
             result="passed",
             evidence_refs=[quality_ref],
         )
-        revision = "89b070fe5b3dcc587fd62d1a16949034d8f658f2"
+        revision = self.git_head
         self._set_section_fields(
             doc,
             "Review Provenance",
             {
                 "Reviewer": str(self.reviewer["id"]),
-                "Base SHA": "13253f3",
+                "Base SHA": self.git_head,
                 "Reviewed HEAD": revision,
                 "Verdict": "approved",
             },
@@ -476,6 +604,74 @@ class FeatureWorkflowTests(unittest.IsolatedAsyncioTestCase):
             revision=revision,
         )
         self.assertEqual(merged["stage"], "merge")
+
+    async def test_session_capability_binds_transition_identity(self) -> None:
+        owner_session = await self.session_manager.create_session(
+            agent_id=str(self.owner["id"]), working_dir=str(self.workspace)
+        )
+        reviewer_session = await self.session_manager.create_session(
+            agent_id=str(self.reviewer["id"]), working_dir=str(self.workspace)
+        )
+        self.assertNotEqual(
+            owner_session._capability_token,
+            reviewer_session._capability_token,
+        )
+        self.assertTrue(
+            self.session_manager.verify_session_capability(
+                reviewer_session.id, reviewer_session._capability_token
+            )
+        )
+        self.assertFalse(
+            self.session_manager.verify_session_capability(
+                reviewer_session.id, owner_session._capability_token
+            )
+        )
+        callback_env = build_callback_env(
+            reviewer_session.id, reviewer_session._capability_token
+        )
+        self.assertEqual(
+            callback_env["OCTOPUS_SESSION_CAPABILITY"],
+            reviewer_session._capability_token,
+        )
+
+        with mock.patch.object(
+            feature_routes, "session_manager", self.session_manager
+        ):
+            with self.assertRaises(HTTPException) as caught:
+                feature_routes._require_session_capability(
+                    reviewer_session.id, owner_session._capability_token
+                )
+            self.assertEqual(caught.exception.status_code, 403)
+            feature_routes._require_session_capability(
+                reviewer_session.id, reviewer_session._capability_token
+            )
+
+
+class FeatureDatabaseMigrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_legacy_doc_outbox_gains_base_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "legacy.db"
+            legacy = sqlite3.connect(db_path)
+            legacy.execute(
+                "CREATE TABLE feature_doc_syncs ("
+                "feature_run_id TEXT PRIMARY KEY, "
+                "feature_doc_path TEXT NOT NULL, "
+                "content TEXT NOT NULL, "
+                "updated_at TEXT NOT NULL)"
+            )
+            legacy.commit()
+            legacy.close()
+
+            database = Database(str(db_path))
+            await database.initialize()
+            try:
+                self.assertTrue(
+                    await database._has_column(
+                        "feature_doc_syncs", "base_hash"
+                    )
+                )
+            finally:
+                await database.close()
 
 
 if __name__ == "__main__":

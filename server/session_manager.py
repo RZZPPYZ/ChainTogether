@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import shutil
 import time
 import uuid
@@ -221,6 +222,12 @@ class Session:
     fork_metadata: str | None = None
     fork_revert_record: str | None = None
     fork_status: str | None = None
+    # Ephemeral, unlisted capability injected only into this session's MCP
+    # subprocesses. It binds privileged agent callbacks to the live session;
+    # the shared application bearer token alone cannot select another Agent.
+    _capability_token: str = field(
+        default_factory=lambda: secrets.token_urlsafe(32), repr=False
+    )
     _message_count: int = field(default=0, repr=False)
     # Set True for the lifetime of a fork-create saga against this session as
     # the PARENT (session-rewind.md §5.4). start_message() refuses while
@@ -321,6 +328,14 @@ class SessionManager:
 
     def get_session(self, session_id: str) -> Session | None:
         return self.sessions.get(session_id)
+
+    def verify_session_capability(self, session_id: str, token: str) -> bool:
+        session = self.sessions.get(session_id)
+        return bool(
+            session
+            and token
+            and secrets.compare_digest(session._capability_token, token)
+        )
 
     async def _recover_incomplete_forks(self) -> None:
         """Sweep forks left mid-saga by a crash (session-rewind.md §5.6.7).
@@ -2570,6 +2585,7 @@ class SessionManager:
 
         return RunConfig(
             session_id=session.id,
+            session_capability=session._capability_token,
             system_prompt=system_prompt,
             governance_prompt=governance_prompt,
             model=model,

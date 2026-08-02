@@ -6148,7 +6148,9 @@ export interface operations {
     transition_feature_api_sessions__session_id__features__run_id__transition_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                "X-Octopus-Session-Capability": string;
+            };
             path: {
                 session_id: string;
                 run_id: string;

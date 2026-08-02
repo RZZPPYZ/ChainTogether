@@ -257,6 +257,7 @@ class RunConfig:
     resume_id/credential), which arrive per invocation."""
 
     session_id: str | None = None
+    session_capability: str | None = None
     system_prompt: str | None = None   # agent persona
     # Highest-priority host governance, appended after tools/connectors/memory.
     governance_prompt: str | None = None
@@ -311,7 +312,9 @@ class HarnessRun:
         # Resolve working_dir to ABSOLUTE before handing it to the CLI: MCP
         # grandchildren inherit cwd, so a relative path would be double-resolved.
         abs_wd = str(Path(working_dir).resolve())
-        callback_env = assembly.build_callback_env(self._config.session_id)
+        callback_env = assembly.build_callback_env(
+            self._config.session_id, self._config.session_capability
+        )
         mcp_servers = assembly.select_mcp_servers(
             self._config.mcp_servers, self._config.connectors, callback_env
         )

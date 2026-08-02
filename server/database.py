@@ -508,6 +508,7 @@ CREATE TABLE IF NOT EXISTS feature_doc_syncs (
     feature_run_id TEXT PRIMARY KEY,
     feature_doc_path TEXT NOT NULL,
     content TEXT NOT NULL,
+    base_hash TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (feature_run_id) REFERENCES feature_runs(id) ON DELETE CASCADE
 );
@@ -635,6 +636,12 @@ class Database:
             await self._conn.execute(
                 "ALTER TABLE feature_run_events ADD COLUMN "
                 "revision TEXT NOT NULL DEFAULT ''"
+            )
+
+        if not await self._has_column("feature_doc_syncs", "base_hash"):
+            await self._conn.execute(
+                "ALTER TABLE feature_doc_syncs ADD COLUMN "
+                "base_hash TEXT NOT NULL DEFAULT ''"
             )
 
         # agents.backend — default harness for an agent's new sessions. DEFAULT
@@ -1303,6 +1310,7 @@ class Database:
         fields: dict[str, Any],
         feature_doc_path: str,
         document_content: str,
+        document_base_hash: str,
         updated_at: str,
     ) -> bool:
         """CAS a role update and enqueue its exact document image atomically."""
@@ -1323,12 +1331,19 @@ class Database:
                     return False
                 await self._conn.execute(
                     "INSERT INTO feature_doc_syncs "
-                    "(feature_run_id, feature_doc_path, content, updated_at) "
-                    "VALUES (?, ?, ?, ?) "
+                    "(feature_run_id, feature_doc_path, content, base_hash, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?) "
                     "ON CONFLICT(feature_run_id) DO UPDATE SET "
                     "feature_doc_path = excluded.feature_doc_path, "
-                    "content = excluded.content, updated_at = excluded.updated_at",
-                    (run_id, feature_doc_path, document_content, updated_at),
+                    "content = excluded.content, base_hash = excluded.base_hash, "
+                    "updated_at = excluded.updated_at",
+                    (
+                        run_id,
+                        feature_doc_path,
+                        document_content,
+                        document_base_hash,
+                        updated_at,
+                    ),
                 )
                 await self._conn.commit()
                 return True
@@ -1353,6 +1368,7 @@ class Database:
         created_at: str,
         feature_doc_path: str,
         document_content: str,
+        document_base_hash: str,
         clear_active_group_id: str | None = None,
     ) -> bool:
         """Commit one linearized transition, event, and doc outbox record."""
@@ -1389,12 +1405,19 @@ class Database:
                 )
                 await self._conn.execute(
                     "INSERT INTO feature_doc_syncs "
-                    "(feature_run_id, feature_doc_path, content, updated_at) "
-                    "VALUES (?, ?, ?, ?) "
+                    "(feature_run_id, feature_doc_path, content, base_hash, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?) "
                     "ON CONFLICT(feature_run_id) DO UPDATE SET "
                     "feature_doc_path = excluded.feature_doc_path, "
-                    "content = excluded.content, updated_at = excluded.updated_at",
-                    (run_id, feature_doc_path, document_content, created_at),
+                    "content = excluded.content, base_hash = excluded.base_hash, "
+                    "updated_at = excluded.updated_at",
+                    (
+                        run_id,
+                        feature_doc_path,
+                        document_content,
+                        document_base_hash,
+                        created_at,
+                    ),
                 )
                 if clear_active_group_id is not None:
                     await self._conn.execute(
@@ -1470,7 +1493,7 @@ class Database:
     async def list_feature_doc_syncs(self) -> list[dict[str, str]]:
         await self._ensure_connected()
         cursor = await self._conn.execute(
-            "SELECT feature_run_id, feature_doc_path, content, updated_at "
+            "SELECT feature_run_id, feature_doc_path, content, base_hash, updated_at "
             "FROM feature_doc_syncs ORDER BY updated_at"
         )
         return [
@@ -1478,7 +1501,8 @@ class Database:
                 "feature_run_id": str(row[0]),
                 "feature_doc_path": str(row[1]),
                 "content": str(row[2]),
-                "updated_at": str(row[3]),
+                "base_hash": str(row[3]),
+                "updated_at": str(row[4]),
             }
             for row in await cursor.fetchall()
         ]
@@ -1486,7 +1510,7 @@ class Database:
     async def get_feature_doc_sync(self, run_id: str) -> dict[str, str] | None:
         await self._ensure_connected()
         cursor = await self._conn.execute(
-            "SELECT feature_run_id, feature_doc_path, content, updated_at "
+            "SELECT feature_run_id, feature_doc_path, content, base_hash, updated_at "
             "FROM feature_doc_syncs WHERE feature_run_id = ?",
             (run_id,),
         )
@@ -1497,7 +1521,8 @@ class Database:
             "feature_run_id": str(row[0]),
             "feature_doc_path": str(row[1]),
             "content": str(row[2]),
-            "updated_at": str(row[3]),
+            "base_hash": str(row[3]),
+            "updated_at": str(row[4]),
         }
 
     async def complete_feature_doc_sync(

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 
 from ..auth import verify_token
 from ..feature_manager import FeatureError, FeatureManager
@@ -12,6 +12,7 @@ from ..models import (
     GroupActiveFeatureUpdate,
     GroupFeatureCreate,
 )
+from ..session_manager import session_manager
 
 
 router = APIRouter(prefix="/api", tags=["features"])
@@ -31,6 +32,18 @@ def _get_manager() -> FeatureManager:
 
 def _http_error(error: FeatureError) -> HTTPException:
     return HTTPException(error.status_code, str(error))
+
+
+def _require_session_capability(
+    session_id: str, session_capability: str
+) -> None:
+    if not session_manager.verify_session_capability(
+        session_id, session_capability
+    ):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Invalid session capability",
+        )
 
 
 @router.post(
@@ -133,8 +146,12 @@ async def transition_feature(
     session_id: str,
     run_id: str,
     request: FeatureTransitionRequest,
+    session_capability: str = Header(
+        ..., alias="X-Octopus-Session-Capability"
+    ),
     _: str = Depends(verify_token),
 ):
+    _require_session_capability(session_id, session_capability)
     try:
         return await _get_manager().transition_for_session(
             run_id,
