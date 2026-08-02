@@ -4,8 +4,8 @@
     {
       "id": "F001",
       "title": "Group Feature Lifecycle",
-      "stage": "review",
-      "state": "active",
+      "stage": "done",
+      "state": "done",
       "priority": "P1",
       "file": "docs/features/F001-group-feature-lifecycle/feature.md"
     }

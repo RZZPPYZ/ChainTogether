@@ -4,4 +4,4 @@
 
 | ID | Feature | Stage | State | Priority |
 |---|---|---|---|---|
-| F001 | [Group Feature Lifecycle](F001-group-feature-lifecycle/feature.md) | review | active | P1 |
+| F001 | [Group Feature Lifecycle](F001-group-feature-lifecycle/feature.md) | done | done | P1 |

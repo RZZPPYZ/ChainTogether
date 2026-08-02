@@ -2,18 +2,18 @@
 schema_version: 1
 id: F001
 title: "Group Feature Lifecycle"
-stage: review
-state: active
+stage: done
+state: done
 priority: P1
 owner: "codex"
-reviewer: ""
-vision_guardian: ""
+reviewer: "f001_reviewer"
+vision_guardian: "f001_vision_guardian"
 origin_kind: "codex_conversation"
 origin_group_id: ""
 origin_message_seq: null
 created_at: 2026-07-30
 updated_at: 2026-08-02
-related_features: []
+related_features: ["F002"]
 blocked_by: []
 research_refs: ["docs/features/F001-group-feature-lifecycle/evidence/d14-skill-contract-audit.md", "docs/features/F001-group-feature-lifecycle/evidence/quality-report-2026-08-02.md"]
 decision_refs: []
@@ -105,17 +105,18 @@ ChainTogether 的群组已经能可靠传球，但没有跨消息、跨 Agent、
 ## Review Provenance
 
 - **Author**: codex
-- **Reviewer**:
+- **Reviewer**: f001_reviewer
 - **Base SHA**: `13253f3`
-- **Reviewed HEAD**:
-- **Verdict**: pending
+- **Reviewed HEAD**: `2982c8fdd64ea36ac5ff89c6fb93b339bb59d803`
+- **Verdict**: approved
+- **Evidence**: `evidence/review-verdict-2982c8f.md`
 
 ## Vision Gate
 
-- **Guardian**:
-- **Merged revision**:
-- **Verdict**: pending
-- **Journey evidence**:
+- **Guardian**: f001_vision_guardian
+- **Merged revision**: `0c5482d95fc56ec6ab3b63382134c3e55d370905`
+- **Verdict**: accepted
+- **Journey evidence**: `evidence/vision-verdict-0c5482d.md`
 
 ## Risks and Open Questions
 
@@ -139,3 +140,7 @@ ChainTogether 的群组已经能可靠传球，但没有跨消息、跨 Agent、
 | 2026-08-02 | Re-review of `2e91354` found outbox supersession, shared-bearer session impersonation, and Git fail-open paths; returned to implementation | `evidence/review-response-2e91354.md` |
 | 2026-08-02 | Re-review of `de1502c` found gate/document TOCTOU, legacy pending migration, and capability argv exposure; returned to implementation | `evidence/review-response-de1502c.md` |
 | 2026-08-02 | Re-review of `522a4fa` found database-boundary gate races and late stale outbox delivery; returned to implementation | `evidence/review-response-522a4fa.md` |
+| 2026-08-02 | Independent review approved exact HEAD `2982c8f` with no P1/P2/P3 findings | `evidence/review-verdict-2982c8f.md` |
+| 2026-08-02 | Approved tree merged to and pushed on `main` as `0c5482d` | `evidence/merge-evidence-0c5482d.md` |
+| 2026-08-02 | Independent Vision Gate accepted the merged group-first journey | `evidence/vision-verdict-0c5482d.md` |
+| 2026-08-02 | F001 canonical dossier and indexes synchronized; remaining autonomous `/feature` work separated as F002 | `evidence/closure-report.md` |
