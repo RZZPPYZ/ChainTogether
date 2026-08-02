@@ -1435,6 +1435,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/groups/{group_id}/active-feature": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Active Group Feature */
+        get: operations["get_active_group_feature_api_groups__group_id__active_feature_get"];
+        /** Update Active Group Feature */
+        put: operations["update_active_group_feature_api_groups__group_id__active_feature_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/features/{run_id}": {
         parameters: {
             query?: never;
@@ -2203,6 +2221,11 @@ export interface components {
             revert_files: boolean;
             /** Label */
             label?: string | null;
+        };
+        /** GroupActiveFeatureUpdate */
+        GroupActiveFeatureUpdate: {
+            /** Feature Run Id */
+            feature_run_id?: string | null;
         };
         /** GroupCreate */
         GroupCreate: {
@@ -5972,6 +5995,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FeatureRunInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_active_group_feature_api_groups__group_id__active_feature_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                group_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeatureRunInfo"] | null;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_active_group_feature_api_groups__group_id__active_feature_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                group_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GroupActiveFeatureUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeatureRunInfo"] | null;
                 };
             };
             /** @description Validation Error */

@@ -2,7 +2,7 @@
 schema_version: 1
 id: F001
 title: "Group Feature Lifecycle"
-stage: quality
+stage: review
 state: active
 priority: P1
 owner: "codex"
@@ -12,10 +12,10 @@ origin_kind: "codex_conversation"
 origin_group_id: ""
 origin_message_seq: null
 created_at: 2026-07-30
-updated_at: 2026-07-30
+updated_at: 2026-08-02
 related_features: []
 blocked_by: []
-research_refs: []
+research_refs: ["docs/features/F001-group-feature-lifecycle/evidence/d14-skill-contract-audit.md", "docs/features/F001-group-feature-lifecycle/evidence/quality-report-2026-08-02.md"]
 decision_refs: []
 plan_refs: ["docs/features/F001-group-feature-lifecycle/plan.md"]
 pr_refs: []
@@ -48,7 +48,7 @@ ChainTogether 的群组已经能可靠传球，但没有跨消息、跨 Agent、
 - **Entry**: operator 在群里提出需求并创建/关联 FeatureRun。
 - **Flow**:
   1. 系统创建 canonical Feature dossier。
-  2. 群组 Agent 收到当前 stage、role、skill、artifact refs。
+  2. 群组的当前 Feature 被持久关联；每个 Agent turn 都通过 D14 动态模板收到 Feature、stage、role、建议 skill、next step 和 artifact refs。
   3. Gate 只允许满足证据与角色约束的 transition。
   4. Feature 经 discovery、delivery、vision acceptance 后关闭。
 - **Terminal state**: FeatureRun 和 Feature Doc 均为 `done`，证据可追溯。
@@ -62,6 +62,7 @@ ChainTogether 的群组已经能可靠传球，但没有跨消息、跨 Agent、
 | R2 | Claude/Codex 共用 canonical skills | operator quote | AC-3, AC-4 |
 | R3 | 群组调用关联长期 FeatureRun | group-first clarification | AC-5, AC-6 |
 | R4 | Reviewer 与愿景守护角色隔离 | tutorial + operator context | AC-7 |
+| R5 | D14 每轮提示当前 Feature，并让每个流程 skill 声明使用边界、产出和下一步 | operator follow-up | AC-9, AC-10 |
 
 ## Acceptance Criteria
 
@@ -70,14 +71,16 @@ ChainTogether 的群组已经能可靠传球，但没有跨消息、跨 Agent、
 - [x] AC-3: `.chaintogether/skills/` 是唯一 skill 源，并有机器可读 catalog。
 - [x] AC-4: 同步器可校验/生成 Claude Code 与 Codex provider skill 目录。
 - [x] AC-5: 后端持久化 FeatureRun、事件和 invocation 关联。
-- [x] AC-6: 群组 Agent turn 注入 feature ID、stage、role、skill 和 canonical doc。
+- [x] AC-6: 群组的当前 Feature 跨消息持久化；每个 Agent turn 都通过注册的 D14 `update-workflow-sop` 动态模板注入 feature ID、stage、role、skill、next step 和 canonical doc。
 - [x] AC-7: 控制面禁止 owner=reviewer、owner=guardian、reviewer=guardian。
 - [x] AC-8: 新增行为具有单元测试，项目测试通过。
+- [x] AC-9: 13 个 lifecycle skills 均显式包含 `Use when`、`Not for`、`Output` 和 `Next step`，且校验器强制检查。
+- [x] AC-10: workflow 为每个 stage 提供 next step，并在 review 等多 skill 阶段按当前 Agent 角色给出建议 skill。
 
 ## Research and Decisions
 
 - Research: Cat Café tutorial 13；Clowder `feat-lifecycle`、`development.yaml`、feature template、skill sync。
-- Decisions: 四层架构——Feature Doc、Workflow、Skill、Gate/Validator。
+- Decisions: 四层架构——Feature Doc、Workflow、Skill、Gate/Validator；D14 是每轮从 group active FeatureRun 重新渲染的动态告示牌，而不是调度器。
 - Rejected alternatives: 单个超长 lifecycle skill；把 Feature 状态复用为 group custody；分别维护 Claude/Codex 两套 skill 内容。
 
 ## Architecture Ownership
@@ -128,3 +131,7 @@ ChainTogether 的群组已经能可靠传球，但没有跨消息、跨 Agent、
 | 2026-07-30 | Discovery and design approved | current Codex conversation |
 | 2026-07-30 | Implementation started | branch `codex/group-feature-lifecycle` |
 | 2026-07-30 | Quality evidence captured; independent review pending | `evidence/quality-report.md` |
+| 2026-08-01 | Operator clarified D14 per-turn injection and skill contracts; returned to implementation | current Codex conversation |
+| 2026-08-01 | D14 refinement returned to Quality | `evidence/quality-report-2026-08-01.md` |
+| 2026-08-01 | Skill trigger contracts moved into discovery-visible descriptions; standalone next-Skill sections added | `evidence/d14-skill-contract-audit.md` |
+| 2026-08-02 | Fresh Quality Gate passed; F001 entered independent Review | `evidence/quality-report-2026-08-02.md` |

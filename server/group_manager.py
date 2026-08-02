@@ -770,20 +770,29 @@ class GroupManager:
         group = await self.db.get_group(group_id)
         if group is None:
             raise GroupError("Group not found", status_code=404)
-        if feature_run_id is not None:
-            if self.feature_manager is None:
+        resolved_feature_run_id = feature_run_id
+        if self.feature_manager is None:
+            if resolved_feature_run_id is not None:
                 raise GroupError(
                     "Feature lifecycle is not initialized", status_code=503
                 )
+        else:
             try:
-                feature = await self.feature_manager.get_for_group(
-                    feature_run_id, group_id
-                )
+                if resolved_feature_run_id is not None:
+                    feature = await self.feature_manager.activate_for_group(
+                        resolved_feature_run_id, group_id
+                    )
+                else:
+                    feature = await self.feature_manager.get_active_for_group(
+                        group_id
+                    )
+                    if feature is not None:
+                        resolved_feature_run_id = feature["id"]
             except FeatureError as exc:
                 raise GroupError(
                     str(exc), status_code=exc.status_code
                 ) from exc
-            if feature["state"] == "done":
+            if feature is not None and feature["state"] == "done":
                 raise GroupError(
                     "Completed feature runs cannot receive new invocations",
                     status_code=409,
@@ -841,13 +850,13 @@ class GroupManager:
             group_id,
             content,
             created_at,
-            feature_run_id=feature_run_id,
+            feature_run_id=resolved_feature_run_id,
         )
         run = GroupRunState(
             group_id=group_id,
             group_session_id=group_session_id,
             invocation_id=invocation_id,
-            feature_run_id=feature_run_id,
+            feature_run_id=resolved_feature_run_id,
             root_content=content,
             root_message_seq=root_message_seq,
             created_at=created_at,

@@ -1,6 +1,6 @@
 ---
 name: feature-lifecycle
-description: Route an existing feature through ChainTogether's durable lifecycle by inspecting its canonical feature document, workflow stage, blockers, roles, and evidence. Use when a group asks what happens next for a feature, resumes feature work, reports a gate result, or needs lifecycle status; do not use to implement code or perform the stage work itself.
+description: "Route an existing feature through ChainTogether's durable lifecycle by inspecting its canonical Feature Doc, stage, blockers, roles, and evidence. Use when: a FeatureRun needs status, routing, resumption, or a decision about which stage Skill should act next. Not for: performing discovery, implementation, review, merge, or acceptance work inside the router. Output: a lifecycle-routing packet naming feature, stage, role, inputs, blockers, D14-suggested Skill, expected output, and next gate."
 ---
 
 # Feature Lifecycle
@@ -28,3 +28,7 @@ Value questions require the operator. Reversible technical questions may be deci
 ## Return
 
 Return a `Lifecycle Routing` block with `feature`, `stage`, `state`, `skill`, `actor`, `inputs`, `blockers`, and `next_gate`. Never claim a transition occurred until the control plane records it.
+
+## Next step
+
+Load the Skill named in D14's `Suggested skill(s)` field for the current stage and role. Return that Skill's evidence to the control plane before requesting a transition.

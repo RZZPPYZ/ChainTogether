@@ -1,6 +1,6 @@
 ---
 name: close-feature
-description: Close a ChainTogether feature only after merge and independent vision acceptance by synchronizing the canonical Feature Doc, evidence, decisions, timeline, indexes, and lessons. Use at the final closure stage or to audit a claimed-done feature; do not use to waive unmet acceptance criteria.
+description: "Close a ChainTogether feature by synchronizing its canonical Feature Doc, evidence, decisions, timeline, indexes, and lessons. Use when: merge and independent Vision Gate acceptance are recorded, or a claimed-done feature needs audit. Not for: waiving unmet ACs, closing unmerged work, self-issuing vision acceptance, or hiding unresolved scope. Output: a synchronized done Feature Doc, evidence and index updates, validator results, and explicitly separate remaining features."
 ---
 
 # Close Feature
@@ -14,3 +14,7 @@ description: Close a ChainTogether feature only after merge and independent visi
 7. Run feature and skill validators and regenerate derived indexes.
 
 Return the closed Feature Doc path, merge and vision evidence, validator results, and remaining explicitly separate features. Closure is a truth synchronization operation, not a celebratory summary.
+
+## Next step
+
+Load `$feature-lifecycle` to confirm terminal `done`. Route any new scope through `$feature-discovery` as a new or explicitly reopened feature.

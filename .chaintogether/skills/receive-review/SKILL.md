@@ -1,6 +1,6 @@
 ---
 name: receive-review
-description: Verify and resolve ChainTogether review findings without performative agreement, using tests and evidence, then return the updated HEAD to the same reviewer. Use when an author receives review findings or a request-changes verdict; do not use to self-approve fixes or silently reinterpret unclear feedback.
+description: "Verify and resolve ChainTogether review findings with tests and evidence, then return the updated HEAD to the same reviewer. Use when: the feature owner receives evidence-backed findings or a request_changes verdict for a known reviewed HEAD. Not for: self-approving fixes, agreeing performatively, silently reinterpreting unclear feedback, or changing the spec to avoid a valid defect. Output: finding-by-finding dispositions, reproduced failures, fix commits, tests, updated evidence, and the new HEAD."
 ---
 
 # Receive Review
@@ -15,3 +15,7 @@ description: Verify and resolve ChainTogether review findings without performati
 8. Return the new HEAD to the same reviewer. Any code change makes the previous approval stale.
 
 Do not mark the review stage complete until the reviewer issues a verdict covering the current HEAD.
+
+## Next step
+
+Load `$request-review` and return the new HEAD to the same reviewer. Any code change invalidates prior approval.

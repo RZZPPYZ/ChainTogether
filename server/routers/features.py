@@ -9,6 +9,7 @@ from ..models import (
     FeatureRunEventInfo,
     FeatureRunInfo,
     FeatureTransitionRequest,
+    GroupActiveFeatureUpdate,
     GroupFeatureCreate,
 )
 
@@ -63,6 +64,39 @@ async def list_group_features(
 ):
     try:
         return await _get_manager().list_for_group(group_id)
+    except FeatureError as error:
+        raise _http_error(error)
+
+
+@router.get(
+    "/groups/{group_id}/active-feature",
+    response_model=FeatureRunInfo | None,
+)
+async def get_active_group_feature(
+    group_id: str, _: str = Depends(verify_token)
+):
+    try:
+        return await _get_manager().get_active_for_group(group_id)
+    except FeatureError as error:
+        raise _http_error(error)
+
+
+@router.put(
+    "/groups/{group_id}/active-feature",
+    response_model=FeatureRunInfo | None,
+)
+async def update_active_group_feature(
+    group_id: str,
+    request: GroupActiveFeatureUpdate,
+    _: str = Depends(verify_token),
+):
+    try:
+        if request.feature_run_id is None:
+            await _get_manager().clear_active_for_group(group_id)
+            return None
+        return await _get_manager().activate_for_group(
+            request.feature_run_id, group_id
+        )
     except FeatureError as error:
         raise _http_error(error)
 

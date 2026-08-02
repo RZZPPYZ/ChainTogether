@@ -96,6 +96,9 @@ class FeatureWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run["feature_id"], "F001")
         self.assertTrue(doc.is_file())
         self.assertIn("stage: discovery", doc.read_text(encoding="utf-8"))
+        active = await self.feature_manager.get_active_for_group(self.group["id"])
+        assert active is not None
+        self.assertEqual(active["id"], run["id"])
         events = await self.feature_manager.list_events(str(run["id"]))
         self.assertEqual(events[0]["result"], "created")
 
@@ -137,6 +140,17 @@ class FeatureWorkflowTests(unittest.IsolatedAsyncioTestCase):
             result="passed",
             evidence_refs=["evidence/quality-report.md"],
         )
+        reviewer_hint = await self.feature_manager.render_turn_context(
+            str(run["id"]), self.group["id"], self.reviewer["id"]
+        )
+        owner_hint = await self.feature_manager.render_turn_context(
+            str(run["id"]), self.group["id"], self.owner["id"]
+        )
+        self.assertIn("Suggested skill(s): $review-feature", reviewer_hint)
+        self.assertNotIn("$request-review", reviewer_hint)
+        self.assertIn("$request-review", owner_hint)
+        self.assertIn("$receive-review", owner_hint)
+        self.assertNotIn("$review-feature", owner_hint)
         self._set_section_verdict(doc, "Review Provenance", "approved")
         with self.assertRaisesRegex(FeatureError, "assigned reviewer"):
             await self.feature_manager.transition(
@@ -162,6 +176,33 @@ class FeatureWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 "evidence/review.md",
             ],
         )
+        await self.feature_manager.transition(
+            str(run["id"]),
+            to_stage="acceptance",
+            result="merged",
+            evidence_refs=["evidence/merge.md"],
+        )
+        self._set_section_verdict(doc, "Vision Gate", "accepted")
+        text = doc.read_text(encoding="utf-8")
+        doc.write_text(text.replace("- [ ] AC-1:", "- [x] AC-1:"), encoding="utf-8")
+        await self.feature_manager.transition(
+            str(run["id"]),
+            to_stage="closure",
+            result="accepted",
+            actor_agent_id=self.guardian["id"],
+            evidence_refs=["evidence/vision.md"],
+        )
+        done = await self.feature_manager.transition(
+            str(run["id"]),
+            to_stage="done",
+            result="closed",
+            actor_agent_id=self.owner["id"],
+            evidence_refs=["evidence/closure.md"],
+        )
+        self.assertEqual(done["state"], "done")
+        self.assertIsNone(
+            await self.feature_manager.get_active_for_group(self.group["id"])
+        )
 
     async def test_group_invocation_persists_and_injects_feature_context(self) -> None:
         run = await self._create_feature()
@@ -177,7 +218,6 @@ class FeatureWorkflowTests(unittest.IsolatedAsyncioTestCase):
         invocation = await self.group_manager.send_message(
             self.group["id"],
             "@Builder inspect the operator need",
-            feature_run_id=str(run["id"]),
         )
         self.assertIsNotNone(invocation)
         assert invocation is not None
@@ -189,10 +229,11 @@ class FeatureWorkflowTests(unittest.IsolatedAsyncioTestCase):
         assert stored is not None
         self.assertEqual(stored["feature_run_id"], run["id"])
         self.assertEqual(invocation["feature_run_id"], run["id"])
-        self.assertIn("== Active Feature Lifecycle ==", captured["prompt"])
+        self.assertIn("D14 — update-workflow-sop", captured["prompt"])
         self.assertIn(f"FeatureRun: {run['id']} | Feature: F001", captured["prompt"])
         self.assertIn("Stage: discovery | State: active | Role: owner", captured["prompt"])
-        self.assertIn("Required skill(s): $feature-discovery", captured["prompt"])
+        self.assertIn("Suggested skill(s): $feature-discovery", captured["prompt"])
+        self.assertIn("Next step:", captured["prompt"])
         self.assertIn(str(run["feature_doc_path"]), captured["prompt"])
 
 

@@ -97,9 +97,10 @@ user-only aliases.
 ## Feature Lifecycle and Shared Skills
 
 Long-running work is tracked as a `FeatureRun`, separate from the custody state
-of any one group message. Link a group send to a feature and every routed agent
-receives the same feature ID, stage, role, gate, canonical doc path, and required
-skill. See [the lifecycle guide](docs/feature-lifecycle.md) for the full
+of any one group message. The group's current Feature persists across messages;
+every routed Agent turn reloads it and receives a D14 `update-workflow-sop`
+block with feature ID, stage, role, gate, canonical doc, suggested skill, and
+next step. See [the lifecycle guide](docs/feature-lifecycle.md) for the full
 discovery-to-delivery process and review handoff contract.
 
 Project skills have one canonical source under `.chaintogether/skills/` and a

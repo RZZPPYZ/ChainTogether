@@ -1,6 +1,6 @@
 ---
 name: worktree
-description: Prepare a safe isolated Git worktree for a ChainTogether feature, preserving unrelated user changes and verifying branch identity, repository synchronization, environment isolation, and baseline tests. Use immediately before implementation or takeover work; do not use for read-only analysis or tiny documentation-only changes.
+description: "Prepare a safe isolated Git worktree for a ChainTogether feature while preserving unrelated user changes and verifying branch identity, repository synchronization, environment isolation, and baseline tests. Use when: starting any code, script, API, schema, runtime prompt or template, first-party execution-surface change, new feature, or bug fix. Not for: read-only discussion or research, or documentation-only changes of at most five lines that do not affect code, scripts, APIs, configuration, schemas, prompts, or execution behavior. Output: an isolated worktree with the correct branch, environment configuration, dependency state, and baseline evidence."
 ---
 
 # Worktree
@@ -14,3 +14,7 @@ description: Prepare a safe isolated Git worktree for a ChainTogether feature, p
 7. Run the smallest trustworthy baseline test/build command before editing.
 
 Return a `Worktree Record` with path, branch, base SHA, isolation settings, and baseline result. Stop on dirty-target ambiguity, unsafe paths, or a failing unexplained baseline.
+
+## Next step
+
+Load `$tdd` and implement the first planned AC or reproduced failure in that worktree.

@@ -1,6 +1,6 @@
 ---
 name: vision-gate
-description: Independently validate a merged ChainTogether feature against the operator's original intent and real user journey, looking for technically correct delivery that still misses the desired experience. Use after merge and before closure, or when a feature is returned for vision drift; do not use if you authored or code-reviewed the feature.
+description: "Independently validate a merged ChainTogether feature against the operator's original intent and real user journey, including technically correct delivery that may miss the desired experience. Use when: code is merged and an independent guardian must validate intent and experience before closure. Not for: author or code-reviewer self-acceptance, pre-merge testing, or equating checked ACs with product acceptance. Output: a merged-revision-bound accepted, changes_required, or blocked vision verdict with journey evidence and deviations."
 ---
 
 # Vision Gate
@@ -18,3 +18,7 @@ The guardian must be different from both author and code reviewer.
 6. Record unintentional deviations, missing experience, and evidence.
 
 Return `accepted`, `changes_required`, or `blocked`, bound to merged revision and guardian identity. Changes return to discovery or implementation according to the root cause.
+
+## Next step
+
+On `accepted`, load `$close-feature`. For a vision gap, load `$feature-discovery`. For an approved delivery fix, load `$worktree` and then `$tdd`.

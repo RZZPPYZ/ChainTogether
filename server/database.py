@@ -509,6 +509,20 @@ CREATE TABLE IF NOT EXISTS feature_invocation_links (
 
 CREATE INDEX IF NOT EXISTS idx_feature_invocation_links_run
   ON feature_invocation_links(feature_run_id);
+
+-- One durable current feature per group. D14 reads this at invocation time so
+-- a later group message inherits workflow context without trusting chat memory
+-- or requiring the client to resend feature_run_id on every turn.
+CREATE TABLE IF NOT EXISTS group_active_features (
+    group_id TEXT PRIMARY KEY,
+    feature_run_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (feature_run_id) REFERENCES feature_runs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_group_active_features_run
+  ON group_active_features(feature_run_id);
 """
 
 
@@ -1298,6 +1312,46 @@ class Database:
             }
             for row in await cursor.fetchall()
         ]
+
+    async def set_group_active_feature(
+        self, group_id: str, run_id: str, updated_at: str
+    ) -> None:
+        await self._ensure_connected()
+        await self._conn.execute(
+            "INSERT INTO group_active_features "
+            "(group_id, feature_run_id, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(group_id) DO UPDATE SET "
+            "feature_run_id = excluded.feature_run_id, "
+            "updated_at = excluded.updated_at",
+            (group_id, run_id, updated_at),
+        )
+        await self._conn.commit()
+
+    async def get_group_active_feature_id(self, group_id: str) -> str | None:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT feature_run_id FROM group_active_features WHERE group_id = ?",
+            (group_id,),
+        )
+        row = await cursor.fetchone()
+        return str(row[0]) if row else None
+
+    async def clear_group_active_feature(
+        self, group_id: str, *, run_id: str | None = None
+    ) -> None:
+        await self._ensure_connected()
+        if run_id is None:
+            await self._conn.execute(
+                "DELETE FROM group_active_features WHERE group_id = ?",
+                (group_id,),
+            )
+        else:
+            await self._conn.execute(
+                "DELETE FROM group_active_features "
+                "WHERE group_id = ? AND feature_run_id = ?",
+                (group_id, run_id),
+            )
+        await self._conn.commit()
 
     @staticmethod
     def _feature_run_row(row: Any) -> dict[str, Any]:

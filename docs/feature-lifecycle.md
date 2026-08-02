@@ -18,6 +18,7 @@ message; the linked FeatureRun owns product progress across all invocations.
 | Skill inventory and provider mounts | `.chaintogether/skills.yaml` | sync report |
 | One group-message custody chain | `group_invocations` | in-memory `GroupRunState` |
 | Feature ↔ invocation relation | `feature_invocation_links` | `feature_run_id` in API responses |
+| Group's current Feature | `group_active_features` | D14 `update-workflow-sop` block on every routed turn |
 
 Do not edit `.claude/skills/` or `.codex/skills/` directly. They are generated
 provider views. Claude Code and Codex therefore consume the same skill text,
@@ -76,13 +77,18 @@ stage with a reason; it never silently edits history to look linear.
 
 ## Group operation
 
-1. Create a FeatureRun with `POST /api/groups/{group_id}/features`. This also
-   creates the next canonical `FNNN` dossier in the group's working directory.
+1. Create a FeatureRun with `POST /api/groups/{group_id}/features`. This creates
+   the next canonical `FNNN` dossier and makes it the group's current Feature.
 2. Assign distinct `owner_agent_id`, `reviewer_agent_id`, and
    `vision_guardian_agent_id` with `PATCH /api/features/{run_id}/roles`.
-3. Send group work with `feature_run_id` on `POST /api/groups/{group_id}/send`.
-4. The controller injects the FeatureRun ID, Feature ID, stage, role, canonical
-   document path, current gate, and required skill into every routed agent turn.
+3. Read or change the current Feature with
+   `GET/PUT /api/groups/{group_id}/active-feature`. Supplying `feature_run_id`
+   on a group send also switches it explicitly; otherwise later sends inherit
+   the persisted current Feature.
+4. On every routed Agent turn, the controller reloads current FeatureRun state
+   and renders the registered D14 `update-workflow-sop` dynamic template. D14
+   names FeatureRun/Feature, stage/state, receiving role, canonical doc, gate,
+   role-aware suggested skill, and the stage's concrete next step.
 5. Record evidence in the repository, then request a transition through
    `POST /api/features/{run_id}/transition`. The control plane validates the
    edge, actor, role separation, evidence, and canonical document verdict.
@@ -91,6 +97,17 @@ stage with a reason; it never silently edits history to look linear.
 An invocation may pass among several group agents without changing the feature
 stage. Conversely, one feature stage may span many invocations. Agents report
 evidence; only the control plane records the transition.
+
+D14 is a per-turn advisory signboard, not a scheduler: it tells the Agent where
+the group is and which skill fits its assigned role, while leaving execution and
+handoff decisions to the Agent. Completing a FeatureRun clears it as the group's
+current Feature so stale work is not injected into later turns.
+
+Skill discovery happens before a Skill body is loaded. Therefore every
+lifecycle Skill frontmatter `description` carries its complete `Use when:`,
+`Not for:`, and `Output:` contract. After selection, the Skill body's standalone
+`## Next step` section names the Skill to load next for each possible outcome.
+The canonical catalog and workflow remain the machine-readable routing source.
 
 ## Review handoff contract
 

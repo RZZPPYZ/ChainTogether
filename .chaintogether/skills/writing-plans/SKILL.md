@@ -1,6 +1,6 @@
 ---
 name: writing-plans
-description: Convert an approved ChainTogether Feature Doc into a straight-line, testable implementation plan with exact files, AC coverage, state-object census, invariants, adversarial cases, and red-green-refactor steps. Use after Design Gate approval and before creating a worktree; do not use for discovery, unapproved designs, or trivial documentation-only edits.
+description: "Convert an approved ChainTogether Feature Doc into a straight-line, testable implementation plan with exact files, AC coverage, state-object census, invariants, adversarial cases, and red-green-refactor steps. Use when: Design Gate is approved and implementation needs an exact AC-complete sequence of files, tests, commands, states, and evidence. Not for: discovery, unapproved designs, implementation itself, or trivial documentation-only edits. Output: an implementation plan in the feature dossier with AC coverage, state invariants, adversarial cases, and verification commands."
 ---
 
 # Writing Plans
@@ -18,3 +18,7 @@ description: Convert an approved ChainTogether Feature Doc into a straight-line,
 7. Include migration, compatibility, observability, rollback, documentation, and evidence collection where applicable.
 
 Save the plan in the feature dossier and return its path, AC coverage, unresolved technical questions, and the proposed worktree name. Do not start implementation.
+
+## Next step
+
+Load `$worktree` to prepare the isolated execution environment before changing code.

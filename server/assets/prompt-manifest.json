@@ -40,6 +40,20 @@
     "dynamic.hold_resume": {
       "path": "prompts/dynamic/hold-resume.md",
       "required": ["reason"]
+    },
+    "dynamic.update_workflow_sop": {
+      "path": "prompts/dynamic/update-workflow-sop.md",
+      "required": [
+        "feature_run_id",
+        "feature_id",
+        "stage",
+        "state",
+        "role",
+        "canonical_doc",
+        "suggested_skills",
+        "current_gate",
+        "next_step"
+      ]
     }
   }
 }

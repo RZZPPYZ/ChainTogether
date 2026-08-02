@@ -1,6 +1,6 @@
 ---
 name: review-feature
-description: Independently review a ChainTogether feature's exact branch and HEAD against original intent, approved design, acceptance criteria, tests, architecture, security, and user journey. Use when assigned as reviewer through a review packet; do not use when you authored the reviewed changes or when the target SHA is unavailable.
+description: "Independently review a ChainTogether feature's exact branch and HEAD against original intent, approved design, acceptance criteria, tests, architecture, security, and user journey. Use when: an independent reviewer receives a complete review packet bound to exact base and head SHAs. Not for: reviewing authored changes, editing the reviewed branch, reviewing an unknown or stale SHA, or substituting for Design, Quality, or Vision gates. Output: evidence-backed P1, P2, and P3 findings, residual risks, exact reviewed HEAD, and an approved, request_changes, or blocked verdict."
 ---
 
 # Review Feature
@@ -14,3 +14,7 @@ description: Independently review a ChainTogether feature's exact branch and HEA
 7. Do not edit the branch while acting as reviewer. A takeover requires an explicit role change and a new reviewer.
 
 Report findings as P1/P2/P3 with evidence and tight locations. Finish with a verdict and the exact reviewed HEAD. Silence is not approval.
+
+## Next step
+
+On `approved`, load `$merge-gate`. On `request_changes`, hand the findings to the owner and load `$receive-review`. On `blocked`, resolve the named review dependency before continuing.

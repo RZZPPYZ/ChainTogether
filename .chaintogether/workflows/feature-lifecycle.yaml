@@ -7,42 +7,62 @@
   "stages": {
     "discovery": {
       "skill": "feature-discovery",
-      "gate": "discovery-readiness"
+      "gate": "discovery-readiness",
+      "next_step": "Interview the operator, research material unknowns, converge decisions, and make every requirement traceable to an acceptance criterion."
     },
     "design": {
       "skill": "design-gate",
-      "gate": "design-verdict"
+      "gate": "design-verdict",
+      "next_step": "Review scope, journeys, ownership, state invariants, and risks; record approved, changes_required, or blocked in the Feature Doc."
     },
     "planning": {
       "skill": "writing-plans",
-      "gate": "plan-readiness"
+      "gate": "plan-readiness",
+      "next_step": "Write an AC-complete red-green-refactor plan with exact files, commands, state invariants, and evidence outputs."
     },
     "implementation": {
       "skills": ["worktree", "tdd"],
-      "gate": "implementation-complete"
+      "gate": "implementation-complete",
+      "next_step": "Prepare or verify the isolated feature worktree, then implement the next unchecked AC through a red-green-refactor cycle."
     },
     "quality": {
       "skill": "quality-gate",
-      "gate": "quality-report"
+      "gate": "quality-report",
+      "next_step": "Run fresh AC, test, lint, typecheck, build, journey, and artifact checks; write the Quality Report and resolve every failure."
     },
     "review": {
       "skills": ["request-review", "review-feature", "receive-review"],
-      "gate": "review-verdict"
+      "skills_by_role": {
+        "owner": ["request-review", "receive-review"],
+        "reviewer": ["review-feature"]
+      },
+      "gate": "review-verdict",
+      "next_step": "Owner: prepare the SHA-bound packet or resolve findings. Reviewer: independently review the exact HEAD and record a verdict."
     },
     "merge": {
       "skill": "merge-gate",
-      "gate": "merge-evidence-manifest"
+      "gate": "merge-evidence-manifest",
+      "next_step": "Verify review continuity, current HEAD, CI, local evidence, conflicts, and repository policy before performing the authorized merge."
     },
     "acceptance": {
       "skill": "vision-gate",
-      "gate": "vision-verdict"
+      "skills_by_role": {
+        "vision_guardian": ["vision-gate"]
+      },
+      "gate": "vision-verdict",
+      "next_step": "The independent vision guardian replays the original user journey against the merged revision and records accepted or changes_required."
     },
     "closure": {
       "skill": "close-feature",
-      "gate": "feature-truth"
+      "skills_by_role": {
+        "owner": ["close-feature"]
+      },
+      "gate": "feature-truth",
+      "next_step": "Reconcile ACs, evidence, decisions, review, merge, vision verdict, timeline, and indexes before marking the feature done."
     },
     "done": {
-      "skill": "feature-lifecycle"
+      "skill": "feature-lifecycle",
+      "next_step": "Do not continue implementation under this FeatureRun; route any new scope through discovery as a new or explicitly reopened feature."
     }
   },
   "transitions": [

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .database import Database
+from .prompt_governance import get_prompt_registry
 
 
 _FEATURE_DIR_RE = re.compile(r"^F(\d{3,})-")
@@ -205,6 +206,7 @@ class FeatureManager:
             evidence_refs=[relative_path.as_posix()],
             created_at=created_at,
         )
+        await db.set_group_active_feature(group_id, run_id, created_at)
         return row
 
     async def get(self, run_id: str) -> dict[str, Any]:
@@ -227,6 +229,38 @@ class FeatureManager:
         if await self._db().get_group(group_id) is None:
             raise FeatureError("Group not found", status_code=404)
         return await self._db().list_feature_runs(group_id=group_id)
+
+    async def get_active_for_group(
+        self, group_id: str
+    ) -> dict[str, Any] | None:
+        if await self._db().get_group(group_id) is None:
+            raise FeatureError("Group not found", status_code=404)
+        run_id = await self._db().get_group_active_feature_id(group_id)
+        if run_id is None:
+            return None
+        row = await self.get_for_group(run_id, group_id)
+        if row["state"] == "done":
+            await self._db().clear_group_active_feature(
+                group_id, run_id=run_id
+            )
+            return None
+        return row
+
+    async def activate_for_group(
+        self, run_id: str, group_id: str
+    ) -> dict[str, Any]:
+        row = await self.get_for_group(run_id, group_id)
+        if row["state"] == "done":
+            raise FeatureError(
+                "Completed feature runs cannot become active", status_code=409
+            )
+        await self._db().set_group_active_feature(group_id, run_id, _now())
+        return row
+
+    async def clear_active_for_group(self, group_id: str) -> None:
+        if await self._db().get_group(group_id) is None:
+            raise FeatureError("Group not found", status_code=404)
+        await self._db().clear_group_active_feature(group_id)
 
     async def update_roles(
         self, run_id: str, changes: dict[str, str | None]
@@ -357,6 +391,10 @@ class FeatureManager:
             row,
             {"stage": to_stage, "state": state, "updated_at": updated_at},
         )
+        if state == "done":
+            await self._db().clear_group_active_feature(
+                row["group_id"], run_id=run_id
+            )
         return await self.get(run_id)
 
     async def list_events(self, run_id: str) -> list[dict[str, Any]]:
@@ -369,9 +407,6 @@ class FeatureManager:
         row = await self.get_for_group(run_id, group_id)
         workflow = self._load_workflow(row["working_dir"])
         stage_spec = workflow["stages"][row["stage"]]
-        skills = stage_spec.get("skills")
-        if not isinstance(skills, list):
-            skills = [stage_spec["skill"]] if stage_spec.get("skill") else []
         role = "collaborator"
         if agent_id == row["owner_agent_id"]:
             role = "owner"
@@ -379,18 +414,29 @@ class FeatureManager:
             role = "reviewer"
         elif agent_id == row["vision_guardian_agent_id"]:
             role = "vision_guardian"
+        role_skills = stage_spec.get("skills_by_role")
+        if isinstance(role_skills, dict):
+            skills = role_skills.get(role, [])
+        else:
+            skills = stage_spec.get("skills")
+            if not isinstance(skills, list):
+                skills = (
+                    [stage_spec["skill"]] if stage_spec.get("skill") else []
+                )
+        if not isinstance(skills, list):
+            skills = []
         skill_lines = ", ".join("$" + name for name in skills) or "(none)"
-        return (
-            "== Active Feature Lifecycle ==\n"
-            f"FeatureRun: {row['id']} | Feature: {row['feature_id']}\n"
-            f"Stage: {row['stage']} | State: {row['state']} | Role: {role}\n"
-            f"Canonical doc: {row['feature_doc_path']}\n"
-            f"Required skill(s): {skill_lines}\n"
-            f"Current gate: {row['current_gate'] or '(none)'}\n\n"
-            "Read the canonical doc before acting. GroupInvocation custody is "
-            "separate from FeatureRun stage. Do not claim or perform a stage "
-            "transition; return evidence to the control plane. Only an assigned "
-            "reviewer or vision guardian may issue that gate's verdict."
+        return get_prompt_registry().render(
+            "dynamic.update_workflow_sop",
+            feature_run_id=row["id"],
+            feature_id=row["feature_id"],
+            stage=row["stage"],
+            state=row["state"],
+            role=role,
+            canonical_doc=row["feature_doc_path"],
+            suggested_skills=skill_lines,
+            current_gate=row["current_gate"] or "(none)",
+            next_step=stage_spec.get("next_step") or "Consult the Feature Doc.",
         )
 
     async def _sync_doc(

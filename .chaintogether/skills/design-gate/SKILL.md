@@ -1,6 +1,6 @@
 ---
 name: design-gate
-description: Decide whether a discovered ChainTogether feature is safe and clear enough to plan before implementation by checking user journeys, scope, architecture ownership, state lifecycles, risks, decisions, and operator sign-off. Use at the discovery-to-design boundary or after design-level review feedback; do not use as a code review or quality check.
+description: "Decide whether a discovered ChainTogether feature is safe and clear enough to plan by checking journeys, scope, architecture ownership, state lifecycles, risks, decisions, and operator sign-off. Use when: Discovery claims the Feature Doc is ready for implementation design, or design-level feedback requires reevaluation. Not for: code review, quality verification, implementation, or bypassing an unresolved operator value decision. Output: a revision-bound approved, changes_required, or blocked design verdict with evidence and named gaps."
 ---
 
 # Design Gate
@@ -26,3 +26,7 @@ Return exactly one:
 - `blocked`: name the missing decision or authority
 
 Bind the verdict to the Feature Doc revision and list evidence. Do not write implementation code.
+
+## Next step
+
+On `approved`, load `$writing-plans`. On `changes_required`, load `$feature-discovery`. On `blocked`, request the missing decision or authority before loading another stage Skill.

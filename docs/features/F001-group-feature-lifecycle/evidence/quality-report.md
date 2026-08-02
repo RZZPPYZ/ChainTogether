@@ -1,5 +1,9 @@
 # F001 Quality Report
 
+> Superseded on 2026-08-01 when the operator added persistent D14 per-turn
+> workflow context and standardized skill-contract requirements. Fresh quality
+> evidence is required after that implementation is complete.
+
 - **Status:** changed scope passed; repository lint baseline remains red
 - **Branch:** `codex/group-feature-lifecycle`
 - **Scope:** Feature dossier/workflow/skills, FeatureRun persistence and API,

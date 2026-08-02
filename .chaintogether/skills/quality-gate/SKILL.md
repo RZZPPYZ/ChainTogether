@@ -1,6 +1,6 @@
 ---
 name: quality-gate
-description: Verify a completed ChainTogether implementation against original operator intent, Feature Doc requirements, acceptance criteria, fresh test and build evidence, real user journeys, and delivery completeness. Use before requesting independent review or when completion is claimed; do not use as the independent review or merge authority.
+description: "Verify a completed ChainTogether implementation against operator intent, Feature Doc requirements, acceptance criteria, fresh test and build evidence, real user journeys, and delivery completeness. Use when: implementation is claimed complete and needs fresh requirements, AC, test, lint, build, journey, and artifact verification. Not for: independent code approval, merge authorization, or accepting known failures without explicit scope disposition. Output: a Quality Report with pass, fail, or blocked, exact commands and results, AC-to-evidence mapping, gaps, and residual risks."
 ---
 
 # Quality Gate
@@ -17,3 +17,7 @@ No completion claim is valid without fresh evidence.
 8. Write a Quality Report in the feature evidence directory.
 
 Return `pass`, `fail`, or `blocked`, plus evidence paths and uncovered gaps. `pass` permits `request-review`; it is not approval to merge.
+
+## Next step
+
+On `pass`, load `$request-review`. On `fail`, return to `$tdd`. On `blocked`, resolve the named dependency or decision before continuing.

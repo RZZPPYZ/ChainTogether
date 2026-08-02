@@ -1,6 +1,6 @@
 ---
 name: merge-gate
-description: Decide whether a reviewed ChainTogether branch can be merged by verifying current HEAD, independent review continuity, CI and local evidence, merge safety, feature-document truth, and post-merge synchronization. Use after an approving review; do not use while review is stale, blocked, or incomplete.
+description: "Decide whether a reviewed ChainTogether branch can be merged by verifying current HEAD, independent review continuity, CI and local evidence, merge safety, Feature Doc truth, and post-merge synchronization. Use when: independent review approved the current HEAD and merge readiness must be checked. Not for: stale or incomplete review, red quality or CI, unauthorized direct merges, or treating a closed PR as merged. Output: a Merge Evidence Manifest recording PR, base, current and reviewed HEAD, reviewer verdict, checks, merge result, and Feature Doc synchronization."
 ---
 
 # Merge Gate
@@ -15,3 +15,7 @@ description: Decide whether a reviewed ChainTogether branch can be merged by ver
 8. Preserve unrelated worktrees and user changes during cleanup.
 
 Return a Merge Evidence Manifest containing feature, PR, base, head, reviewed head, reviewer, verdict, CI, quality evidence, merge result, and document-sync result. A merge moves the feature to vision acceptance, not directly to done.
+
+## Next step
+
+After a real merge, load `$vision-gate` and assign an independent guardian to the merged revision.

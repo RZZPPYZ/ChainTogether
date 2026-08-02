@@ -22,6 +22,7 @@ def _load_script(name: str, filename: str) -> ModuleType:
 
 
 check_features = _load_script("check_features", "check-features.py")
+check_skills = _load_script("check_skills", "check-skills.py")
 sync_skills = _load_script("sync_skills", "sync-skills.py")
 
 
@@ -59,7 +60,10 @@ class FeatureValidatorTests(unittest.TestCase):
             path.write_text(text, encoding="utf-8")
             _metadata, issues = check_features.validate_feature(path)
             self.assertTrue(
-                any("owner, reviewer, and vision_guardian must differ" in issue for issue in issues)
+                any(
+                    "owner, reviewer, and vision_guardian must differ" in issue
+                    for issue in issues
+                )
             )
 
     def test_done_requires_checked_acs_and_accepted_vision(self) -> None:
@@ -118,6 +122,41 @@ class SkillSyncTests(unittest.TestCase):
             self.assertEqual(
                 provenance["source_digest"], sync_skills.digest_tree(source)
             )
+
+
+class SkillContractTests(unittest.TestCase):
+    def test_every_lifecycle_skill_exposes_discovery_contract_and_next_step(self) -> None:
+        skills_root = PROJECT_ROOT / ".chaintogether" / "skills"
+        required = ("Use when:", "Not for:", "Output:")
+
+        for path in sorted(skills_root.glob("*/SKILL.md")):
+            text = path.read_text(encoding="utf-8")
+            metadata = check_skills.parse_skill_metadata(path)
+            with self.subTest(skill=path.parent.name):
+                self.assertNotIn("## Contract", text)
+                for field in required:
+                    self.assertIn(field, metadata["description"])
+                self.assertRegex(text, r"(?m)^## Next step\r?\n+\S")
+
+    def test_catalog_and_workflow_declare_valid_next_steps(self) -> None:
+        catalog = check_skills.load_json_yaml(
+            PROJECT_ROOT / ".chaintogether" / "skills.yaml"
+        )
+        workflow = check_skills.load_json_yaml(
+            PROJECT_ROOT
+            / ".chaintogether"
+            / "workflows"
+            / "feature-lifecycle.yaml"
+        )
+        known = set(catalog["skills"])
+
+        for name, spec in catalog["skills"].items():
+            with self.subTest(skill=name):
+                self.assertIn("next_skills", spec)
+                self.assertTrue(set(spec["next_skills"]) <= known)
+        for stage, spec in workflow["stages"].items():
+            with self.subTest(stage=stage):
+                self.assertTrue(spec.get("next_step"))
 
 
 if __name__ == "__main__":

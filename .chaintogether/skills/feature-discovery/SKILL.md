@@ -1,6 +1,6 @@
 ---
 name: feature-discovery
-description: Turn a vague group signal into an evidence-backed ChainTogether Feature Doc through CVO interviewing, local and external research, independent discussion, convergence, and specification crystallization. Use for new feature ideas, unclear requirements, hidden user needs, unresolved value questions, or a feature sent back from Design or Vision Gate; do not use once an approved design is ready for planning.
+description: "Turn a vague group signal into an evidence-backed ChainTogether Feature Doc through CVO interviewing, research, independent discussion, convergence, and specification crystallization. Use when: a new or returned feature has unclear needs, journeys, scope, value decisions, research gaps, or acceptance criteria. Not for: planning or coding after Design Gate approval, or inventing product choices that require the operator. Output: a canonical Feature Doc with research, decisions, rejected alternatives, open questions, acceptance criteria, and a Design Gate packet."
 ---
 
 # Feature Discovery
@@ -33,3 +33,7 @@ Discovery ends with a reviewable Feature Doc, not code.
 Declare `ready_for_design` only when every requirement maps to at least one independently verifiable AC, value questions are answered or explicitly awaiting the operator, and the user journey has a clear entry, flow, terminal state, and success evidence.
 
 Return changed artifact paths, unresolved questions, and the proposed Design Gate packet. Do not advance the workflow yourself.
+
+## Next step
+
+Load `$design-gate` after every requirement maps to a verifiable AC and the primary journey is explicit.

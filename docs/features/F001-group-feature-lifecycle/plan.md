@@ -31,3 +31,13 @@
 
 - Add validator tests, FeatureManager tests, and group context tests.
 - Run Python tests, skill validation, feature validation, and frontend checks affected by regenerated API contracts.
+
+## Task 6: D14 workflow SOP refinement
+
+- Register a first-class D14 `update-workflow-sop` dynamic prompt asset.
+- Persist one active FeatureRun per group so later messages inherit it without
+  resending `feature_run_id`; explicit linkage switches the active feature.
+- Add stage-level `next_step` and role-aware skill recommendations.
+- Standardize all lifecycle skills with `Use when`, `Not for`, `Output`, and
+  `Next step` contracts and enforce them in validation.
+- Add red/green regression tests, refresh evidence, and return F001 to Quality.

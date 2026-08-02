@@ -11,6 +11,7 @@ from typing import Any
 
 
 FRONTMATTER_RE = re.compile(r"^---\r?\n(.*?)\r?\n---\r?\n", re.DOTALL)
+DESCRIPTION_FIELDS = ("Use when:", "Not for:", "Output:")
 
 
 def load_json_yaml(path: Path) -> dict[str, Any]:
@@ -45,6 +46,16 @@ def parse_skill_metadata(path: Path) -> dict[str, str]:
         raise ValueError(f"{path}: unresolved TODO")
     if len(text.splitlines()) >= 500:
         raise ValueError(f"{path}: SKILL.md must stay under 500 lines")
+    description = metadata["description"]
+    for field in DESCRIPTION_FIELDS:
+        if field not in description:
+            raise ValueError(f"{path}: description missing '{field}'")
+    if "## Contract" in text:
+        raise ValueError(
+            f"{path}: obsolete '## Contract'; put discovery metadata in description"
+        )
+    if not re.search(r"^## Next step\r?\n+(?=\S)", text, re.MULTILINE):
+        raise ValueError(f"{path}: missing non-empty '## Next step' section")
     return metadata
 
 
@@ -80,6 +91,19 @@ def main() -> int:
 
     for name in sorted(filesystem_skills):
         skill_dir = skills_root / name
+        spec = catalog_skills.get(name)
+        if not isinstance(spec, dict):
+            issues.append(f"{name}: catalog entry must be an object")
+        else:
+            next_skills = spec.get("next_skills")
+            if not isinstance(next_skills, list) or not next_skills:
+                issues.append(f"{name}: catalog next_skills must be non-empty")
+            else:
+                for next_skill in next_skills:
+                    if next_skill not in catalog_skills:
+                        issues.append(
+                            f"{name}: unknown next skill {next_skill}"
+                        )
         try:
             metadata = parse_skill_metadata(skill_dir / "SKILL.md")
             if metadata["name"] != name:
@@ -109,11 +133,30 @@ def main() -> int:
         if not isinstance(spec, dict):
             issues.append(f"workflow stage {stage}: spec must be an object")
             continue
+        if (
+            not isinstance(spec.get("next_step"), str)
+            or not spec["next_step"].strip()
+        ):
+            issues.append(f"workflow stage {stage}: next_step is required")
         referenced: list[str] = []
         if isinstance(spec.get("skill"), str):
             referenced.append(spec["skill"])
         if isinstance(spec.get("skills"), list):
             referenced.extend(spec["skills"])
+        skills_by_role = spec.get("skills_by_role")
+        if skills_by_role is not None:
+            if not isinstance(skills_by_role, dict):
+                issues.append(
+                    f"workflow stage {stage}: skills_by_role must be an object"
+                )
+            else:
+                for role, role_skills in skills_by_role.items():
+                    if not isinstance(role_skills, list):
+                        issues.append(
+                            f"workflow stage {stage}: role {role} skills must be an array"
+                        )
+                        continue
+                    referenced.extend(role_skills)
         for skill in referenced:
             if skill not in catalog_skills:
                 issues.append(f"workflow stage {stage}: unknown skill {skill}")

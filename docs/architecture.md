@@ -125,10 +125,12 @@ split into two layers with different lifetimes:
   triggering message as separate JSON blocks. Ping-pong warnings, routing
   correction, and HOLD resumption are selected dynamic templates rather than
   permanent system text.
-- **Feature directive:** when a group invocation carries `feature_run_id`, D
-  also names the durable FeatureRun/Feature, current stage and gate, the
-  receiving agent's lifecycle role, required project skill, and canonical
-  Feature Doc. Invocation custody and feature progress remain separate states.
+- **D14 workflow directive:** `group_active_features` persists the group's
+  current FeatureRun. Each routed turn reloads it and renders the registered
+  `dynamic.update_workflow_sop` template with FeatureRun/Feature, stage/state,
+  receiving role, canonical doc, gate, role-aware suggested skill, and concrete
+  next step. An explicit `feature_run_id` switches the group context; later
+  messages inherit it. Invocation custody and feature progress remain separate.
 - **Incremental cursor:** `group_agent_sessions.last_seen_group_seq` stores the
   highest group sequence successfully shown to each member. The cursor advances
   monotonically only after a successful backend turn. The current trigger is
@@ -395,6 +397,7 @@ POST               /api/sessions/{id}/research/{rid}/cancel      # cancel in-fli
 # Groups + durable feature lifecycle
 POST               /api/groups/{id}/send                         # optional feature_run_id
 GET/POST            /api/groups/{id}/features
+GET/PUT             /api/groups/{id}/active-feature
 GET                 /api/features/{run_id}
 PATCH               /api/features/{run_id}/roles
 POST                /api/features/{run_id}/transition
@@ -461,6 +464,8 @@ migrations (never re-create or duplicate the schema in docs).
   result, reason, evidence references, and timestamp.
 - **`feature_invocation_links`** — optional relation from one short-lived
   `group_invocation` custody chain to the FeatureRun it advances.
+- **`group_active_features`** — one persisted current FeatureRun per group,
+  read afresh for D14 on every routed turn and cleared when the feature is done.
 
 ## Memory
 

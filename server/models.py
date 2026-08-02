@@ -646,6 +646,10 @@ class GroupFeatureCreate(BaseModel):
     origin_message_seq: int | None = Field(default=None, ge=0)
 
 
+class GroupActiveFeatureUpdate(BaseModel):
+    feature_run_id: str | None = None
+
+
 class FeatureRolesUpdate(BaseModel):
     owner_agent_id: str | None = None
     reviewer_agent_id: str | None = None
