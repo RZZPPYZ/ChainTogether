@@ -444,6 +444,48 @@ class FeatureManager:
             revision=revision,
         )
 
+    async def transition_for_dispatch(
+        self,
+        run_id: str,
+        actor_session_id: str,
+        *,
+        dispatch_id: str,
+        dispatch_capability: str,
+        to_stage: str,
+        result: str = "",
+        reason: str = "",
+        evidence_refs: list[str] | None = None,
+        revision: str = "",
+    ) -> dict[str, Any]:
+        """Transition with Session identity plus exact invocation generation."""
+        row = await self.get(run_id)
+        actor_agent_id = await self._db().get_group_agent_by_session(
+            row["group_id"], actor_session_id
+        )
+        if actor_agent_id is None:
+            raise FeatureError(
+                "Actor session is not bound to this FeatureRun group",
+                status_code=403,
+            )
+        if not dispatch_id or not dispatch_capability:
+            raise FeatureError("Feature dispatch capability is required", status_code=403)
+        return await self.transition(
+            run_id,
+            to_stage=to_stage,
+            result=result,
+            actor_agent_id=actor_agent_id,
+            reason=reason,
+            evidence_refs=evidence_refs,
+            revision=revision,
+            _dispatch_authority={
+                "dispatch_id": dispatch_id,
+                "actor_agent_id": actor_agent_id,
+                "capability_hash": hashlib.sha256(
+                    dispatch_capability.encode("utf-8")
+                ).hexdigest(),
+            },
+        )
+
     async def transition(
         self,
         run_id: str,
@@ -454,6 +496,7 @@ class FeatureManager:
         reason: str = "",
         evidence_refs: list[str] | None = None,
         revision: str = "",
+        _dispatch_authority: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         row = await self.get(run_id)
         if row["state"] == "done":
@@ -516,6 +559,27 @@ class FeatureManager:
         state = "done" if to_stage in workflow.get("terminal_stages", []) else "active"
         completed_at = updated_at if state == "done" else None
         stage_spec = stages.get(to_stage) or {}
+        successor_dispatch: dict[str, str] | None = None
+        if _dispatch_authority is not None and state != "done":
+            if to_stage == "review":
+                target_role = "reviewer"
+                target_agent_id = row["reviewer_agent_id"]
+            elif to_stage == "acceptance":
+                target_role = "vision_guardian"
+                target_agent_id = row["vision_guardian_agent_id"]
+            else:
+                target_role = "owner"
+                target_agent_id = row["owner_agent_id"]
+            if not isinstance(target_agent_id, str):
+                raise FeatureError(
+                    f"Feature transition requires an assigned {target_role}"
+                )
+            successor_dispatch = {
+                "id": uuid.uuid4().hex[:16],
+                "purpose": "stage",
+                "target_role": target_role,
+                "target_agent_id": target_agent_id,
+            }
         artifact_refs = list(dict.fromkeys([*row["artifact_refs"], *evidence]))
         doc_path, doc_content, doc_base_hash = await self._prepare_doc_sync(
             row,
@@ -561,6 +625,8 @@ class FeatureManager:
             feature_doc_path=str(doc_path),
             document_content=doc_content,
             document_base_hash=doc_base_hash,
+            dispatch_authority=_dispatch_authority,
+            successor_dispatch=successor_dispatch,
             clear_active_group_id=row["group_id"] if state == "done" else None,
             precondition=lambda: self._assert_transition_precondition(
                 row,
@@ -571,6 +637,12 @@ class FeatureManager:
             ),
         )
         if not transitioned:
+            if _dispatch_authority is not None:
+                raise FeatureError(
+                    "Stale, consumed, or invalid feature dispatch; stop this "
+                    "turn and reload status",
+                    status_code=409,
+                )
             raise FeatureError(
                 "Stale feature transition; stage changed concurrently",
                 status_code=409,

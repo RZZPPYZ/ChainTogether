@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import shutil
 import tempfile
 import unittest
@@ -224,6 +225,176 @@ class FeatureDeliveryStartTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(1, await self._count("feature_runs"))
         self.assertEqual(1, await self._count("feature_dispatches"))
+
+    async def test_ac10_lease_rotation_invalidates_old_raw_capability(self) -> None:
+        started = await self.delivery.start(
+            self.group["id"],
+            request_key="request-lease",
+            requirement="Lease one exact feature generation",
+        )
+        first = await self.delivery.lease_next_dispatch(
+            started["run"]["id"], worker_id="worker-a", lease_seconds=0
+        )
+        assert first is not None
+        second = await self.delivery.lease_next_dispatch(
+            started["run"]["id"], worker_id="worker-b", lease_seconds=30
+        )
+        assert second is not None
+        self.assertEqual(first["dispatch"]["id"], second["dispatch"]["id"])
+        self.assertNotEqual(first["lease_token"], second["lease_token"])
+        self.assertNotEqual(
+            first["dispatch_capability"], second["dispatch_capability"]
+        )
+        persisted = await self.db.get_feature_dispatch(
+            second["dispatch"]["id"]
+        )
+        assert persisted is not None
+        self.assertEqual(
+            hashlib.sha256(second["lease_token"].encode()).hexdigest(),
+            persisted["lease_token_hash"],
+        )
+        self.assertEqual(
+            hashlib.sha256(second["dispatch_capability"].encode()).hexdigest(),
+            persisted["capability_hash"],
+        )
+        self.assertNotIn(second["lease_token"], repr(persisted))
+        self.assertNotIn(second["dispatch_capability"], repr(persisted))
+
+    async def test_ac10_activation_and_terminal_resume_bind_exact_generation(self) -> None:
+        started = await self.delivery.start(
+            self.group["id"],
+            request_key="request-generation",
+            requirement="Bind and recover one exact invocation generation",
+        )
+        leased = await self.delivery.lease_next_dispatch(
+            started["run"]["id"], worker_id="worker", lease_seconds=30
+        )
+        assert leased is not None
+        invocation = await self.db.create_group_invocation(
+            "feature-invocation-1",
+            self.group["id"],
+            "feature delivery turn",
+            "2026-08-02T00:00:00+00:00",
+            feature_run_id=started["run"]["id"],
+        )
+        with self.assertRaisesRegex(FeatureError, "lease"):
+            await self.delivery.activate_dispatch(
+                leased["dispatch"]["id"],
+                lease_token="wrong-token",
+                invocation_id=invocation["id"],
+            )
+        active = await self.delivery.activate_dispatch(
+            leased["dispatch"]["id"],
+            lease_token=leased["lease_token"],
+            invocation_id=invocation["id"],
+        )
+        self.assertEqual("active", active["state"])
+        cursor = await self.db._conn.execute(
+            "SELECT dispatch_id FROM feature_invocation_links "
+            "WHERE invocation_id = ?",
+            (invocation["id"],),
+        )
+        self.assertEqual((active["id"],), await cursor.fetchone())
+
+        terminal = await self.delivery.complete_dispatch_invocation(
+            active["id"], invocation["id"], terminal_status="failed"
+        )
+        self.assertEqual("failed", terminal["state"])
+        resumed = await self.delivery.resume(started["run"]["id"])
+        self.assertEqual("pending", resumed["dispatch"]["state"])
+        self.assertEqual(2, resumed["dispatch"]["generation"])
+        again = await self.delivery.resume(started["run"]["id"])
+        self.assertEqual(resumed["dispatch"]["id"], again["dispatch"]["id"])
+        self.assertEqual(2, await self._count("feature_dispatches"))
+
+    async def test_ac6_ac7_transition_commits_waiting_successor_atomically(self) -> None:
+        started = await self.delivery.start(
+            self.group["id"],
+            request_key="request-handoff",
+            requirement="Commit an exact lifecycle handoff pair",
+        )
+        owner_id = started["roles"]["owner"]["id"]
+        leased = await self.delivery.lease_next_dispatch(
+            started["run"]["id"], worker_id="worker", lease_seconds=30
+        )
+        assert leased is not None
+        invocation = await self.db.create_group_invocation(
+            "feature-invocation-handoff",
+            self.group["id"],
+            "feature discovery turn",
+            "2026-08-02T00:00:00+00:00",
+            feature_run_id=started["run"]["id"],
+        )
+        await self.delivery.activate_dispatch(
+            leased["dispatch"]["id"],
+            lease_token=leased["lease_token"],
+            invocation_id=invocation["id"],
+        )
+        member_session = await self.sessions.create_session(
+            agent_id=owner_id,
+            name="Feature owner turn",
+            working_dir=str(self.workspace),
+            origin="group_member",
+        )
+        await self.db.upsert_group_agent_session(
+            self.group["id"],
+            owner_id,
+            member_session.id,
+            "2026-08-02T00:00:00+00:00",
+        )
+
+        with self.assertRaisesRegex(FeatureError, "dispatch"):
+            await self.features.transition_for_dispatch(
+                started["run"]["id"],
+                member_session.id,
+                dispatch_id=leased["dispatch"]["id"],
+                dispatch_capability="wrong-capability",
+                to_stage="design",
+            )
+        unchanged = await self.db.get_feature_run(started["run"]["id"])
+        assert unchanged is not None
+        self.assertEqual("discovery", unchanged["stage"])
+
+        transitioned = await self.features.transition_for_dispatch(
+            started["run"]["id"],
+            member_session.id,
+            dispatch_id=leased["dispatch"]["id"],
+            dispatch_capability=leased["dispatch_capability"],
+            to_stage="design",
+        )
+        self.assertEqual("design", transitioned["stage"])
+        dispatches = await self.db.list_feature_dispatches(started["run"]["id"])
+        self.assertEqual(
+            ["handoff_committed", "waiting"],
+            [dispatch["state"] for dispatch in dispatches],
+        )
+        self.assertEqual(dispatches[0]["id"], dispatches[1]["predecessor_dispatch_id"])
+        self.assertEqual(owner_id, dispatches[1]["target_agent_id"])
+        with self.assertRaisesRegex(FeatureError, "dispatch"):
+            await self.features.transition_for_dispatch(
+                started["run"]["id"],
+                member_session.id,
+                dispatch_id=leased["dispatch"]["id"],
+                dispatch_capability=leased["dispatch_capability"],
+                to_stage="discovery",
+                result="changes_required",
+            )
+
+        completed = await self.delivery.complete_dispatch_invocation(
+            dispatches[0]["id"],
+            invocation["id"],
+            terminal_status="completed",
+        )
+        self.assertEqual("completed", completed["state"])
+        promoted = await self.db.get_feature_dispatch(dispatches[1]["id"])
+        assert promoted is not None
+        self.assertEqual("pending", promoted["state"])
+        await self.delivery.complete_dispatch_invocation(
+            dispatches[0]["id"],
+            invocation["id"],
+            terminal_status="completed",
+        )
+        self.assertEqual(2, await self._count("feature_dispatches"))
 
 
 if __name__ == "__main__":

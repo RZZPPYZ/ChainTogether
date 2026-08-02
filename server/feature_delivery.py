@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .database import Database
@@ -72,6 +73,19 @@ class FeatureDeliveryManager:
     @staticmethod
     def _requirement_hash(requirement: str) -> str:
         return hashlib.sha256(requirement.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _token_hash(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _target_for_stage(run: dict[str, Any]) -> tuple[str, str | None]:
+        stage = str(run["stage"])
+        if stage == "review":
+            return "reviewer", run.get("reviewer_agent_id")
+        if stage == "acceptance":
+            return "vision_guardian", run.get("vision_guardian_agent_id")
+        return "owner", run.get("owner_agent_id")
 
     async def _resolve_roles(
         self, group: dict[str, Any],
@@ -245,6 +259,141 @@ class FeatureDeliveryManager:
             "checkpoint_error": checkpoint["error"],
             "dispatch": dispatches[-1] if dispatches else None,
             "replayed": replayed,
+        }
+
+    async def lease_next_dispatch(
+        self,
+        run_id: str,
+        *,
+        worker_id: str,
+        lease_seconds: int = 30,
+    ) -> dict[str, Any] | None:
+        if lease_seconds < 0:
+            raise FeatureError("Dispatch lease duration cannot be negative")
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        lease_token = secrets.token_urlsafe(32)
+        dispatch_capability = secrets.token_urlsafe(32)
+        dispatch = await self._db().lease_next_feature_dispatch(
+            run_id,
+            lease_owner=worker_id,
+            lease_token_hash=self._token_hash(lease_token),
+            capability_hash=self._token_hash(dispatch_capability),
+            lease_expires_at=(now_dt + timedelta(seconds=lease_seconds)).isoformat(),
+            now=now,
+        )
+        if dispatch is None:
+            return None
+        return {
+            "dispatch": dispatch,
+            "lease_token": lease_token,
+            "dispatch_capability": dispatch_capability,
+        }
+
+    async def activate_dispatch(
+        self,
+        dispatch_id: str,
+        *,
+        lease_token: str,
+        invocation_id: str,
+    ) -> dict[str, Any]:
+        activated = await self._db().activate_feature_dispatch(
+            dispatch_id,
+            lease_token_hash=self._token_hash(lease_token),
+            invocation_id=invocation_id,
+            updated_at=_now(),
+        )
+        if not activated:
+            raise FeatureError(
+                "Feature dispatch lease is stale, invalid, or bound to another "
+                "invocation",
+                status_code=409,
+            )
+        dispatch = await self._db().get_feature_dispatch(dispatch_id)
+        assert dispatch is not None
+        await self._db().update_feature_start_state(
+            str(dispatch["feature_run_id"]),
+            state="running",
+            error=None,
+            updated_at=_now(),
+        )
+        return dispatch
+
+    async def complete_dispatch_invocation(
+        self,
+        dispatch_id: str,
+        invocation_id: str,
+        *,
+        terminal_status: str,
+    ) -> dict[str, Any]:
+        dispatch = await self._db().complete_feature_dispatch_invocation(
+            dispatch_id,
+            invocation_id,
+            terminal_status=terminal_status,
+            updated_at=_now(),
+        )
+        if dispatch is None:
+            raise FeatureError(
+                "Feature dispatch is not bound to this invocation",
+                status_code=409,
+            )
+        if dispatch["state"] == "failed":
+            await self._db().update_feature_start_state(
+                str(dispatch["feature_run_id"]),
+                state="blocked",
+                error=str(dispatch["error"] or "Feature dispatch failed"),
+                updated_at=_now(),
+            )
+        return dispatch
+
+    async def resume(self, run_id: str) -> dict[str, Any]:
+        run = await self._db().get_feature_run(run_id)
+        if run is None:
+            raise FeatureError("Feature run not found", status_code=404)
+        if run["state"] == "done":
+            raise FeatureError("Completed FeatureRun cannot be resumed", status_code=409)
+        target_role, target_agent_id = self._target_for_stage(run)
+        if not isinstance(target_agent_id, str):
+            raise FeatureError(
+                f"FeatureRun has no assigned {target_role}; correct roles first",
+                status_code=409,
+            )
+        live = {
+            member["id"]
+            for member in await self._db().list_live_group_members(run["group_id"])
+        }
+        if target_agent_id not in live:
+            raise FeatureError(
+                f"Assigned {target_role} is not a live group member; correct "
+                "roles before resume",
+                status_code=409,
+            )
+        dispatch = await self._db().ensure_recovery_feature_dispatch(
+            run_id,
+            expected_stage=str(run["stage"]),
+            expected_revision=str(run["updated_at"]),
+            target_role=target_role,
+            target_agent_id=target_agent_id,
+            dispatch_id=uuid.uuid4().hex[:16],
+            created_at=_now(),
+        )
+        if dispatch is None:
+            raise FeatureError(
+                "FeatureRun changed while resume was reconciling; reload and retry",
+                status_code=409,
+            )
+        if dispatch["state"] == "pending":
+            await self._db().update_feature_start_state(
+                run_id,
+                state="dispatch_pending",
+                error=None,
+                updated_at=_now(),
+            )
+        checkpoint = await self._db().get_feature_start_for_run(run_id)
+        return {
+            "run": run,
+            "dispatch": dispatch,
+            "checkpoint_state": checkpoint["state"] if checkpoint else None,
         }
 
 
