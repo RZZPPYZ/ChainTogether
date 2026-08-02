@@ -58,5 +58,8 @@
 - Validate protected gates from the exact queued document snapshot, recheck its
   baseline hash and Git HEAD immediately before the FeatureRun CAS, recover
   legacy pending rows, and keep Session capabilities out of provider CLI argv.
+- Execute the final document and protected-revision preconditions inside the
+  database Feature write critical section immediately before CAS; serialize
+  outbox selection, disk delivery, and version completion under the same lock.
 - Reproduce every review finding with a failing test, rerun the full Quality
   Gate, and return the new exact HEAD to the same independent reviewer.

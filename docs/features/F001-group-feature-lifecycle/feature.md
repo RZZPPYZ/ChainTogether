@@ -138,3 +138,4 @@ ChainTogether 的群组已经能可靠传球，但没有跨消息、跨 Agent、
 | 2026-08-02 | Independent review requested changes for concurrent transitions, document-sync atomicity, and gate provenance; returned to implementation | `evidence/review-response-89b070f.md` |
 | 2026-08-02 | Re-review of `2e91354` found outbox supersession, shared-bearer session impersonation, and Git fail-open paths; returned to implementation | `evidence/review-response-2e91354.md` |
 | 2026-08-02 | Re-review of `de1502c` found gate/document TOCTOU, legacy pending migration, and capability argv exposure; returned to implementation | `evidence/review-response-de1502c.md` |
+| 2026-08-02 | Re-review of `522a4fa` found database-boundary gate races and late stale outbox delivery; returned to implementation | `evidence/review-response-522a4fa.md` |

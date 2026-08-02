@@ -307,6 +307,9 @@ class FeatureManager:
             document_content=doc_content,
             document_base_hash=doc_base_hash,
             updated_at=updated_at,
+            precondition=lambda: self._assert_document_baseline(
+                doc_path, doc_base_hash
+            ),
         )
         if not updated:
             raise FeatureError(
@@ -465,6 +468,13 @@ class FeatureManager:
             document_content=doc_content,
             document_base_hash=doc_base_hash,
             clear_active_group_id=row["group_id"] if state == "done" else None,
+            precondition=lambda: self._assert_transition_precondition(
+                row,
+                edge,
+                doc_path,
+                doc_base_hash,
+                revision,
+            ),
         )
         if not transitioned:
             raise FeatureError(
@@ -582,32 +592,51 @@ class FeatureManager:
                 "reload and retry"
             )
 
-    async def _flush_doc_sync(self, run_id: str) -> bool:
-        pending = await self._db().get_feature_doc_sync(run_id)
-        if pending is None:
-            return True
-        try:
-            path = Path(pending["feature_doc_path"])
-            disk_content = path.read_text(encoding="utf-8-sig")
-            disk_hash = self._document_hash(disk_content)
-            desired_hash = self._document_hash(pending["content"])
-            if disk_hash != desired_hash:
-                if not pending["base_hash"] or disk_hash != pending["base_hash"]:
-                    logger.error(
-                        "Feature %s document sync conflicts with an external edit",
-                        run_id,
-                    )
-                    return False
-                self._write_doc_content(path, pending["content"])
-        except OSError:
-            logger.exception(
-                "Feature %s document sync remains pending", run_id
+    def _assert_transition_precondition(
+        self,
+        row: dict[str, Any],
+        edge: str,
+        doc_path: Path,
+        doc_base_hash: str,
+        revision: str,
+    ) -> None:
+        self._assert_document_baseline(doc_path, doc_base_hash)
+        if edge in {
+            "review->merge",
+            "merge->acceptance",
+            "acceptance->closure",
+            "closure->done",
+        } and self._git_head(row["working_dir"]) != revision:
+            raise FeatureError(
+                f"Transition {edge} Git HEAD changed before commit"
             )
-            return False
-        await self._db().complete_feature_doc_sync(
-            run_id, pending["updated_at"]
-        )
-        return True
+
+    async def _flush_doc_sync(self, run_id: str) -> bool:
+        def deliver(pending: dict[str, str]) -> bool:
+            path = Path(pending["feature_doc_path"])
+            try:
+                disk_content = path.read_text(encoding="utf-8-sig")
+                disk_hash = self._document_hash(disk_content)
+                desired_hash = self._document_hash(pending["content"])
+                if disk_hash != desired_hash:
+                    if (
+                        not pending["base_hash"]
+                        or disk_hash != pending["base_hash"]
+                    ):
+                        logger.error(
+                            "Feature %s document sync conflicts with an external edit",
+                            run_id,
+                        )
+                        return False
+                    self._write_doc_content(path, pending["content"])
+            except OSError:
+                logger.exception(
+                    "Feature %s document sync remains pending", run_id
+                )
+                return False
+            return True
+
+        return await self._db().deliver_feature_doc_sync(run_id, deliver)
 
     async def reconcile_document_syncs(self) -> None:
         for pending in await self._db().list_feature_doc_syncs():

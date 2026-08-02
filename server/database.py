@@ -7,7 +7,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import aiosqlite
 
@@ -1337,6 +1337,7 @@ class Database:
         document_content: str,
         document_base_hash: str,
         updated_at: str,
+        precondition: Callable[[], None] | None = None,
     ) -> bool:
         """CAS a role update and enqueue its exact document image atomically."""
         await self._ensure_connected()
@@ -1346,6 +1347,8 @@ class Database:
         assignments = ", ".join(f"{key} = ?" for key in updates)
         async with self._feature_write_lock:
             try:
+                if precondition is not None:
+                    precondition()
                 cursor = await self._conn.execute(
                     f"UPDATE feature_runs SET {assignments} "
                     "WHERE id = ? AND updated_at = ?",
@@ -1395,6 +1398,7 @@ class Database:
         document_content: str,
         document_base_hash: str,
         clear_active_group_id: str | None = None,
+        precondition: Callable[[], None] | None = None,
     ) -> bool:
         """Commit one linearized transition, event, and doc outbox record."""
         await self._ensure_connected()
@@ -1402,6 +1406,8 @@ class Database:
         assignments = ", ".join(f"{key} = ?" for key in updates)
         async with self._feature_write_lock:
             try:
+                if precondition is not None:
+                    precondition()
                 cursor = await self._conn.execute(
                     f"UPDATE feature_runs SET {assignments} "
                     "WHERE id = ? AND stage = ? AND updated_at = ? "
@@ -1550,17 +1556,39 @@ class Database:
             "updated_at": str(row[4]),
         }
 
-    async def complete_feature_doc_sync(
-        self, run_id: str, updated_at: str
-    ) -> None:
+    async def deliver_feature_doc_sync(
+        self,
+        run_id: str,
+        deliver: Callable[[dict[str, str]], bool],
+    ) -> bool:
+        """Serialize pending-image selection, file delivery, and completion."""
         await self._ensure_connected()
         async with self._feature_write_lock:
+            cursor = await self._conn.execute(
+                "SELECT feature_run_id, feature_doc_path, content, "
+                "base_hash, updated_at FROM feature_doc_syncs "
+                "WHERE feature_run_id = ?",
+                (run_id,),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return True
+            pending = {
+                "feature_run_id": str(row[0]),
+                "feature_doc_path": str(row[1]),
+                "content": str(row[2]),
+                "base_hash": str(row[3]),
+                "updated_at": str(row[4]),
+            }
+            if not deliver(pending):
+                return False
             await self._conn.execute(
                 "DELETE FROM feature_doc_syncs "
                 "WHERE feature_run_id = ? AND updated_at = ?",
-                (run_id, updated_at),
+                (run_id, pending["updated_at"]),
             )
             await self._conn.commit()
+            return True
 
     async def get_group_agent_by_session(
         self, group_id: str, session_id: str

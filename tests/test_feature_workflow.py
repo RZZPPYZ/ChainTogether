@@ -423,6 +423,33 @@ class FeatureWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("stage: \"discovery\"", doc.read_text(encoding="utf-8"))
         self.assertIsNone(await self.db.get_feature_doc_sync(str(run["id"])))
 
+    async def test_pending_delivery_holds_feature_write_lock(self) -> None:
+        run = await self._create_feature()
+        with mock.patch.object(
+            FeatureManager,
+            "_write_doc_content",
+            side_effect=OSError("simulated initial delivery failure"),
+        ):
+            await self.feature_manager.update_roles(
+                str(run["id"]),
+                {"reviewer_agent_id": self.reviewer["id"]},
+            )
+
+        original_write = FeatureManager._write_doc_content
+
+        def assert_locked_write(path: Path, content: str) -> None:
+            self.assertTrue(self.db._feature_write_lock.locked())
+            original_write(path, content)
+
+        with mock.patch.object(
+            FeatureManager,
+            "_write_doc_content",
+            side_effect=assert_locked_write,
+        ):
+            await self.feature_manager.reconcile_document_syncs()
+
+        self.assertIsNone(await self.db.get_feature_doc_sync(str(run["id"])))
+
     async def test_later_mutation_preserves_pending_document_image(self) -> None:
         run = await self._create_feature()
         doc = self.workspace / str(run["feature_doc_path"])
@@ -607,6 +634,120 @@ class FeatureWorkflowTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn(
             "- **Verdict**: pending", doc.read_text(encoding="utf-8")
+        )
+
+    async def test_gate_change_at_database_boundary_is_rejected(self) -> None:
+        run, doc = await self._advance_to_quality()
+        quality_ref = self._write_evidence(run, "quality-report.md")
+        await self.feature_manager.transition(
+            str(run["id"]),
+            to_stage="review",
+            result="passed",
+            evidence_refs=[quality_ref],
+        )
+        self._set_section_fields(
+            doc,
+            "Review Provenance",
+            {
+                "Reviewer": str(self.reviewer["id"]),
+                "Base SHA": self.git_head,
+                "Reviewed HEAD": self.git_head,
+                "Verdict": "approved",
+            },
+        )
+        review_ref = self._write_evidence(run, "review.md")
+        original_transition = self.db.transition_feature_run
+
+        async def mutate_then_transition(*args, **kwargs):
+            text = doc.read_text(encoding="utf-8")
+            doc.write_text(
+                text.replace(
+                    "- **Verdict**: approved",
+                    "- **Verdict**: pending",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            return await original_transition(*args, **kwargs)
+
+        with mock.patch.object(
+            self.db,
+            "transition_feature_run",
+            side_effect=mutate_then_transition,
+        ):
+            with self.assertRaisesRegex(FeatureError, "changed before"):
+                await self.feature_manager.transition(
+                    str(run["id"]),
+                    to_stage="merge",
+                    result="approved",
+                    actor_agent_id=self.reviewer["id"],
+                    evidence_refs=[review_ref],
+                    revision=self.git_head,
+                )
+
+        self.assertEqual(
+            (await self.feature_manager.get(str(run["id"])))["stage"],
+            "review",
+        )
+
+    async def test_git_change_at_database_boundary_is_rejected(self) -> None:
+        run, doc = await self._advance_to_quality()
+        quality_ref = self._write_evidence(run, "quality-report.md")
+        await self.feature_manager.transition(
+            str(run["id"]),
+            to_stage="review",
+            result="passed",
+            evidence_refs=[quality_ref],
+        )
+        self._set_section_fields(
+            doc,
+            "Review Provenance",
+            {
+                "Reviewer": str(self.reviewer["id"]),
+                "Base SHA": self.git_head,
+                "Reviewed HEAD": self.git_head,
+                "Verdict": "approved",
+            },
+        )
+        review_ref = self._write_evidence(run, "review.md")
+        original_transition = self.db.transition_feature_run
+
+        async def commit_then_transition(*args, **kwargs):
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=ChainTogether Tests",
+                    "-c",
+                    "user.email=tests@chaintogether.invalid",
+                    "commit",
+                    "--allow-empty",
+                    "-qm",
+                    "racing commit",
+                ],
+                cwd=self.workspace,
+                check=True,
+            )
+            return await original_transition(*args, **kwargs)
+
+        with mock.patch.object(
+            self.db,
+            "transition_feature_run",
+            side_effect=commit_then_transition,
+        ):
+            with self.assertRaisesRegex(FeatureError, "Git HEAD changed"):
+                await self.feature_manager.transition(
+                    str(run["id"]),
+                    to_stage="merge",
+                    result="approved",
+                    actor_agent_id=self.reviewer["id"],
+                    evidence_refs=[review_ref],
+                    revision=self.git_head,
+                )
+
+        self.assertEqual(
+            (await self.feature_manager.get(str(run["id"])))["stage"],
+            "review",
         )
 
     async def test_session_bound_transition_derives_actor(self) -> None:

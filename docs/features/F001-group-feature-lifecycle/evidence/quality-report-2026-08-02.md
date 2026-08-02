@@ -8,7 +8,7 @@
   per-turn D14 workflow injection, role-aware Skill routing, lifecycle Skill
   contracts, validators, document-sync recovery, session-bound transitions,
   revision provenance, documentation, tests, and generated API contracts.
-- **Independent review:** `89b070f`, `2e91354`, and `de1502c` received
+- **Independent review:** `89b070f`, `2e91354`, `de1502c`, and `522a4fa` received
   `request_changes`; the next corrected exact HEAD requires re-review by the
   same reviewer. This report permits `request-review` only.
 
@@ -28,7 +28,7 @@
 | Command | Result |
 |---|---|
 | `.venv\\Scripts\\python.exe -m compileall -q server tests` | passed |
-| `.venv\\Scripts\\python.exe -m unittest discover -s tests -v` | 56 passed; 1 environment-gated live GitHub smoke skipped |
+| `.venv\\Scripts\\python.exe -m unittest discover -s tests -v` | 59 passed; 1 environment-gated live GitHub smoke skipped |
 | `.venv\\Scripts\\python.exe scripts\\check-skills.py` | 13 Skills, 10 stages, 16 transitions passed |
 | `.venv\\Scripts\\python.exe scripts\\sync-skills.py --check` | 26 provider mounts passed |
 | `.venv\\Scripts\\python.exe scripts\\check-features.py` | 1 Feature passed |
@@ -60,6 +60,10 @@
    the database CAS. Legacy pending rows receive a usable migration baseline.
 10. Session capabilities are inherited through the Harness process environment
    and are absent from Claude and Codex command-line MCP configuration.
+11. Final Feature Doc and protected Git preconditions execute inside the same
+   database Feature write critical section as the CAS. Outbox selection, disk
+   delivery, and version completion are serialized under that lock, preventing
+   a late worker from writing a superseded document image.
 
 ## Residual risk disposition
 
