@@ -2,7 +2,7 @@
 schema_version: 1
 id: F002
 title: "Autonomous Group Feature Delivery"
-stage: planning
+stage: implementation
 state: active
 priority: P1
 owner: "codex"
@@ -215,7 +215,7 @@ transition API calls.
 ## Delivery
 
 - **Plan**: `docs/features/F002-autonomous-group-feature-delivery/plan.md`
-- **Worktree**: pending plan
+- **Worktree**: `F:\\RZP_program\\my_project\\ChainTogether\\.worktrees\\F002-autonomous-group-feature`
 - **Branch**: `codex/f002-autonomous-group-feature`
 
 ## Review Provenance
@@ -256,3 +256,4 @@ transition API calls.
 | 2026-08-02 | Second Design Gate requested an explicit handoff pair invariant and invocation-generation authorization | `evidence/design-response-ab83a23.md` |
 | 2026-08-02 | Discovery added handoff-committed/waiting successor protocol and one-time dispatch capability | `evidence/orchestration-design.md` |
 | 2026-08-02 | Independent Design Gate approved exact Feature Doc revision `ed9bda4` | `evidence/design-verdict-ed9bda4.md` |
+| 2026-08-02 | Isolated implementation worktree prepared; Python and frontend baselines are green | `evidence/worktree-record.md` |

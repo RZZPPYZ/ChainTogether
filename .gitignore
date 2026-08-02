@@ -3,6 +3,7 @@
 __pycache__/
 *.pyc
 node_modules/
+web/.npm-cache/
 web/dist/
 web/test-results/
 test-results/
