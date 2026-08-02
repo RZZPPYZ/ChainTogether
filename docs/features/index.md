@@ -5,3 +5,4 @@
 | ID | Feature | Stage | State | Priority |
 |---|---|---|---|---|
 | F001 | [Group Feature Lifecycle](F001-group-feature-lifecycle/feature.md) | done | done | P1 |
+| F002 | [Autonomous Group Feature Delivery](F002-autonomous-group-feature-delivery/feature.md) | discovery | active | P1 |

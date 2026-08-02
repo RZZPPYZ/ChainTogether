@@ -8,6 +8,14 @@
       "state": "done",
       "priority": "P1",
       "file": "docs/features/F001-group-feature-lifecycle/feature.md"
+    },
+    {
+      "id": "F002",
+      "title": "Autonomous Group Feature Delivery",
+      "stage": "discovery",
+      "state": "active",
+      "priority": "P1",
+      "file": "docs/features/F002-autonomous-group-feature-delivery/feature.md"
     }
   ]
 }
