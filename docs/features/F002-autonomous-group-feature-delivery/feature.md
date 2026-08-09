@@ -2,12 +2,12 @@
 schema_version: 1
 id: F002
 title: "Autonomous Group Feature Delivery"
-stage: acceptance
-state: active
+stage: done
+state: done
 priority: P1
 owner: "codex"
-reviewer: ""
-vision_guardian: ""
+reviewer: "f002_independent_review"
+vision_guardian: "f002_vision_guardian"
 origin_kind: "codex_conversation"
 origin_group_id: ""
 origin_message_seq: null
@@ -49,6 +49,11 @@ transition API calls.
 - Every accepted handoff creates a fresh depth-zero successor invocation;
   owner-prepared review packets, independent review/re-review, merge, vision,
   and closure retain their separate actors and gates.
+- Autonomous Feature dispatch replies never use ordinary A2A as a second
+  lifecycle handoff. Canonical and provider `$request-review` Skills direct the
+  exact actor through Feature MCP, with explicit fail-closed status/resume.
+- Corrective PR #2 is merged and the independent post-merge Vision journey is
+  accepted; F002 is closed with all acceptance criteria checked.
 
 ## Scope
 
@@ -259,10 +264,17 @@ transition API calls.
 
 ## Vision Gate
 
-- **Guardian**:
+- **Guardian**: independent `/root/f002_vision_guardian`
 - **Merged revision**: `d406fa6f0bc19d986b7c323ba32303b130b5889c`
-- **Verdict**: pending
-- **Journey evidence**:
+- **Verdict**: accepted
+- **Journey evidence**: `evidence/vision-verdict-d406fa6.md`
+
+## Closure
+
+- **Verdict**: closed
+- **Evidence**: `evidence/closure-report.md`
+- **Remaining registered features**: none; new provider-E2E, distributed
+  scheduling, or lint-cleanup scope must enter Discovery as a separate Feature
 
 ## Risks and Open Questions
 
@@ -275,7 +287,7 @@ transition API calls.
 | RISK-5 | policy | One-sentence autonomy cannot authorize bypassing repo merge policy or unresolved operator value decisions. | operator | fail closed and surface blocker |
 | RISK-6 | concurrency | Start, resume, transition, and late workers can duplicate delivery without database claims. | implementer | DB CAS, partial uniqueness, handoff pair, replay tests implemented |
 | RISK-7 | routing | One GroupInvocation depth cap cannot sustain multi-round Review. | implementer | verified fresh depth-zero successor per dispatch |
-| RISK-8 | routing | A lifecycle reply's ordinary `@Agent` handoff can enqueue an unprivileged actor in the predecessor before the durable successor launches. | implementer | fixed and covered at Review plus three lifecycle edges; merged Vision revalidation pending |
+| RISK-8 | routing | A lifecycle reply's ordinary `@Agent` handoff can enqueue an unprivileged actor in the predecessor before the durable successor launches. | implementer | closed: corrective merge independently accepted with Owner×1/Reviewer×1 exact-successor evidence |
 
 ## Timeline
 
@@ -305,3 +317,5 @@ transition API calls.
 | 2026-08-09 | Same independent Reviewer approved exact final correction HEAD `f43b80e` with no P1/P2/P3 and verified canonical/Claude/Codex Skill continuity | `evidence/review-verdict-f43b80e.md` |
 | 2026-08-09 | Reviewer confirmed evidence-only continuity through exact PR head `4eec72d`; no runtime, test, Skill, or provider content changed | `evidence/review-continuity-4eec72d.md` |
 | 2026-08-09 | GitHub PR #2 merged exact reviewed head `4eec72d` into `main` as `d406fa6`; corrected Feature returned to independent Vision acceptance | `evidence/merge-evidence-d406fa6.md` |
+| 2026-08-09 | Independent corrective Vision Gate accepted merged runtime `d406fa6`: no predecessor A2A, one fresh authorized successor, aligned Skills, and intact `/feature` recovery | `evidence/vision-verdict-d406fa6.md` |
+| 2026-08-09 | F002 Feature Doc, evidence, lessons, roles, risks, and generated indexes synchronized to terminal `done` | `evidence/closure-report.md` |
