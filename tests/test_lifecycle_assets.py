@@ -127,6 +127,21 @@ class SkillSyncTests(unittest.TestCase):
 
 
 class SkillContractTests(unittest.TestCase):
+    def test_autonomous_review_uses_feature_control_plane_handoff(self) -> None:
+        path = (
+            PROJECT_ROOT
+            / ".chaintogether"
+            / "skills"
+            / "request-review"
+            / "SKILL.md"
+        )
+        text = path.read_text(encoding="utf-8")
+
+        self.assertIn("Feature MCP `request_review`", text)
+        self.assertIn("fresh Reviewer successor", text)
+        self.assertIn("end naturally without an `@handle`", text)
+        self.assertIn("Never fall back to ordinary A2A", text)
+
     def test_every_lifecycle_skill_exposes_discovery_contract_and_next_step(self) -> None:
         skills_root = PROJECT_ROOT / ".chaintogether" / "skills"
         required = ("Use when:", "Not for:", "Output:")

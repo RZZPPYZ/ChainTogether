@@ -243,7 +243,7 @@ transition API calls.
 
 - **Verdict**: pass
 - **Evidence**: `evidence/quality-report-vision-fix.md`
-- **Fresh matrix**: backend 95 tests (1 skipped), frontend 27 tests,
+- **Fresh matrix**: backend 96 tests (1 skipped), frontend 27 tests,
   typecheck/build/validators/contracts/diff check green; the unchanged
   frontend lint baseline remains 33 errors and 5 warnings
 
@@ -298,3 +298,5 @@ transition API calls.
 | 2026-08-09 | A fresh isolated worktree started the lifecycle-handoff fix from `main@6cd0541`; the focused runtime baseline was green | `evidence/vision-fix-worktree.md` |
 | 2026-08-09 | TDD prevented ordinary mention routing in Feature dispatch predecessors and aligned L0/D14 with MCP-owned fresh successors | `evidence/tdd-vision-handoff-fix.md` |
 | 2026-08-09 | Fresh Quality Gate passed the corrected runtime, full backend/frontend suites, build, contracts, and lifecycle validators | `evidence/quality-report-vision-fix.md` |
+| 2026-08-09 | Independent Review approved runtime correction `d84fe04`; a subsequent canonical `$request-review` instruction gap made that approval stale for the final HEAD | `evidence/review-verdict-d84fe04.md` |
+| 2026-08-09 | Canonical `$request-review` now selects Feature MCP for autonomous runs and reserves `@Reviewer` for manual/non-Feature tasks; provider mounts and contract tests are synchronized | `evidence/tdd-vision-handoff-fix.md` |

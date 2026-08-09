@@ -13,12 +13,13 @@
 
 | Check | Result |
 |---|---|
-| Python `unittest discover -s tests -v` | PASS: 95 tests run, 1 explicit live-network persona smoke test skipped |
+| Python `unittest discover -s tests -v` | PASS: 96 tests run, 1 explicit live-network persona smoke test skipped |
 | `test_feature_dispatch_runtime` | PASS: 8/8, including exact Review owner-prep and lifecycle edge table |
 | `test_prompt_governance` + `test_group_routing` | PASS: 13/13 |
 | Python `compileall -q server tests` | PASS |
 | `scripts/check-skills.py` | PASS: 13 Skills, 10 stages, 16 transitions |
 | `scripts/sync-skills.py --check` | PASS: 26 provider Skill mounts |
+| Autonomous Review Skill contract | PASS: canonical Feature MCP/fresh-successor/no-A2A instructions verified |
 | `scripts/check-features.py` | PASS: 2 Feature Docs |
 | Fresh OpenAPI generation and comparison | PASS: `contracts.ts` matches generated schema |
 | `npm test -- --run` | PASS: 9 files, 27 tests |
@@ -49,7 +50,7 @@ warnings, but that unrelated movement is not claimed as part of this fix.
 | Operator journey | L0/D14 assertions | PASS: Agent instructions name Feature MCP as the exclusive lifecycle handoff and forbid duplicate `@handle` routing after commit |
 
 All other F002 ACs retain their original full-suite evidence and were covered by
-the fresh 95-test backend and 27-test frontend regression runs.
+the fresh 96-test backend and 27-test frontend regression runs.
 
 ## Residual risks
 

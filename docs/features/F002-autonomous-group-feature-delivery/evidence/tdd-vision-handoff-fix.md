@@ -37,3 +37,19 @@ tests.test_prompt_governance + tests.test_group_routing: 13 passed
 ```
 
 The full Quality Gate remains required before independent Review.
+
+## Instruction-contract follow-up
+
+After the runtime correction received its first independent approval, a
+canonical instruction mismatch was identified: `$request-review` still told
+every group owner to emit a final `@Reviewer`, even for an autonomous FeatureRun.
+
+RED added
+`test_autonomous_review_uses_feature_control_plane_handoff`; it failed because
+the canonical Skill did not name Feature MCP `request_review`, the fresh
+successor, the no-`@handle` completion rule, or the no-A2A fallback rule.
+
+GREEN updates the canonical Skill description, procedure, and Next step to
+choose exactly one handoff mechanism. Autonomous runs use Feature MCP and end
+naturally; manual/non-Feature group tasks retain the short `@Reviewer` route.
+All 26 provider mounts were regenerated from the canonical source and checked.
