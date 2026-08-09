@@ -2,7 +2,7 @@
 schema_version: 1
 id: F002
 title: "Autonomous Group Feature Delivery"
-stage: review
+stage: acceptance
 state: active
 priority: P1
 owner: "codex"
@@ -18,7 +18,7 @@ blocked_by: []
 research_refs: ["docs/features/F002-autonomous-group-feature-delivery/evidence/discovery.md", "docs/features/F002-autonomous-group-feature-delivery/evidence/orchestration-design.md", "docs/features/F001-group-feature-lifecycle/evidence/vision-verdict-0c5482d.md"]
 decision_refs: ["docs/features/F002-autonomous-group-feature-delivery/evidence/discovery.md", "docs/features/F002-autonomous-group-feature-delivery/evidence/design-response-f662c20.md", "docs/features/F002-autonomous-group-feature-delivery/evidence/design-response-ab83a23.md", "docs/features/F002-autonomous-group-feature-delivery/evidence/design-verdict-ed9bda4.md"]
 plan_refs: ["docs/features/F002-autonomous-group-feature-delivery/plan.md"]
-pr_refs: ["https://github.com/RZZPPYZ/ChainTogether/pull/1"]
+pr_refs: ["https://github.com/RZZPPYZ/ChainTogether/pull/1", "https://github.com/RZZPPYZ/ChainTogether/pull/2"]
 ---
 
 # F002: Autonomous Group Feature Delivery
@@ -236,9 +236,10 @@ transition API calls.
 - **Author**: codex
 - **Reviewer**: independent `/root/f002_independent_review`
 - **Base SHA**: `6cd0541e1866e86745a64e2b52b5edb330998bae`
-- **Reviewed HEAD**: `f43b80e612e51ed4045f63e0dbafe892f1037452`
+- **Reviewed HEAD**: `4eec72d34ce1ee75d067602e4f67accdf4bd035b`
 - **Verdict**: approved after Vision handoff correction and canonical Skill
-  continuity re-review
+  continuity re-review; implementation HEAD `f43b80e` remained unchanged by
+  the final evidence-only commit
 
 ## Quality Gate
 
@@ -250,18 +251,18 @@ transition API calls.
 
 ## Merge Gate
 
-- **Pull request**: [#1](https://github.com/RZZPPYZ/ChainTogether/pull/1)
-- **PR head / reviewed head**: `e09e09040237bc69e6bf9a165976ef075165e051`
-- **Merge commit**: `918e04a0dfc3b46b1b3e66f9a77fec4256965790`
+- **Pull request**: [#2](https://github.com/RZZPPYZ/ChainTogether/pull/2)
+- **PR head / reviewed head**: `4eec72d34ce1ee75d067602e4f67accdf4bd035b`
+- **Merge commit**: `d406fa6f0bc19d986b7c323ba32303b130b5889c`
 - **Verdict**: merged; proceed to independent Vision Gate
-- **Evidence**: `evidence/merge-evidence-918e04a.md`
+- **Evidence**: `evidence/merge-evidence-d406fa6.md`
 
 ## Vision Gate
 
-- **Guardian**: independent `/root/f002_vision_guardian`
-- **Merged revision**: `918e04a0dfc3b46b1b3e66f9a77fec4256965790`
-- **Verdict**: changes_required
-- **Journey evidence**: `evidence/vision-verdict-918e04a.md`
+- **Guardian**:
+- **Merged revision**: `d406fa6f0bc19d986b7c323ba32303b130b5889c`
+- **Verdict**: pending
+- **Journey evidence**:
 
 ## Risks and Open Questions
 
@@ -302,3 +303,5 @@ transition API calls.
 | 2026-08-09 | Independent Review approved runtime correction `d84fe04`; a subsequent canonical `$request-review` instruction gap made that approval stale for the final HEAD | `evidence/review-verdict-d84fe04.md` |
 | 2026-08-09 | Canonical `$request-review` now selects Feature MCP for autonomous runs and reserves `@Reviewer` for manual/non-Feature tasks; provider mounts and contract tests are synchronized | `evidence/tdd-vision-handoff-fix.md` |
 | 2026-08-09 | Same independent Reviewer approved exact final correction HEAD `f43b80e` with no P1/P2/P3 and verified canonical/Claude/Codex Skill continuity | `evidence/review-verdict-f43b80e.md` |
+| 2026-08-09 | Reviewer confirmed evidence-only continuity through exact PR head `4eec72d`; no runtime, test, Skill, or provider content changed | `evidence/review-continuity-4eec72d.md` |
+| 2026-08-09 | GitHub PR #2 merged exact reviewed head `4eec72d` into `main` as `d406fa6`; corrected Feature returned to independent Vision acceptance | `evidence/merge-evidence-d406fa6.md` |
