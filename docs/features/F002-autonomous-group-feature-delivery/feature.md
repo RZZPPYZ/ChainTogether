@@ -2,7 +2,7 @@
 schema_version: 1
 id: F002
 title: "Autonomous Group Feature Delivery"
-stage: review
+stage: acceptance
 state: active
 priority: P1
 owner: "codex"
@@ -18,7 +18,7 @@ blocked_by: []
 research_refs: ["docs/features/F002-autonomous-group-feature-delivery/evidence/discovery.md", "docs/features/F002-autonomous-group-feature-delivery/evidence/orchestration-design.md", "docs/features/F001-group-feature-lifecycle/evidence/vision-verdict-0c5482d.md"]
 decision_refs: ["docs/features/F002-autonomous-group-feature-delivery/evidence/discovery.md", "docs/features/F002-autonomous-group-feature-delivery/evidence/design-response-f662c20.md", "docs/features/F002-autonomous-group-feature-delivery/evidence/design-response-ab83a23.md", "docs/features/F002-autonomous-group-feature-delivery/evidence/design-verdict-ed9bda4.md"]
 plan_refs: ["docs/features/F002-autonomous-group-feature-delivery/plan.md"]
-pr_refs: []
+pr_refs: ["https://github.com/RZZPPYZ/ChainTogether/pull/1"]
 ---
 
 # F002: Autonomous Group Feature Delivery
@@ -244,10 +244,18 @@ transition API calls.
 - **Fresh matrix**: backend 93 tests (1 skipped), frontend 27 tests,
   typecheck/build/validators/contracts/diff check green; no new lint error
 
+## Merge Gate
+
+- **Pull request**: [#1](https://github.com/RZZPPYZ/ChainTogether/pull/1)
+- **PR head / reviewed head**: `e09e09040237bc69e6bf9a165976ef075165e051`
+- **Merge commit**: `918e04a0dfc3b46b1b3e66f9a77fec4256965790`
+- **Verdict**: merged; proceed to independent Vision Gate
+- **Evidence**: `evidence/merge-evidence-918e04a.md`
+
 ## Vision Gate
 
 - **Guardian**:
-- **Merged revision**:
+- **Merged revision**: `918e04a0dfc3b46b1b3e66f9a77fec4256965790`
 - **Verdict**: pending
 - **Journey evidence**:
 
@@ -281,3 +289,4 @@ transition API calls.
 | 2026-08-09 | Quality Gate passed with full tests/build/validators and an explicit no-new-error lint baseline disposition | `evidence/quality-report.md` |
 | 2026-08-09 | Independent Review of `848d2a7` found 3 P1, 3 P2, and 1 P3; all were reproduced and fixed through new regression tests | `evidence/review-findings-848d2a7.md`, `evidence/tdd-review-fixes.md` |
 | 2026-08-09 | Same independent Reviewer replayed all seven fixes and approved exact implementation HEAD `02e78e8` with no new findings | `evidence/review-verdict-02e78e8.md` |
+| 2026-08-09 | GitHub PR #1 merged exact reviewed head `e09e090` into `main` as `918e04a`; Feature moved to Vision acceptance | `evidence/merge-evidence-918e04a.md` |
