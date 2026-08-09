@@ -88,6 +88,12 @@ class PromptGovernanceTests(unittest.TestCase):
             "Next step: Create the isolated worktree, then implement AC-6.",
             prompt,
         )
+        self.assertIn(
+            "a successful Feature MCP mutation is the only\n"
+            "role-handoff mechanism",
+            prompt,
+        )
+        self.assertIn("end naturally without an @handle", prompt)
 
 
 if __name__ == "__main__":

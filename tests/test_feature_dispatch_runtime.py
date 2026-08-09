@@ -12,7 +12,7 @@ from server.config import settings
 from server.database import Database
 from server.feature_delivery import FeatureDeliveryManager
 from server.feature_manager import FeatureManager
-from server.group_manager import AgentTurnResult, GroupManager
+from server.group_manager import AgentTurnResult, GroupManager, GroupRunState
 from server.session_manager import FeatureTurnAuthority, SessionManager
 
 
@@ -172,6 +172,221 @@ class FeatureDispatchRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(leased["dispatch_capability"], repr(messages))
         self.assertNotIn(leased["lease_token"], repr(messages))
 
+    async def test_request_review_mention_waits_for_fresh_successor(self) -> None:
+        started = await self.delivery.start(
+            self.group["id"],
+            request_key="feature-review-mention",
+            requirement="Hand Review to the assigned reviewer exactly once",
+        )
+        run_id = started["run"]["id"]
+        doc = self.workspace / started["run"]["feature_doc_path"]
+        sha = "b" * 40
+        direct_index = 0
+        sessions: dict[str, str] = {}
+
+        def evidence(name: str) -> str:
+            evidence_dir = doc.parent / "evidence"
+            evidence_dir.mkdir(exist_ok=True)
+            (evidence_dir / name).write_text("verified", encoding="utf-8")
+            return f"evidence/{name}"
+
+        async def next_lease() -> dict[str, object]:
+            leased = await self.delivery.lease_next_dispatch(
+                run_id, worker_id=f"review-setup-{direct_index}"
+            )
+            assert leased is not None
+            return leased
+
+        async def activate_direct(
+            leased: dict[str, object],
+        ) -> tuple[str, str]:
+            nonlocal direct_index
+            direct_index += 1
+            dispatch = leased["dispatch"]
+            assert isinstance(dispatch, dict)
+            invocation_id = f"review-setup-{direct_index}"
+            await self.db.create_group_invocation(
+                invocation_id,
+                self.group["id"],
+                f"[feature-dispatch:{dispatch['id']}]",
+                f"2026-08-09T00:00:{direct_index:02d}+00:00",
+                feature_run_id=run_id,
+            )
+            await self.delivery.activate_dispatch(
+                str(dispatch["id"]),
+                lease_token=str(leased["lease_token"]),
+                invocation_id=invocation_id,
+            )
+            agent_id = str(dispatch["target_agent_id"])
+            if agent_id not in sessions:
+                member = await self.sessions.create_session(
+                    agent_id=agent_id,
+                    name=f"Feature actor {agent_id}",
+                    working_dir=str(self.workspace),
+                    origin="group_member",
+                )
+                sessions[agent_id] = member.id
+                await self.db.upsert_group_agent_session(
+                    self.group["id"],
+                    agent_id,
+                    member.id,
+                    "2026-08-09T00:00:00+00:00",
+                )
+            return invocation_id, sessions[agent_id]
+
+        async def advance(
+            leased: dict[str, object],
+            to_stage: str,
+            *,
+            result: str = "",
+            refs: list[str] | None = None,
+        ) -> dict[str, object]:
+            dispatch = leased["dispatch"]
+            assert isinstance(dispatch, dict)
+            invocation_id, session_id = await activate_direct(leased)
+            await self.features.transition_for_dispatch(
+                run_id,
+                session_id,
+                dispatch_id=str(dispatch["id"]),
+                dispatch_capability=str(leased["dispatch_capability"]),
+                to_stage=to_stage,
+                result=result,
+                evidence_refs=refs,
+            )
+            await self.delivery.complete_dispatch_invocation(
+                str(dispatch["id"]), invocation_id, terminal_status="completed"
+            )
+            return await next_lease()
+
+        leased = await next_lease()
+        leased = await advance(leased, "design")
+        text = doc.read_text(encoding="utf-8")
+        doc.write_text(
+            text.replace("**Verdict**: pending", "**Verdict**: approved", 1),
+            encoding="utf-8",
+        )
+        leased = await advance(leased, "planning", result="approved")
+        leased = await advance(leased, "implementation")
+        leased = await advance(leased, "quality")
+        leased = await advance(
+            leased,
+            "review",
+            result="passed",
+            refs=[evidence("quality.md")],
+        )
+        owner_dispatch = leased["dispatch"]
+        assert isinstance(owner_dispatch, dict)
+        self.assertEqual("owner", owner_dispatch["target_role"])
+
+        self.groups.bind(
+            self.sessions,
+            self.db,
+            self.features,
+            feature_delivery_mgr=self.delivery,
+        )
+        self.delivery.bind_group_manager(self.groups)
+        owner_turns: list[dict[str, object]] = []
+
+        async def owner_collect(
+            reuse_session_id: str,
+            prompt: str,
+            **kwargs: object,
+        ) -> AgentTurnResult:
+            owner_turns.append(kwargs)
+            if kwargs.get("feature_dispatch_id"):
+                await self.features.request_review_for_dispatch(
+                    run_id,
+                    reuse_session_id,
+                    dispatch_id=str(kwargs["feature_dispatch_id"]),
+                    dispatch_capability=str(
+                        kwargs["feature_dispatch_capability"]
+                    ),
+                    reason="Independent review requested",
+                    evidence_refs=[evidence("review-packet.md")],
+                    revision=sha,
+                )
+                return AgentTurnResult(
+                    "@Reviewer\nPlease independently review the exact HEAD."
+                )
+            return AgentTurnResult(
+                "Reviewer was invoked inside the predecessor without authority."
+            )
+
+        with mock.patch.object(
+            self.groups, "_collect_agent_reply", side_effect=owner_collect
+        ), mock.patch.object(
+            self.delivery, "drive_pending", new=mock.AsyncMock(return_value=None)
+        ), mock.patch.object(
+            self.features, "_git_commit", return_value=sha
+        ), mock.patch.object(self.features, "_git_head", return_value=sha):
+            predecessor = await self.groups.launch_feature_dispatch(
+                group_id=self.group["id"],
+                feature_run_id=run_id,
+                dispatch_id=str(owner_dispatch["id"]),
+                target_agent_id=str(owner_dispatch["target_agent_id"]),
+                target_role=str(owner_dispatch["target_role"]),
+                observed_stage=str(owner_dispatch["observed_stage"]),
+                requirement="Prepare the independent review handoff",
+                lease_token=str(leased["lease_token"]),
+                dispatch_capability=str(leased["dispatch_capability"]),
+            )
+            predecessor_run = self.groups._invocations[predecessor["id"]]
+            assert predecessor_run.runner_task is not None
+            await predecessor_run.runner_task
+
+        self.assertEqual(1, len(owner_turns))
+        self.assertEqual(0, predecessor["depth"])
+        dispatches = await self.db.list_feature_dispatches(run_id)
+        successor = dispatches[-1]
+        self.assertEqual("pending", successor["state"])
+        self.assertEqual("reviewer", successor["target_role"])
+        self.assertEqual(owner_dispatch["id"], successor["predecessor_dispatch_id"])
+        self.assertIsNone(successor["invocation_id"])
+
+        reviewer_lease = await next_lease()
+        reviewer_dispatch = reviewer_lease["dispatch"]
+        assert isinstance(reviewer_dispatch, dict)
+        reviewer_turns: list[dict[str, object]] = []
+
+        async def reviewer_collect(
+            reuse_session_id: str,
+            prompt: str,
+            **kwargs: object,
+        ) -> AgentTurnResult:
+            reviewer_turns.append(kwargs)
+            return AgentTurnResult("Review started with exact authority.")
+
+        with mock.patch.object(
+            self.groups, "_collect_agent_reply", side_effect=reviewer_collect
+        ), mock.patch.object(
+            self.delivery, "drive_pending", new=mock.AsyncMock(return_value=None)
+        ):
+            reviewer_invocation = await self.groups.launch_feature_dispatch(
+                group_id=self.group["id"],
+                feature_run_id=run_id,
+                dispatch_id=str(reviewer_dispatch["id"]),
+                target_agent_id=str(reviewer_dispatch["target_agent_id"]),
+                target_role=str(reviewer_dispatch["target_role"]),
+                observed_stage=str(reviewer_dispatch["observed_stage"]),
+                requirement="Perform the independent review",
+                lease_token=str(reviewer_lease["lease_token"]),
+                dispatch_capability=str(reviewer_lease["dispatch_capability"]),
+            )
+            reviewer_run = self.groups._invocations[reviewer_invocation["id"]]
+            assert reviewer_run.runner_task is not None
+            await reviewer_run.runner_task
+
+        self.assertEqual(1, len(reviewer_turns))
+        self.assertNotEqual(predecessor["id"], reviewer_invocation["id"])
+        self.assertEqual(0, reviewer_invocation["depth"])
+        self.assertEqual(
+            reviewer_dispatch["id"], reviewer_turns[0]["feature_dispatch_id"]
+        )
+        self.assertEqual(
+            reviewer_lease["dispatch_capability"],
+            reviewer_turns[0]["feature_dispatch_capability"],
+        )
+
     async def test_run_config_scopes_feature_authority_to_one_turn(self) -> None:
         member = await self.sessions.create_session(
             agent_id=self.agents[0]["id"],
@@ -201,6 +416,47 @@ class FeatureDispatchRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(ordinary.feature_dispatch_capability)
         session_rows = await self.db.load_sessions()
         self.assertNotIn("raw-one-turn-secret", repr(session_rows))
+
+    async def test_lifecycle_edge_mentions_never_route_in_predecessor(self) -> None:
+        cases = (
+            ("review->implementation", "Owner"),
+            ("merge->acceptance", "Guardian"),
+            ("acceptance->closure", "Owner"),
+        )
+        group = await self.db.get_group(self.group["id"])
+        assert group is not None
+
+        for edge, target_name in cases:
+            with self.subTest(edge=edge):
+                run = GroupRunState(
+                    group_id=self.group["id"],
+                    group_session_id=self.group["session_id"],
+                    feature_dispatch_id=f"dispatch-{edge}",
+                    feature_dispatch_agent_id=self.agents[0]["id"],
+                    feature_dispatch_capability=f"capability-{edge}",
+                    root_content=f"Complete {edge}",
+                )
+                router = mock.AsyncMock()
+                with mock.patch.object(
+                    self.groups,
+                    "_collect_agent_reply",
+                    new=mock.AsyncMock(
+                        return_value=AgentTurnResult(
+                            f"@{target_name}\nContinue the lifecycle."
+                        )
+                    ),
+                ), mock.patch.object(
+                    self.groups, "_dispatch_a2a_mentions", new=router
+                ):
+                    await self.groups._run_mentioned_agent(
+                        run,
+                        self.agents[0],
+                        group,
+                        depth=0,
+                        current_message=f"Complete {edge}",
+                    )
+
+                router.assert_not_awaited()
 
     async def test_startup_reclaims_lease_and_launches_same_generation(self) -> None:
         started = await self.delivery.start(
