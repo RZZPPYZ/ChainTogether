@@ -30,6 +30,12 @@ Every reply must end in exactly one outcome:
    `[group-hold:SECONDS] reason`, where SECONDS is between $hold_min_seconds
    and $hold_max_seconds.
 
+Active Feature Workflow exception: when D14 instructs you to mutate an
+autonomous FeatureRun through Feature MCP, that successful mutation already
+commits the lifecycle handoff and schedules a fresh successor. End naturally
+without an @handle after it succeeds. Do not duplicate that control-plane
+handoff through ordinary group routing.
+
 Before sending, silently apply this short-circuit check:
 
 Q1: Does a teammate need to take action?

@@ -1108,6 +1108,10 @@ class GroupManager:
         ``group_reply_hops`` logic: user→A=hop 0, A→B=hop 1, B→C=hop 2,
         C→D=hop 3 → D exceeds the cap (= 4th agent, ``depth`` from C is 3,
         ``3 + 1 = 4 > 3``).
+
+        Autonomous Feature dispatches are the exception to reply routing:
+        their exact actor may create a durable successor through Feature MCP,
+        so this predecessor never interprets its reply mentions as A2A work.
         """
         agent_id = agent["id"]
         agent_name = agent["name"]
@@ -1279,10 +1283,14 @@ class GroupManager:
                         run, agent_name=agent_name, seconds=seconds, reason=reason
                     )
                     return
-                analysis = analyze_agent_routing(
-                    reply_text, member_canonical_handles(member_agents)
+                analysis = (
+                    analyze_agent_routing(
+                        reply_text, member_canonical_handles(member_agents)
+                    )
+                    if run.feature_dispatch_id is None
+                    else None
                 )
-                if analysis.invalid_inline_mentions:
+                if analysis is not None and analysis.invalid_inline_mentions:
                     remedial = await self._run_routing_remedial(
                         run=run,
                         reuse_session_id=reuse_session_id,
@@ -1330,20 +1338,24 @@ class GroupManager:
                     "Agent produced no reply.",
                 )
 
-            # A2A: parse @-mentions in the reply we just injected and
-            # dispatch each new target serially.
-            await self._dispatch_a2a_mentions(
-                run=run,
-                group=group,
-                member_agents=member_agents,
-                spawner_agent_id=agent_id,
-                spawner_agent_name=agent_name,
-                spawner_agent_ids=spawner_agent_ids,
-                depth=depth,
-                reply_text=routing_text or "",
-                trigger_message_seq=routing_message_seq,
-                turn=routing_turn,
-            )
+            # A Feature dispatch has exact one-actor custody. Its MCP mutation
+            # creates the durable successor, and the terminal callback launches
+            # that successor in a fresh depth-zero invocation. Treat any @handle
+            # in the visible reply as prose so it cannot also enqueue an
+            # unprivileged actor inside this predecessor invocation.
+            if run.feature_dispatch_id is None:
+                await self._dispatch_a2a_mentions(
+                    run=run,
+                    group=group,
+                    member_agents=member_agents,
+                    spawner_agent_id=agent_id,
+                    spawner_agent_name=agent_name,
+                    spawner_agent_ids=spawner_agent_ids,
+                    depth=depth,
+                    reply_text=routing_text or "",
+                    trigger_message_seq=routing_message_seq,
+                    turn=routing_turn,
+                )
         except asyncio.CancelledError:
             logger.info(
                 "Group %s: agent %s turn cancelled", run.group_id, agent_name,

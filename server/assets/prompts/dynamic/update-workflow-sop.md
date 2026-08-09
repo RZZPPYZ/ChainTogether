@@ -14,3 +14,8 @@ state on every routed agent turn. GroupInvocation custody is separate from the
 FeatureRun stage. Return evidence to the control plane; do not claim or perform
 a stage transition in chat. Only the assigned reviewer or vision guardian may
 issue that gate's verdict.
+
+For this autonomous FeatureRun, a successful Feature MCP mutation is the only
+role-handoff mechanism. It durably schedules the required actor in a fresh
+GroupInvocation. After the mutation commits, end naturally without an @handle;
+do not also use the ordinary L0 HANDOFF route for the same lifecycle step.

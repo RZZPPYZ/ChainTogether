@@ -2,7 +2,7 @@
 schema_version: 1
 id: F002
 title: "Autonomous Group Feature Delivery"
-stage: acceptance
+stage: review
 state: active
 priority: P1
 owner: "codex"
@@ -25,7 +25,7 @@ pr_refs: ["https://github.com/RZZPPYZ/ChainTogether/pull/1"]
 
 ## Why
 
-> Operator: "群组页面包含一个 /slash 命令叫 feature 特性开发，/feature 之后接开发需求，然后自动检查群组是否包含了 3 个特定角色的 agent……每个 agent 可以通过 MCP 自主调用流转状态……我只需要一句话，agent 群组就可以自动按照规则来迭代做开发。"
+> Operator: "群组页面包含一个 /slash 命令叫 feature 特性开发，/feature 之后接你的开发需求，然后自动检查群组是否包含了 3 个特定角色的 agent……每个 agent 可以通过 MCP 自主调用流转状态……这样才可以达到我只需要一句话，agent 群组就可以自动按照规则来迭代做开发。"
 
 F001 supplies a durable lifecycle control plane, but the operator still has to
 create the FeatureRun, assign roles, start the first Agent, and arrange each
@@ -221,6 +221,8 @@ transition API calls.
 - **Plan**: `docs/features/F002-autonomous-group-feature-delivery/plan.md`
 - **Worktree**: `F:\\RZP_program\\my_project\\ChainTogether\\.worktrees\\F002-autonomous-group-feature`
 - **Branch**: `codex/f002-autonomous-group-feature`
+- **Vision-fix worktree**: `F:\\RZP_program\\my_project\\ChainTogether\\.worktrees\\F002-vision-handoff-fix`
+- **Vision-fix branch**: `codex/f002-vision-handoff-fix`
 - **Control plane**: mandatory Feature MCP, Session/dispatch-bound routes,
   atomic handoff pairs, restart reconciliation
 - **Group UX**: `/feature` autocomplete, start/status/resume/roles, live stage
@@ -233,16 +235,18 @@ transition API calls.
 
 - **Author**: codex
 - **Reviewer**: independent `/root/f002_independent_review`
-- **Base SHA**: `3ea65be7a99ef19e3271ab235ef3921d0666e454`
-- **Reviewed HEAD**: `02e78e89f716c24efca3a27dcffbd3e91530ad2b`
-- **Verdict**: approved after request_changes fixes
+- **Base SHA**: `6cd0541e1866e86745a64e2b52b5edb330998bae`
+- **Reviewed HEAD**: `f43b80e612e51ed4045f63e0dbafe892f1037452`
+- **Verdict**: approved after Vision handoff correction and canonical Skill
+  continuity re-review
 
 ## Quality Gate
 
 - **Verdict**: pass
-- **Evidence**: `evidence/quality-report.md`
-- **Fresh matrix**: backend 93 tests (1 skipped), frontend 27 tests,
-  typecheck/build/validators/contracts/diff check green; no new lint error
+- **Evidence**: `evidence/quality-report-vision-fix.md`
+- **Fresh matrix**: backend 96 tests (1 skipped), frontend 27 tests,
+  typecheck/build/validators/contracts/diff check green; the unchanged
+  frontend lint baseline remains 33 errors and 5 warnings
 
 ## Merge Gate
 
@@ -254,10 +258,10 @@ transition API calls.
 
 ## Vision Gate
 
-- **Guardian**:
+- **Guardian**: independent `/root/f002_vision_guardian`
 - **Merged revision**: `918e04a0dfc3b46b1b3e66f9a77fec4256965790`
-- **Verdict**: pending
-- **Journey evidence**:
+- **Verdict**: changes_required
+- **Journey evidence**: `evidence/vision-verdict-918e04a.md`
 
 ## Risks and Open Questions
 
@@ -270,6 +274,7 @@ transition API calls.
 | RISK-5 | policy | One-sentence autonomy cannot authorize bypassing repo merge policy or unresolved operator value decisions. | operator | fail closed and surface blocker |
 | RISK-6 | concurrency | Start, resume, transition, and late workers can duplicate delivery without database claims. | implementer | DB CAS, partial uniqueness, handoff pair, replay tests implemented |
 | RISK-7 | routing | One GroupInvocation depth cap cannot sustain multi-round Review. | implementer | verified fresh depth-zero successor per dispatch |
+| RISK-8 | routing | A lifecycle reply's ordinary `@Agent` handoff can enqueue an unprivileged actor in the predecessor before the durable successor launches. | implementer | fixed and covered at Review plus three lifecycle edges; merged Vision revalidation pending |
 
 ## Timeline
 
@@ -290,3 +295,10 @@ transition API calls.
 | 2026-08-09 | Independent Review of `848d2a7` found 3 P1, 3 P2, and 1 P3; all were reproduced and fixed through new regression tests | `evidence/review-findings-848d2a7.md`, `evidence/tdd-review-fixes.md` |
 | 2026-08-09 | Same independent Reviewer replayed all seven fixes and approved exact implementation HEAD `02e78e8` with no new findings | `evidence/review-verdict-02e78e8.md` |
 | 2026-08-09 | GitHub PR #1 merged exact reviewed head `e09e090` into `main` as `918e04a`; Feature moved to Vision acceptance | `evidence/merge-evidence-918e04a.md` |
+| 2026-08-09 | Independent Vision Gate reproduced a duplicate, unprivileged Reviewer turn in the predecessor invocation and returned `changes_required` | `evidence/vision-verdict-918e04a.md` |
+| 2026-08-09 | A fresh isolated worktree started the lifecycle-handoff fix from `main@6cd0541`; the focused runtime baseline was green | `evidence/vision-fix-worktree.md` |
+| 2026-08-09 | TDD prevented ordinary mention routing in Feature dispatch predecessors and aligned L0/D14 with MCP-owned fresh successors | `evidence/tdd-vision-handoff-fix.md` |
+| 2026-08-09 | Fresh Quality Gate passed the corrected runtime, full backend/frontend suites, build, contracts, and lifecycle validators | `evidence/quality-report-vision-fix.md` |
+| 2026-08-09 | Independent Review approved runtime correction `d84fe04`; a subsequent canonical `$request-review` instruction gap made that approval stale for the final HEAD | `evidence/review-verdict-d84fe04.md` |
+| 2026-08-09 | Canonical `$request-review` now selects Feature MCP for autonomous runs and reserves `@Reviewer` for manual/non-Feature tasks; provider mounts and contract tests are synchronized | `evidence/tdd-vision-handoff-fix.md` |
+| 2026-08-09 | Same independent Reviewer approved exact final correction HEAD `f43b80e` with no P1/P2/P3 and verified canonical/Claude/Codex Skill continuity | `evidence/review-verdict-f43b80e.md` |

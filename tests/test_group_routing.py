@@ -43,6 +43,8 @@ class GroupRoutingTests(unittest.TestCase):
         self.assertIn(
             "Aliases are user-only input", prompt
         )
+        self.assertIn("Active Feature Workflow exception", prompt)
+        self.assertIn("Do not duplicate that control-plane", prompt)
         self.assertNotIn("@Maker", prompt)
         self.assertNotIn("@Checker", prompt)
 

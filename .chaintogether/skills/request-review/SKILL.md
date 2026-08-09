@@ -1,6 +1,6 @@
 ---
 name: request-review
-description: "Assemble a self-contained, SHA-bound ChainTogether review packet and assign an independent reviewer with the required context, artifacts, evidence, risks, and verdict contract. Use when: Quality Gate passed for the current HEAD, or fixes are ready for the same reviewer to re-review. Not for: reviewing one's own work, replacing quality verification, or handing off an uncommitted or unidentified revision. Output: a durable review packet containing intent, scope, ACs, diff, evidence, risks, known gaps, base SHA, head SHA, and requested verdict format."
+description: "Assemble a self-contained, SHA-bound ChainTogether review packet and assign an independent reviewer through autonomous Feature MCP or an explicit manual handoff. Use when: Quality Gate passed for the current HEAD, or fixes are ready for the same reviewer to re-review. Not for: reviewing one's own work, replacing quality verification, handing off an uncommitted or unidentified revision, or duplicating a committed Feature MCP handoff with ordinary group A2A. Output: a durable review packet containing intent, scope, ACs, diff, evidence, risks, known gaps, base SHA, head SHA, and requested verdict format."
 ---
 
 # Request Review
@@ -17,9 +17,19 @@ description: "Assemble a self-contained, SHA-bound ChainTogether review packet a
    - architecture ownership and intentional deviations
 5. Require findings with severity, evidence, and tight file locations, followed by `approve`, `request_changes`, or `blocked`, all bound to `head_sha`.
 6. Persist the packet under the feature dossier before handing off.
+7. Inspect D14 to choose exactly one handoff mechanism:
+   - For an autonomous FeatureRun, call Feature MCP `request_review` with the
+     packet evidence and exact HEAD. A successful mutation creates the durable,
+     fresh Reviewer successor. Then end naturally without an `@handle`.
+   - For a manual or non-Feature group task, keep the final `@Reviewer` handoff
+     short and point to the packet.
 
-In a group, keep the final `@Reviewer` handoff short and point to the packet. Do not paste an improvised summary that omits durable references.
+Never fall back to ordinary A2A after an autonomous `request_review` failure or
+success. On failure, preserve the packet and report the blocker so status/resume
+can recover the exact Feature dispatch.
 
 ## Next step
 
-Hand the packet to an independent agent and have that agent load `$review-feature` against the exact HEAD.
+Autonomous FeatureRun: commit the handoff through Feature MCP and let the fresh
+Reviewer successor load `$review-feature`. Manual task: hand the packet to an
+independent Reviewer explicitly against the exact HEAD.
