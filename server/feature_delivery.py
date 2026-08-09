@@ -88,11 +88,22 @@ class FeatureDeliveryManager:
     def _token_hash(token: str) -> str:
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
-    @staticmethod
-    def _target_for_stage(run: dict[str, Any]) -> tuple[str, str | None]:
+    async def _target_for_stage(
+        self, run: dict[str, Any]
+    ) -> tuple[str, str | None]:
         stage = str(run["stage"])
         if stage == "review":
-            return "reviewer", run.get("reviewer_agent_id")
+            events = await self._db().list_feature_run_events(str(run["id"]))
+            latest = events[-1] if events else None
+            review_requested = bool(
+                latest
+                and latest["from_stage"] == "review"
+                and latest["to_stage"] == "review"
+                and latest["result"] == "review_requested"
+            )
+            if review_requested:
+                return "reviewer", run.get("reviewer_agent_id")
+            return "owner", run.get("owner_agent_id")
         if stage == "acceptance":
             return "vision_guardian", run.get("vision_guardian_agent_id")
         return "owner", run.get("owner_agent_id")
@@ -256,6 +267,17 @@ class FeatureDeliveryManager:
                 error=None,
                 updated_at=_now(),
             )
+        elif not delivered and checkpoint["state"] == "doc_pending":
+            await self._db().update_feature_start_state(
+                run_id,
+                state="doc_pending",
+                error=(
+                    "Canonical Feature Doc delivery is pending; no Agent has "
+                    "been dispatched. Retry /feature with the same request or "
+                    "use /feature resume after correcting the filesystem issue."
+                ),
+                updated_at=_now(),
+            )
         run = await self._db().get_feature_run(run_id)
         if run is None:
             raise FeatureError(
@@ -324,6 +346,12 @@ class FeatureDeliveryManager:
         """Lease and launch at most one pending generation for ``run_id``."""
         if self.group_manager is None:
             return None
+        checkpoint = await self._db().get_feature_start_for_run(run_id)
+        if checkpoint is None or checkpoint["state"] not in {
+            "dispatch_pending",
+            "running",
+        }:
+            return None
         async with self._dispatch_lock:
             leased = await self.lease_next_dispatch(
                 run_id,
@@ -372,6 +400,16 @@ class FeatureDeliveryManager:
         for run in await self._db().list_feature_runs():
             if run["state"] == "done":
                 continue
+            checkpoint = await self._db().get_feature_start_for_run(str(run["id"]))
+            if checkpoint is None:
+                continue
+            if checkpoint["state"] == "doc_pending":
+                await self._resume_start(checkpoint, replayed=True)
+                checkpoint = await self._db().get_feature_start_for_run(
+                    str(run["id"])
+                )
+                if checkpoint is None or checkpoint["state"] == "doc_pending":
+                    continue
             dispatches = await self._db().list_feature_dispatches(str(run["id"]))
             latest = dispatches[-1] if dispatches else None
             if latest is None or latest["state"] == "failed":
@@ -472,7 +510,24 @@ class FeatureDeliveryManager:
             raise FeatureError("Feature run not found", status_code=404)
         if run["state"] == "done":
             raise FeatureError("Completed FeatureRun cannot be resumed", status_code=409)
-        target_role, target_agent_id = self._target_for_stage(run)
+        checkpoint = await self._db().get_feature_start_for_run(run_id)
+        if checkpoint is None:
+            raise FeatureError(
+                "FeatureRun was not created by autonomous /feature delivery",
+                status_code=409,
+            )
+        if checkpoint["state"] == "doc_pending":
+            await self._resume_start(checkpoint, replayed=True)
+            checkpoint = await self._db().get_feature_start_for_run(run_id)
+            assert checkpoint is not None
+            if checkpoint["state"] == "doc_pending":
+                dispatches = await self._db().list_feature_dispatches(run_id)
+                return {
+                    "run": run,
+                    "dispatch": dispatches[-1] if dispatches else None,
+                    "checkpoint_state": checkpoint["state"],
+                }
+        target_role, target_agent_id = await self._target_for_stage(run)
         if not isinstance(target_agent_id, str):
             raise FeatureError(
                 f"FeatureRun has no assigned {target_role}; correct roles first",

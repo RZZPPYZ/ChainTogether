@@ -246,6 +246,167 @@ class FeatureDeliveryStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, await self._count("feature_runs"))
         self.assertEqual(1, await self._count("feature_dispatches"))
 
+    async def test_doc_pending_checkpoint_never_launches_an_agent(self) -> None:
+        launcher = mock.AsyncMock(return_value={"id": "must-not-launch"})
+        self.delivery.bind_group_manager(
+            mock.Mock(launch_feature_dispatch=launcher)
+        )
+        with mock.patch.object(
+            self.features,
+            "_write_doc_create_only",
+            side_effect=OSError("simulated document failure"),
+        ):
+            result = await self.delivery.start(
+                self.group["id"],
+                request_key="request-doc-gate",
+                requirement="Do not run without the canonical Feature Doc",
+            )
+
+        self.assertEqual("doc_pending", result["checkpoint_state"])
+        self.assertTrue(result["checkpoint_error"])
+        launcher.assert_not_awaited()
+
+        resumed = await self.delivery.resume_for_group(self.group["id"])
+        self.assertNotEqual("doc_pending", resumed["checkpoint_state"])
+        launcher.assert_awaited_once()
+        self.assertTrue(
+            (self.workspace / str(result["run"]["feature_doc_path"])).is_file()
+        )
+
+    async def test_session_only_transition_cannot_bypass_autonomous_dispatch(
+        self,
+    ) -> None:
+        started = await self.delivery.start(
+            self.group["id"],
+            request_key="request-no-session-bypass",
+            requirement="Require exact dispatch authority",
+        )
+        owner_id = started["roles"]["owner"]["id"]
+        member = await self.sessions.create_session(
+            agent_id=owner_id,
+            name="Owner member",
+            working_dir=str(self.workspace),
+            origin="group_member",
+        )
+        await self.db.upsert_group_agent_session(
+            self.group["id"],
+            owner_id,
+            member.id,
+            "2026-08-09T00:00:00+00:00",
+        )
+
+        with self.assertRaisesRegex(FeatureError, "dispatch-bound"):
+            await self.features.transition_for_session(
+                started["run"]["id"], member.id, to_stage="design"
+            )
+
+        run = await self.db.get_feature_run(started["run"]["id"])
+        dispatches = await self.db.list_feature_dispatches(started["run"]["id"])
+        assert run is not None
+        self.assertEqual("discovery", run["stage"])
+        self.assertEqual(["pending"], [item["state"] for item in dispatches])
+
+    async def test_role_update_rebinds_unlaunched_dispatch_to_new_revision(
+        self,
+    ) -> None:
+        started = await self.delivery.start(
+            self.group["id"],
+            request_key="request-role-revision",
+            requirement="Keep role changes dispatchable",
+        )
+        roles = started["roles"]
+        await self.delivery.update_roles_for_group(
+            self.group["id"],
+            owner_agent_id=roles["reviewer"]["id"],
+            reviewer_agent_id=roles["owner"]["id"],
+            vision_guardian_agent_id=roles["vision_guardian"]["id"],
+        )
+
+        run = await self.db.get_feature_run(started["run"]["id"])
+        dispatches = await self.db.list_feature_dispatches(started["run"]["id"])
+        assert run is not None
+        self.assertEqual(1, len(dispatches))
+        self.assertEqual(run["updated_at"], dispatches[0]["observed_revision"])
+        self.assertEqual(run["owner_agent_id"], dispatches[0]["target_agent_id"])
+
+        leased = await self.delivery.lease_next_dispatch(
+            started["run"]["id"], worker_id="role-update-worker"
+        )
+        assert leased is not None
+        invocation = await self.db.create_group_invocation(
+            "role-update-invocation",
+            self.group["id"],
+            "updated owner turn",
+            "2026-08-09T00:30:00+00:00",
+            feature_run_id=started["run"]["id"],
+        )
+        await self.delivery.activate_dispatch(
+            leased["dispatch"]["id"],
+            lease_token=leased["lease_token"],
+            invocation_id=invocation["id"],
+        )
+        member = await self.sessions.create_session(
+            agent_id=str(run["owner_agent_id"]),
+            name="Updated owner",
+            working_dir=str(self.workspace),
+            origin="group_member",
+        )
+        await self.db.upsert_group_agent_session(
+            self.group["id"],
+            str(run["owner_agent_id"]),
+            member.id,
+            "2026-08-09T00:30:00+00:00",
+        )
+        transitioned = await self.features.transition_for_dispatch(
+            started["run"]["id"],
+            member.id,
+            dispatch_id=leased["dispatch"]["id"],
+            dispatch_capability=leased["dispatch_capability"],
+            to_stage="design",
+        )
+        self.assertEqual("design", transitioned["stage"])
+
+    async def test_review_owner_preparation_resume_preserves_owner_phase(
+        self,
+    ) -> None:
+        started = await self.delivery.start(
+            self.group["id"],
+            request_key="request-review-owner-resume",
+            requirement="Resume the owner review packet turn",
+        )
+        run_id = started["run"]["id"]
+        review_revision = "2026-08-09T01:00:00+00:00"
+        await self.db._conn.execute(
+            "UPDATE feature_runs SET stage = 'review', updated_at = ? WHERE id = ?",
+            (review_revision, run_id),
+        )
+        await self.db._conn.execute(
+            "UPDATE feature_dispatches SET observed_stage = 'review', "
+            "observed_revision = ?, target_role = 'owner', state = 'failed', "
+            "error = 'owner packet turn failed', updated_at = ? WHERE feature_run_id = ?",
+            (review_revision, review_revision, run_id),
+        )
+        await self.db._conn.commit()
+        await self.db.append_feature_run_event(
+            run_id=run_id,
+            from_stage="quality",
+            to_stage="review",
+            result="passed",
+            actor_agent_id=started["roles"]["owner"]["id"],
+            reason="Quality passed",
+            evidence_refs=[],
+            revision="",
+            created_at=review_revision,
+        )
+
+        resumed = await self.delivery.resume(run_id)
+
+        self.assertEqual("owner", resumed["dispatch"]["target_role"])
+        self.assertEqual(
+            started["roles"]["owner"]["id"],
+            resumed["dispatch"]["target_agent_id"],
+        )
+
     async def test_ac10_lease_rotation_invalidates_old_raw_capability(self) -> None:
         started = await self.delivery.start(
             self.group["id"],

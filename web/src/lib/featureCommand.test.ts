@@ -44,4 +44,10 @@ describe("group /feature command", () => {
       resolveFeatureRoles(["@Owner", "@Owner", "@Guardian"], members),
     ).toThrow("distinct");
   });
+
+  it("rejects an incomplete roles control instead of starting a feature", () => {
+    expect(() =>
+      parseFeatureCommand("/feature roles owner=@Owner reviewer=@Reviewer"),
+    ).toThrow("guardian");
+  });
 });

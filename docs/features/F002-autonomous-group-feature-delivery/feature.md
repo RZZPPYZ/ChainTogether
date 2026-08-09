@@ -232,16 +232,16 @@ transition API calls.
 ## Review Provenance
 
 - **Author**: codex
-- **Reviewer**:
+- **Reviewer**: independent `/root/f002_independent_review`
 - **Base SHA**: `3ea65be7a99ef19e3271ab235ef3921d0666e454`
-- **Reviewed HEAD**:
-- **Verdict**: pending
+- **Reviewed HEAD**: `848d2a7d4cad91aaff764bf49e8d8a277ae596fa`
+- **Verdict**: request_changes; fixes implemented, re-review pending
 
 ## Quality Gate
 
 - **Verdict**: pass
 - **Evidence**: `evidence/quality-report.md`
-- **Fresh matrix**: backend 88 tests (1 skipped), frontend 25 tests,
+- **Fresh matrix**: backend 93 tests (1 skipped), frontend 27 tests,
   typecheck/build/validators/contracts/diff check green; no new lint error
 
 ## Vision Gate
@@ -279,3 +279,4 @@ transition API calls.
 | 2026-08-09 | Fresh successor runtime, restart recovery, and multi-round review-to-closure journey implemented | `evidence/tdd-task-6.md` |
 | 2026-08-09 | Group `/feature` command, role grammar, status panel, errors, and exact draft restoration implemented | `evidence/tdd-task-7.md` |
 | 2026-08-09 | Quality Gate passed with full tests/build/validators and an explicit no-new-error lint baseline disposition | `evidence/quality-report.md` |
+| 2026-08-09 | Independent Review of `848d2a7` found 3 P1, 3 P2, and 1 P3; all were reproduced and fixed through new regression tests | `evidence/review-findings-848d2a7.md`, `evidence/tdd-review-fixes.md` |

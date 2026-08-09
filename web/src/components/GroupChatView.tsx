@@ -780,6 +780,11 @@ export function GroupChatView({
   const [featureStatus, setFeatureStatus] =
     useState<FeatureDeliveryStatus | null>(null);
   const [featureError, setFeatureError] = useState<string | null>(null);
+  const featureStartAttemptRef = useRef<{
+    groupId: string;
+    draft: string;
+    requestKey: string;
+  } | null>(null);
   const [invocationAction, setInvocationAction] = useState<string | null>(null);
   const [defaultSaving, setDefaultSaving] = useState(false);
   const [activeUserMessageIndex, setActiveUserMessageIndex] = useState<
@@ -954,6 +959,12 @@ export function GroupChatView({
   const handleInputChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       const v = e.target.value;
+      if (
+        featureStartAttemptRef.current &&
+        featureStartAttemptRef.current.draft !== v
+      ) {
+        featureStartAttemptRef.current = null;
+      }
       setInput(v);
       setSlashIndex(0);
       setSlashDismissed(false);
@@ -1026,10 +1037,23 @@ export function GroupChatView({
         let method = "POST";
         let body: Record<string, unknown> | undefined;
         if (featureCommand.kind === "start") {
+          let attempt = featureStartAttemptRef.current;
+          if (
+            !attempt ||
+            attempt.groupId !== activeGroupId ||
+            attempt.draft !== draft
+          ) {
+            attempt = {
+              groupId: activeGroupId,
+              draft,
+              requestKey:
+                globalThis.crypto?.randomUUID?.() ??
+                `feature-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            };
+            featureStartAttemptRef.current = attempt;
+          }
           body = {
-            request_key:
-              globalThis.crypto?.randomUUID?.() ??
-              `feature-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            request_key: attempt.requestKey,
             requirement: featureCommand.requirement,
             priority: "P1",
           };
@@ -1058,6 +1082,9 @@ export function GroupChatView({
         }
         const payload = (await response.json()) as FeatureDeliveryStatus;
         setFeatureStatus(payload);
+        if (featureCommand.kind === "start") {
+          featureStartAttemptRef.current = null;
+        }
         setInput("");
         await loadFeatureStatus();
         return;

@@ -31,6 +31,11 @@ export function parseFeatureCommand(input: string): FeatureCommand | null {
   if (roles) {
     return { kind: "roles", handles: [roles[1], roles[2], roles[3]] };
   }
+  if (/^roles\b/i.test(argument)) {
+    throw new Error(
+      "Use /feature roles owner=@Name reviewer=@Name guardian=@Name.",
+    );
+  }
   return { kind: "start", requirement: argument };
 }
 

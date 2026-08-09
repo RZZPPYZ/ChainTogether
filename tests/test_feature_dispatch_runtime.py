@@ -228,6 +228,31 @@ class FeatureDispatchRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("leased", persisted["state"])
         self.assertEqual(2, persisted["attempt_count"])
 
+    async def test_startup_does_not_automate_a_manual_feature_run(self) -> None:
+        manual = await self.features.create_for_group(
+            self.group["id"],
+            title="Historical manual feature",
+            owner_agent_id=self.agents[0]["id"],
+            operator_quote="Keep this run manual",
+        )
+        await self.features.update_roles(
+            manual["id"],
+            {
+                "reviewer_agent_id": self.agents[1]["id"],
+                "vision_guardian_agent_id": self.agents[2]["id"],
+            },
+        )
+        launcher = mock.AsyncMock(return_value={"id": "unauthorized-launch"})
+        recovered = FeatureDeliveryManager()
+        recovered.bind(self.db, self.features)
+        recovered.bind_group_manager(mock.Mock(launch_feature_dispatch=launcher))
+
+        await recovered.reconcile_startup()
+
+        launcher.assert_not_awaited()
+        self.assertIsNone(await self.db.get_feature_start_for_run(manual["id"]))
+        self.assertEqual([], await self.db.list_feature_dispatches(manual["id"]))
+
     async def test_multi_round_review_journey_uses_fresh_role_bound_generations(
         self,
     ) -> None:

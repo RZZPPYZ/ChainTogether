@@ -426,4 +426,75 @@ describe("group feature command", () => {
       fetchMock.mock.calls.some(([url]) => String(url).endsWith("/send")),
     ).toBe(false);
   });
+
+  it("reuses the start request key after a lost response", async () => {
+    useSessionStore.setState({
+      token: "test-token",
+      agents: [
+        featureAgent("a", "Owner"),
+        featureAgent("b", "Reviewer"),
+        featureAgent("c", "Guardian"),
+      ],
+      activeGroupId: "group-3",
+      groups: [
+        {
+          id: "group-3",
+          name: "Retry Team",
+          agentIds: ["a", "b", "c"],
+          createdAt: "2026-07-26T00:00:00Z",
+          sessionId: "group-session-3",
+          defaultAgentId: "a",
+          workingDir: "F:/workspace",
+        },
+      ],
+      messages: { "group-session-3": [] },
+      groupInvocations: { "group-3": [] },
+      groupTypingAgents: {},
+      groupStreamingReplies: {},
+    });
+    let starts = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/feature-delivery") && init?.method === "POST") {
+        starts += 1;
+        if (starts === 1) throw new Error("response lost");
+        return new Response(
+          JSON.stringify({
+            run: {
+              id: "run-retry",
+              feature_id: "F003",
+              stage: "discovery",
+              state: "active",
+            },
+            checkpoint_state: "running",
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify(url.endsWith("/invocations") ? [] : null), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const draft = "/feature Keep this start idempotent";
+
+    render(<GroupChatView onToggleSidebar={() => {}} />);
+    const composer = screen.getByPlaceholderText(/Send a message/) as HTMLTextAreaElement;
+    fireEvent.change(composer, { target: { value: draft } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    expect(await screen.findByText("response lost")).toBeTruthy();
+    expect(composer.value).toBe(draft);
+
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(starts).toBe(2));
+    await waitFor(() => expect(composer.value).toBe(""));
+    const startBodies = fetchMock.mock.calls
+      .filter(
+        ([url, init]) =>
+          String(url).endsWith("/feature-delivery") && init?.method === "POST",
+      )
+      .map(([, init]) => JSON.parse(String(init?.body)));
+    expect(startBodies[0].request_key).toBe(startBodies[1].request_key);
+  });
 });

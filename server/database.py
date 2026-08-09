@@ -2044,6 +2044,14 @@ class Database:
                         updated_at,
                     ),
                 )
+                await self._conn.execute(
+                    "UPDATE feature_dispatches SET observed_revision = ?, "
+                    "updated_at = ? WHERE feature_run_id = ? "
+                    "AND state IN ('pending', 'waiting') "
+                    "AND observed_stage = (SELECT stage FROM feature_runs "
+                    "WHERE id = ?)",
+                    (updated_at, updated_at, run_id, run_id),
+                )
                 for field, target_role in (
                     ("owner_agent_id", "owner"),
                     ("reviewer_agent_id", "reviewer"),

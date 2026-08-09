@@ -12,12 +12,12 @@
 
 | Check | Result |
 |---|---|
-| `F:\RZP_program\my_project\ChainTogether\.venv\Scripts\python.exe -m unittest discover -s tests -q` | PASS: 88 tests, 1 skipped |
+| `F:\RZP_program\my_project\ChainTogether\.venv\Scripts\python.exe -m unittest discover -s tests -q` | PASS: 93 tests, 1 skipped |
 | `F:\RZP_program\my_project\ChainTogether\.venv\Scripts\python.exe -m compileall -q server tests` | PASS |
 | `F:\RZP_program\my_project\ChainTogether\.venv\Scripts\python.exe scripts\check-skills.py` | PASS: 13 Skills, 10 stages, 16 transitions |
 | `F:\RZP_program\my_project\ChainTogether\.venv\Scripts\python.exe scripts\sync-skills.py --check` | PASS: 26 provider mounts |
 | `F:\RZP_program\my_project\ChainTogether\.venv\Scripts\python.exe scripts\check-features.py` | PASS: 2 Features |
-| `npm test -- --run` | PASS: 9 files, 25 tests |
+| `npm test -- --run` | PASS: 9 files, 27 tests |
 | `npm run typecheck` | PASS |
 | `npm run build` | PASS: production Vite bundle built |
 | `git diff --check` | PASS |
@@ -69,6 +69,25 @@ cleared and the start checkpoint marked done.
 Frontend integration tests exercise the operator-facing entry: one sentence
 uses the dedicated Feature API rather than ordinary group `/send`, displays the
 Feature status, and retains the exact sentence after a preflight failure.
+
+## Independent Review repair verification
+
+The first independent Review of exact HEAD `848d2a7d4cad91aaff764bf49e8d8a277ae596fa`
+returned `request_changes` with seven reproducible findings. Each finding was
+first encoded as a failing regression test, then fixed. Fresh evidence covers:
+
+- rejection of Session-only transition for autonomous runs;
+- canonical Feature Doc delivery before any launch, including resume/startup;
+- startup exclusion of historical manual runs without FeatureStart authority;
+- durable owner/reviewer Review subphase recovery;
+- role-update rebinding of unlaunched dispatch revision and a successful
+  transition by the new owner;
+- stable exact-draft request key after a lost response;
+- explicit rejection of malformed `roles` control syntax.
+
+See `evidence/review-findings-848d2a7.md` and
+`evidence/tdd-review-fixes.md`. A new exact HEAD still requires approval from
+the same reviewer before Merge Gate.
 
 ## Gaps and residual risks
 

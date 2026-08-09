@@ -427,6 +427,12 @@ class FeatureManager:
     ) -> dict[str, Any]:
         """Transition using the server-owned group-session identity."""
         row = await self.get(run_id)
+        if await self._db().get_feature_start_for_run(run_id) is not None:
+            raise FeatureError(
+                "Autonomous FeatureRun transitions require the dispatch-bound "
+                "endpoint and exact active dispatch capability",
+                status_code=409,
+            )
         actor_agent_id = await self._db().get_group_agent_by_session(
             row["group_id"], actor_session_id
         )
