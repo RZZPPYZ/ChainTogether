@@ -85,9 +85,10 @@ first encoded as a failing regression test, then fixed. Fresh evidence covers:
 - stable exact-draft request key after a lost response;
 - explicit rejection of malformed `roles` control syntax.
 
-See `evidence/review-findings-848d2a7.md` and
-`evidence/tdd-review-fixes.md`. A new exact HEAD still requires approval from
-the same reviewer before Merge Gate.
+See `evidence/review-findings-848d2a7.md`, `evidence/tdd-review-fixes.md`, and
+`evidence/review-verdict-02e78e8.md`. The same reviewer approved exact
+implementation HEAD `02e78e89f716c24efca3a27dcffbd3e91530ad2b` after replaying
+all seven dispositions.
 
 ## Gaps and residual risks
 
