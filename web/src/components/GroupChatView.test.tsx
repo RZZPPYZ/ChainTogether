@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   GroupAgentRunBlock,
@@ -7,14 +7,53 @@ import {
   GroupMarkdown,
   buildGroupTimeline,
   highlightMentions,
+  parseGroupAgentMessage,
 } from "./GroupChatView";
 import {
   useSessionStore,
+  type Agent,
   type GroupInvocation,
   type Message,
 } from "../stores/sessionStore";
 
+const featureAgent = (id: string, name: string): Agent => ({
+  id,
+  name,
+  alias: name,
+  description: "",
+  system_prompt: "",
+  backend: "codex",
+  mcp_servers: [],
+  tool_allow: "",
+  tool_deny: "",
+  persona_ids: [],
+  is_system: false,
+  archived: false,
+  created_at: "2026-07-26T00:00:00Z",
+  updated_at: "2026-07-26T00:00:00Z",
+  active_session_count: 0,
+});
+
 describe("group mention highlighting", () => {
+  it("renders the durable feature request as the original slash command", () => {
+    expect(
+      parseGroupAgentMessage(
+        "[feature-request:run-1]\n\n/feature Build durable export",
+      ),
+    ).toMatchObject({
+      body: "/feature Build durable export",
+      isInvocation: false,
+    });
+    expect(
+      parseGroupAgentMessage(
+        "[feature-dispatch:dispatch-1]\n\nContinue FeatureRun run-1",
+      ),
+    ).toMatchObject({
+      body: "Continue FeatureRun run-1",
+      isInvocation: true,
+    });
+  });
+
   it("highlights canonical and alias handles without changing message text", () => {
     const { container } = render(
       <div>{highlightMentions("@Builder, ask @FENG.", ["Builder", "Feng"])}</div>,
@@ -247,5 +286,215 @@ describe("group message navigation", () => {
       behavior: "smooth",
       block: "center",
     });
+  });
+});
+
+describe("group feature command", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("routes one sentence to feature delivery instead of ordinary group send", async () => {
+    useSessionStore.setState({
+      token: "test-token",
+      agents: [
+        featureAgent("a", "Owner"),
+        featureAgent("b", "Reviewer"),
+        featureAgent("c", "Guardian"),
+      ],
+      activeGroupId: "group-1",
+      groups: [
+        {
+          id: "group-1",
+          name: "Build Team",
+          agentIds: ["a", "b", "c"],
+          createdAt: "2026-07-26T00:00:00Z",
+          sessionId: "group-session-1",
+          defaultAgentId: "a",
+          workingDir: "F:/workspace",
+        },
+      ],
+      messages: { "group-session-1": [] },
+      groupInvocations: { "group-1": [] },
+      groupTypingAgents: {},
+      groupStreamingReplies: {},
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/invocations")) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.endsWith("/feature-delivery/status")) {
+        return new Response(
+          JSON.stringify({
+            run: { id: "run-1", feature_id: "F001", stage: "discovery", state: "active" },
+            checkpoint_state: "running",
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.endsWith("/feature-delivery") && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            run: { id: "run-1", feature_id: "F001", stage: "discovery", state: "active" },
+            roles: {
+              owner: { id: "a", name: "Owner" },
+              reviewer: { id: "b", name: "Reviewer" },
+              vision_guardian: { id: "c", name: "Guardian" },
+            },
+            checkpoint_state: "running",
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<GroupChatView onToggleSidebar={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText(/Send a message/), {
+      target: { value: "/feature Build durable export" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/feature-delivery$/),
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).endsWith("/send")),
+    ).toBe(false);
+    expect(await screen.findByText("F001")).toBeTruthy();
+    const startCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith("/feature-delivery") && init?.method === "POST",
+    );
+    expect(JSON.parse(String(startCall?.[1]?.body))).toMatchObject({
+      requirement: "Build durable export",
+      priority: "P1",
+    });
+  });
+
+  it("shows roster preflight failure and preserves the exact draft", async () => {
+    useSessionStore.setState({
+      token: "test-token",
+      agents: [
+        featureAgent("a", "Owner"),
+        featureAgent("b", "Reviewer"),
+      ],
+      activeGroupId: "group-2",
+      groups: [
+        {
+          id: "group-2",
+          name: "Small Team",
+          agentIds: ["a", "b"],
+          createdAt: "2026-07-26T00:00:00Z",
+          sessionId: "group-session-2",
+          defaultAgentId: "a",
+          workingDir: "F:/workspace",
+        },
+      ],
+      messages: { "group-session-2": [] },
+      groupInvocations: { "group-2": [] },
+      groupTypingAgents: {},
+      groupStreamingReplies: {},
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/feature-delivery") && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({ detail: "Autonomous feature delivery requires at least three live group agents" }),
+          { status: 409, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify(url.endsWith("/invocations") ? [] : null), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const draft = "  /feature Build the export safely  ";
+
+    render(<GroupChatView onToggleSidebar={() => {}} />);
+    const composer = screen.getByPlaceholderText(/Send a message/) as HTMLTextAreaElement;
+    fireEvent.change(composer, { target: { value: draft } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByText(/at least three live group agents/)).toBeTruthy();
+    expect(composer.value).toBe(draft);
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).endsWith("/send")),
+    ).toBe(false);
+  });
+
+  it("reuses the start request key after a lost response", async () => {
+    useSessionStore.setState({
+      token: "test-token",
+      agents: [
+        featureAgent("a", "Owner"),
+        featureAgent("b", "Reviewer"),
+        featureAgent("c", "Guardian"),
+      ],
+      activeGroupId: "group-3",
+      groups: [
+        {
+          id: "group-3",
+          name: "Retry Team",
+          agentIds: ["a", "b", "c"],
+          createdAt: "2026-07-26T00:00:00Z",
+          sessionId: "group-session-3",
+          defaultAgentId: "a",
+          workingDir: "F:/workspace",
+        },
+      ],
+      messages: { "group-session-3": [] },
+      groupInvocations: { "group-3": [] },
+      groupTypingAgents: {},
+      groupStreamingReplies: {},
+    });
+    let starts = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/feature-delivery") && init?.method === "POST") {
+        starts += 1;
+        if (starts === 1) throw new Error("response lost");
+        return new Response(
+          JSON.stringify({
+            run: {
+              id: "run-retry",
+              feature_id: "F003",
+              stage: "discovery",
+              state: "active",
+            },
+            checkpoint_state: "running",
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify(url.endsWith("/invocations") ? [] : null), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const draft = "/feature Keep this start idempotent";
+
+    render(<GroupChatView onToggleSidebar={() => {}} />);
+    const composer = screen.getByPlaceholderText(/Send a message/) as HTMLTextAreaElement;
+    fireEvent.change(composer, { target: { value: draft } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    expect(await screen.findByText("response lost")).toBeTruthy();
+    expect(composer.value).toBe(draft);
+
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(starts).toBe(2));
+    await waitFor(() => expect(composer.value).toBe(""));
+    const startBodies = fetchMock.mock.calls
+      .filter(
+        ([url, init]) =>
+          String(url).endsWith("/feature-delivery") && init?.method === "POST",
+      )
+      .map(([, init]) => JSON.parse(String(init?.body)));
+    expect(startBodies[0].request_key).toBe(startBodies[1].request_key);
   });
 });

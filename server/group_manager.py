@@ -12,11 +12,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from .prompt_governance import GroupPromptGovernance, get_prompt_registry
-from .session_manager import resolve_working_dir
+from .session_manager import FeatureTurnAuthority, resolve_working_dir
 from .feature_manager import FeatureError
 
 if TYPE_CHECKING:
     from .database import Database
+    from .feature_delivery import FeatureDeliveryManager
     from .feature_manager import FeatureManager
     from .session_manager import SessionManager
 
@@ -227,6 +228,10 @@ class GroupRunState:
     group_session_id: str    # the backing group session (origin='group')
     invocation_id: str = ""
     feature_run_id: str | None = None
+    feature_dispatch_id: str | None = None
+    feature_dispatch_agent_id: str | None = None
+    feature_dispatch_capability: str | None = None
+    feature_dispatch_finalized: bool = False
     root_content: str = ""
     root_message_seq: int | None = None
     worklist: list[WorklistEntry] = field(default_factory=list)
@@ -513,6 +518,7 @@ class GroupManager:
         self.db: Database | None = None
         self.session_manager: SessionManager | None = None
         self.feature_manager: FeatureManager | None = None
+        self.feature_delivery_manager: FeatureDeliveryManager | None = None
         self.prompt_governance = GroupPromptGovernance()
         self._runs: dict[str, GroupRunState] = {}
         self._invocations: dict[str, GroupRunState] = {}
@@ -522,10 +528,12 @@ class GroupManager:
         session_mgr: "SessionManager",
         db: "Database",
         feature_mgr: "FeatureManager | None" = None,
+        feature_delivery_mgr: "FeatureDeliveryManager | None" = None,
     ) -> None:
         self.db = db
         self.session_manager = session_mgr
         self.feature_manager = feature_mgr
+        self.feature_delivery_manager = feature_delivery_mgr
 
     async def initialize_prompt_assets(self) -> None:
         """Materialize roster snapshots for every persisted group at startup."""
@@ -877,6 +885,134 @@ class GroupManager:
         self._ensure_worklist_runner(run, group)
         return self._invocation_view(run)
 
+    async def launch_feature_dispatch(
+        self,
+        *,
+        group_id: str,
+        feature_run_id: str,
+        dispatch_id: str,
+        target_agent_id: str,
+        target_role: str,
+        observed_stage: str,
+        requirement: str = "",
+        lease_token: str,
+        dispatch_capability: str,
+    ) -> dict[str, Any]:
+        """Launch one leased feature generation as a fresh group invocation.
+
+        Raw lease and dispatch capabilities remain in this in-memory call path;
+        the transcript contains only the opaque dispatch id and routing advice.
+        """
+        if not self.db or not self.session_manager:
+            raise RuntimeError("GroupManager not initialized")
+        if self.feature_delivery_manager is None:
+            raise GroupError(
+                "Feature delivery runtime is not initialized", status_code=503
+            )
+        group = await self.db.get_group(group_id)
+        if group is None:
+            raise GroupError("Group not found", status_code=404)
+        run_row = await self.db.get_feature_run(feature_run_id)
+        if run_row is None or run_row["group_id"] != group_id:
+            raise GroupError("FeatureRun is not bound to this group", status_code=409)
+        if str(run_row["stage"]) != observed_stage:
+            raise GroupError(
+                "FeatureRun changed before dispatch launch", status_code=409
+            )
+        target = await self.db.get_agent(target_agent_id)
+        if not isinstance(target, dict) or target_agent_id not in group["agent_ids"]:
+            raise GroupError(
+                "Feature dispatch target is not a live group member",
+                status_code=409,
+            )
+
+        group_session_id = group.get("session_id")
+        if not group_session_id:
+            base_run = await self._ensure_run_state(group_id)
+            group_session_id = base_run.group_session_id
+        content = (
+            f"[feature-dispatch:{dispatch_id}]\n\n"
+            f"Continue FeatureRun {feature_run_id} at stage {observed_stage} "
+            f"as its assigned {target_role}. Read the injected lifecycle "
+            "context, load the suggested Skill, produce its required output, "
+            "then use the Feature MCP to commit the next lifecycle handoff. "
+            "End this turn after the MCP confirms that handoff."
+        )
+        invocation_id = uuid.uuid4().hex[:12]
+        created_at = datetime.now(timezone.utc).isoformat()
+        await self.db.create_group_invocation(
+            invocation_id,
+            group_id,
+            content,
+            created_at,
+            feature_run_id=feature_run_id,
+        )
+        try:
+            await self.feature_delivery_manager.activate_dispatch(
+                dispatch_id,
+                lease_token=lease_token,
+                invocation_id=invocation_id,
+            )
+        except Exception:
+            await self.db.update_group_invocation(
+                invocation_id,
+                status="failed",
+                custody_state="dead",
+                error="Feature dispatch activation failed.",
+                updated_at=datetime.now(timezone.utc).isoformat(),
+                completed_at=datetime.now(timezone.utc).isoformat(),
+            )
+            raise
+
+        try:
+            request_marker = f"[feature-request:{feature_run_id}]"
+            prior_messages = await self.db.load_messages(group_session_id)
+            if requirement and not any(
+                str(message.get("content") or "").startswith(request_marker)
+                for message in prior_messages
+            ):
+                await self.session_manager.inject_message(
+                    group_session_id,
+                    "user",
+                    f"{request_marker}\n\n/feature {requirement}",
+                )
+            root_message_seq = await self.session_manager.inject_message(
+                group_session_id, "user", content
+            )
+        except Exception:
+            await self.feature_delivery_manager.complete_dispatch_invocation(
+                dispatch_id,
+                invocation_id,
+                terminal_status="message_injection_failed",
+            )
+            raise
+        run = GroupRunState(
+            group_id=group_id,
+            group_session_id=group_session_id,
+            invocation_id=invocation_id,
+            feature_run_id=feature_run_id,
+            feature_dispatch_id=dispatch_id,
+            feature_dispatch_agent_id=target_agent_id,
+            feature_dispatch_capability=dispatch_capability,
+            root_content=content,
+            root_message_seq=root_message_seq,
+            created_at=created_at,
+            updated_at=created_at,
+            pending=[
+                MentionWorkItem(
+                    agent=target,
+                    current_message=content,
+                    current_message_seq=root_message_seq,
+                    current_source="Feature control plane",
+                )
+            ],
+        )
+        await self._transition_invocation(run, "invocation_started")
+        self._runs[group_id] = run
+        self._invocations[invocation_id] = run
+        self._ensure_worklist_runner(run, group)
+        return self._invocation_view(run)
+
     def _ensure_worklist_runner(
         self, run: GroupRunState, group: dict[str, Any],
     ) -> None:
@@ -1095,6 +1231,21 @@ class GroupManager:
                 agent_id=agent_id,
                 agent_name=agent_name,
                 invocation_id=run.invocation_id or None,
+                feature_run_id=(
+                    run.feature_run_id
+                    if run.feature_dispatch_agent_id == agent_id
+                    else None
+                ),
+                feature_dispatch_id=(
+                    run.feature_dispatch_id
+                    if run.feature_dispatch_agent_id == agent_id
+                    else None
+                ),
+                feature_dispatch_capability=(
+                    run.feature_dispatch_capability
+                    if run.feature_dispatch_agent_id == agent_id
+                    else None
+                ),
             )
             if current_message_seq is not None:
                 highwater = max(highwater, current_message_seq)
@@ -1526,6 +1677,9 @@ class GroupManager:
         agent_id: str | None = None,
         agent_name: str,
         invocation_id: str | None = None,
+        feature_run_id: str | None = None,
+        feature_dispatch_id: str | None = None,
+        feature_dispatch_capability: str | None = None,
     ) -> AgentTurnResult:
         """Drive one member turn and persist its execution timeline."""
         reply_parts: list[str] = []
@@ -1553,8 +1707,21 @@ class GroupManager:
 
         await record("started")
         try:
+            feature_authority = None
+            if (
+                feature_run_id is not None
+                and feature_dispatch_id is not None
+                and feature_dispatch_capability is not None
+            ):
+                feature_authority = FeatureTurnAuthority(
+                    feature_run_id=feature_run_id,
+                    dispatch_id=feature_dispatch_id,
+                    dispatch_capability=feature_dispatch_capability,
+                )
             async for event in self.session_manager.send_message(
-                reuse_session_id, prompt
+                reuse_session_id,
+                prompt,
+                feature_turn_authority=feature_authority,
             ):
                 etype = event.get("type")
                 if etype == "thinking":
@@ -1993,6 +2160,28 @@ class GroupManager:
                 completed_at=now if terminal else None,
             )
             await self._broadcast_invocation(run)
+        if (
+            terminal
+            and run.feature_dispatch_id
+            and not run.feature_dispatch_finalized
+            and self.feature_delivery_manager is not None
+        ):
+            run.feature_dispatch_finalized = True
+            try:
+                await self.feature_delivery_manager.complete_dispatch_invocation(
+                    run.feature_dispatch_id,
+                    run.invocation_id,
+                    terminal_status=run.status,
+                )
+                if run.feature_run_id:
+                    await self.feature_delivery_manager.drive_pending(
+                        run.feature_run_id
+                    )
+            except Exception:
+                logger.exception(
+                    "Feature dispatch %s terminal callback failed",
+                    run.feature_dispatch_id,
+                )
 
     async def _broadcast_invocation(self, run: GroupRunState) -> None:
         if not self.session_manager or not run.invocation_id:
@@ -2195,6 +2384,7 @@ class GroupManager:
             group_session_id=session_id,
             invocation_id=row["id"],
             feature_run_id=row.get("feature_run_id"),
+            feature_dispatch_id=row.get("feature_dispatch_id"),
             root_content=row["root_content"],
             status=row["status"],
             custody_state=row["custody_state"],

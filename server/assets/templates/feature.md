@@ -6,8 +6,8 @@ stage: discovery
 state: active
 priority: {{PRIORITY}}
 owner: "{{OWNER}}"
-reviewer: ""
-vision_guardian: ""
+reviewer: "{{REVIEWER}}"
+vision_guardian: "{{VISION_GUARDIAN}}"
 origin_kind: "{{ORIGIN_KIND}}"
 origin_group_id: "{{GROUP_ID}}"
 origin_message_seq: {{MESSAGE_SEQ}}

@@ -258,6 +258,9 @@ class RunConfig:
 
     session_id: str | None = None
     session_capability: str | None = None
+    feature_run_id: str | None = None
+    feature_dispatch_id: str | None = None
+    feature_dispatch_capability: str | None = None
     system_prompt: str | None = None   # agent persona
     # Highest-priority host governance, appended after tools/connectors/memory.
     governance_prompt: str | None = None
@@ -313,7 +316,13 @@ class HarnessRun:
         # grandchildren inherit cwd, so a relative path would be double-resolved.
         abs_wd = str(Path(working_dir).resolve())
         callback_env = assembly.build_callback_env(
-            self._config.session_id, self._config.session_capability
+            self._config.session_id,
+            self._config.session_capability,
+            feature_run_id=self._config.feature_run_id,
+            feature_dispatch_id=self._config.feature_dispatch_id,
+            feature_dispatch_capability=(
+                self._config.feature_dispatch_capability
+            ),
         )
         mcp_servers = assembly.select_mcp_servers(
             self._config.mcp_servers, self._config.connectors, callback_env

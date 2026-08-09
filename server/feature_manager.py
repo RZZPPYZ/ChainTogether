@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import logging
+import os
 import re
 import subprocess
 import uuid
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .database import Database
+from .harness import has_backend
 from .prompt_governance import get_prompt_registry
 
 
@@ -104,6 +106,97 @@ class FeatureManager:
         number = max(used, default=0) + 1
         return f"F{number:03d}"
 
+    @staticmethod
+    def _render_initial_document(
+        *,
+        feature_id: str,
+        title: str,
+        priority: str,
+        owner_agent_id: str,
+        reviewer_agent_id: str,
+        vision_guardian_agent_id: str,
+        group_id: str,
+        origin_message_seq: int | None,
+        created_at: str,
+        operator_quote: str,
+    ) -> str:
+        substitutions = {
+            "FEATURE_ID": feature_id,
+            "TITLE": json.dumps(title, ensure_ascii=False)[1:-1],
+            "PRIORITY": priority,
+            "OWNER": json.dumps(owner_agent_id, ensure_ascii=False)[1:-1],
+            "REVIEWER": json.dumps(reviewer_agent_id, ensure_ascii=False)[1:-1],
+            "VISION_GUARDIAN": json.dumps(
+                vision_guardian_agent_id, ensure_ascii=False
+            )[1:-1],
+            "ORIGIN_KIND": "group_message",
+            "GROUP_ID": group_id,
+            "MESSAGE_SEQ": (
+                str(origin_message_seq)
+                if origin_message_seq is not None
+                else "null"
+            ),
+            "CREATED_AT": created_at,
+            "OPERATOR_QUOTE": json.dumps(
+                operator_quote.strip(), ensure_ascii=False
+            )[1:-1],
+        }
+        template = _TEMPLATE_PATH.read_text(encoding="utf-8")
+        for key, value in substitutions.items():
+            template = template.replace("{{" + key + "}}", value)
+        return template
+
+    async def prepare_autonomous_start(
+        self,
+        group: dict[str, Any],
+        *,
+        title: str,
+        priority: str,
+        owner_agent_id: str,
+        reviewer_agent_id: str,
+        vision_guardian_agent_id: str,
+        operator_quote: str,
+        origin_message_seq: int | None,
+        created_at: str,
+    ) -> dict[str, Any]:
+        """Render initial Feature truth without touching DB or filesystem."""
+        workflow = self._load_workflow(str(group["working_dir"]))
+        feature_id = await self._next_feature_id(str(group["working_dir"]))
+        relative_path = (
+            Path("docs")
+            / "features"
+            / f"{feature_id}-{self._slug(title)}"
+            / "feature.md"
+        )
+        absolute_path = Path(str(group["working_dir"])) / relative_path
+        if absolute_path.exists():
+            raise FeatureError(
+                f"Feature document already exists: {absolute_path}",
+                status_code=409,
+            )
+        initial_stage = str(workflow.get("initial_stage", "discovery"))
+        stage_spec = workflow["stages"].get(initial_stage) or {}
+        content = self._render_initial_document(
+            feature_id=feature_id,
+            title=title,
+            priority=priority,
+            owner_agent_id=owner_agent_id,
+            reviewer_agent_id=reviewer_agent_id,
+            vision_guardian_agent_id=vision_guardian_agent_id,
+            group_id=str(group["id"]),
+            origin_message_seq=origin_message_seq,
+            created_at=created_at,
+            operator_quote=operator_quote,
+        )
+        return {
+            "feature_id": feature_id,
+            "feature_doc_path": relative_path.as_posix(),
+            "feature_doc_absolute_path": str(absolute_path),
+            "document_content": content,
+            "stage": initial_stage,
+            "current_gate": stage_spec.get("gate"),
+        }
+
     async def _validate_agent_role(
         self, group: dict[str, Any], agent_id: str | None, role: str
     ) -> None:
@@ -165,6 +258,8 @@ class FeatureManager:
             "TITLE": json.dumps(title, ensure_ascii=False)[1:-1],
             "PRIORITY": priority,
             "OWNER": json.dumps(owner, ensure_ascii=False)[1:-1],
+            "REVIEWER": "",
+            "VISION_GUARDIAN": "",
             "ORIGIN_KIND": "group_message",
             "GROUP_ID": group_id,
             "MESSAGE_SEQ": (
@@ -332,6 +427,12 @@ class FeatureManager:
     ) -> dict[str, Any]:
         """Transition using the server-owned group-session identity."""
         row = await self.get(run_id)
+        if await self._db().get_feature_start_for_run(run_id) is not None:
+            raise FeatureError(
+                "Autonomous FeatureRun transitions require the dispatch-bound "
+                "endpoint and exact active dispatch capability",
+                status_code=409,
+            )
         actor_agent_id = await self._db().get_group_agent_by_session(
             row["group_id"], actor_session_id
         )
@@ -350,6 +451,166 @@ class FeatureManager:
             revision=revision,
         )
 
+    async def transition_for_dispatch(
+        self,
+        run_id: str,
+        actor_session_id: str,
+        *,
+        dispatch_id: str,
+        dispatch_capability: str,
+        to_stage: str,
+        result: str = "",
+        reason: str = "",
+        evidence_refs: list[str] | None = None,
+        revision: str = "",
+    ) -> dict[str, Any]:
+        """Transition with Session identity plus exact invocation generation."""
+        row = await self.get(run_id)
+        actor_agent_id = await self._db().get_group_agent_by_session(
+            row["group_id"], actor_session_id
+        )
+        if actor_agent_id is None:
+            raise FeatureError(
+                "Actor session is not bound to this FeatureRun group",
+                status_code=403,
+            )
+        eligible = {
+            member["id"]
+            for member in await self._db().list_live_group_members(row["group_id"])
+            if has_backend(member.get("backend"))
+        }
+        if actor_agent_id not in eligible:
+            raise FeatureError(
+                "Assigned Feature actor is no longer a live group member with "
+                "an available backend",
+                status_code=409,
+            )
+        if not dispatch_id or not dispatch_capability:
+            raise FeatureError("Feature dispatch capability is required", status_code=403)
+        return await self.transition(
+            run_id,
+            to_stage=to_stage,
+            result=result,
+            actor_agent_id=actor_agent_id,
+            reason=reason,
+            evidence_refs=evidence_refs,
+            revision=revision,
+            _dispatch_authority={
+                "dispatch_id": dispatch_id,
+                "actor_agent_id": actor_agent_id,
+                "capability_hash": hashlib.sha256(
+                    dispatch_capability.encode("utf-8")
+                ).hexdigest(),
+            },
+        )
+
+    async def request_review_for_dispatch(
+        self,
+        run_id: str,
+        actor_session_id: str,
+        *,
+        dispatch_id: str,
+        dispatch_capability: str,
+        reason: str,
+        evidence_refs: list[str] | None = None,
+        revision: str = "",
+    ) -> dict[str, Any]:
+        """Commit the Review-preparation handoff from owner to reviewer."""
+        row = await self.get(run_id)
+        if row["stage"] != "review" or row["state"] == "done":
+            raise FeatureError(
+                "request_review requires an active FeatureRun in review",
+                status_code=409,
+            )
+        actor_agent_id = await self._db().get_group_agent_by_session(
+            row["group_id"], actor_session_id
+        )
+        if actor_agent_id != row["owner_agent_id"]:
+            raise FeatureError(
+                "Only the assigned feature owner may request independent review",
+                status_code=403,
+            )
+        if not dispatch_id or not dispatch_capability:
+            raise FeatureError(
+                "Feature dispatch capability is required", status_code=403
+            )
+        eligible = {
+            member["id"]
+            for member in await self._db().list_live_group_members(row["group_id"])
+            if has_backend(member.get("backend"))
+        }
+        reviewer_agent_id = row["reviewer_agent_id"]
+        if reviewer_agent_id not in eligible:
+            raise FeatureError(
+                "Assigned reviewer is not a live group member with an available "
+                "backend; correct roles before requesting review",
+                status_code=409,
+            )
+        evidence = self._validate_evidence_refs(row, evidence_refs or [])
+        if not evidence:
+            raise FeatureError("request_review requires evidence_refs")
+        resolved_revision = self._git_commit(row["working_dir"], revision)
+        current_head = self._git_head(row["working_dir"])
+        if resolved_revision is None or current_head != resolved_revision:
+            raise FeatureError(
+                "request_review revision must resolve to the current Git HEAD"
+            )
+
+        updated_at = _now()
+        artifact_refs = list(dict.fromkeys([*row["artifact_refs"], *evidence]))
+        doc_path, doc_content, doc_base_hash = await self._prepare_doc_sync(
+            row,
+            {"stage": "review", "state": "active", "updated_at": updated_at},
+        )
+        transitioned = await self._db().transition_feature_run(
+            run_id,
+            expected_stage="review",
+            expected_updated_at=row["updated_at"],
+            fields={
+                "stage": "review",
+                "state": "active",
+                "current_gate": row["current_gate"],
+                "artifact_refs": artifact_refs,
+                "updated_at": updated_at,
+                "completed_at": None,
+            },
+            from_stage="review",
+            to_stage="review",
+            result="review_requested",
+            actor_agent_id=actor_agent_id,
+            reason=reason.strip(),
+            evidence_refs=evidence,
+            revision=resolved_revision,
+            created_at=updated_at,
+            feature_doc_path=str(doc_path),
+            document_content=doc_content,
+            document_base_hash=doc_base_hash,
+            dispatch_authority={
+                "dispatch_id": dispatch_id,
+                "actor_agent_id": actor_agent_id,
+                "capability_hash": hashlib.sha256(
+                    dispatch_capability.encode("utf-8")
+                ).hexdigest(),
+            },
+            successor_dispatch={
+                "id": uuid.uuid4().hex[:16],
+                "purpose": "review_request",
+                "target_role": "reviewer",
+                "target_agent_id": reviewer_agent_id,
+            },
+            precondition=lambda: (
+                self._assert_document_baseline(doc_path, doc_base_hash),
+                self._assert_git_head(row["working_dir"], resolved_revision),
+            ),
+        )
+        if not transitioned:
+            raise FeatureError(
+                "Feature dispatch is stale, consumed, or not authorized",
+                status_code=409,
+            )
+        await self._flush_doc_sync(run_id)
+        return await self.get(run_id)
+
     async def transition(
         self,
         run_id: str,
@@ -360,6 +621,7 @@ class FeatureManager:
         reason: str = "",
         evidence_refs: list[str] | None = None,
         revision: str = "",
+        _dispatch_authority: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         row = await self.get(run_id)
         if row["state"] == "done":
@@ -411,6 +673,11 @@ class FeatureManager:
                 raise FeatureError(
                     "Only the assigned vision guardian may issue an acceptance verdict"
                 )
+        elif row["stage"] != "review" and actor_agent_id is not None:
+            if actor_agent_id != row["owner_agent_id"]:
+                raise FeatureError(
+                    "Only the assigned feature owner may act in this stage"
+                )
 
         evidence = self._validate_evidence_refs(row, evidence_refs or [])
         edge = f"{row['stage']}->{to_stage}"
@@ -422,6 +689,43 @@ class FeatureManager:
         state = "done" if to_stage in workflow.get("terminal_stages", []) else "active"
         completed_at = updated_at if state == "done" else None
         stage_spec = stages.get(to_stage) or {}
+        successor_dispatch: dict[str, str] | None = None
+        if _dispatch_authority is not None and state != "done":
+            if row["stage"] == "quality" and to_stage == "review":
+                target_role = "owner"
+                target_agent_id = row["owner_agent_id"]
+            elif to_stage == "review":
+                target_role = "reviewer"
+                target_agent_id = row["reviewer_agent_id"]
+            elif to_stage == "acceptance":
+                target_role = "vision_guardian"
+                target_agent_id = row["vision_guardian_agent_id"]
+            else:
+                target_role = "owner"
+                target_agent_id = row["owner_agent_id"]
+            if not isinstance(target_agent_id, str):
+                raise FeatureError(
+                    f"Feature transition requires an assigned {target_role}"
+                )
+            eligible = {
+                member["id"]
+                for member in await self._db().list_live_group_members(
+                    row["group_id"]
+                )
+                if has_backend(member.get("backend"))
+            }
+            if target_agent_id not in eligible:
+                raise FeatureError(
+                    f"Assigned {target_role} is not a live group member with "
+                    "an available backend; correct roles before transition",
+                    status_code=409,
+                )
+            successor_dispatch = {
+                "id": uuid.uuid4().hex[:16],
+                "purpose": "stage",
+                "target_role": target_role,
+                "target_agent_id": target_agent_id,
+            }
         artifact_refs = list(dict.fromkeys([*row["artifact_refs"], *evidence]))
         doc_path, doc_content, doc_base_hash = await self._prepare_doc_sync(
             row,
@@ -467,6 +771,8 @@ class FeatureManager:
             feature_doc_path=str(doc_path),
             document_content=doc_content,
             document_base_hash=doc_base_hash,
+            dispatch_authority=_dispatch_authority,
+            successor_dispatch=successor_dispatch,
             clear_active_group_id=row["group_id"] if state == "done" else None,
             precondition=lambda: self._assert_transition_precondition(
                 row,
@@ -477,6 +783,12 @@ class FeatureManager:
             ),
         )
         if not transitioned:
+            if _dispatch_authority is not None:
+                raise FeatureError(
+                    "Stale, consumed, or invalid feature dispatch; stop this "
+                    "turn and reload status",
+                    status_code=409,
+                )
             raise FeatureError(
                 "Stale feature transition; stage changed concurrently",
                 status_code=409,
@@ -487,6 +799,51 @@ class FeatureManager:
     async def list_events(self, run_id: str) -> list[dict[str, Any]]:
         await self.get(run_id)
         return await self._db().list_feature_run_events(run_id)
+
+    async def routing_packet(
+        self, run_id: str, *, agent_id: str | None = None
+    ) -> dict[str, Any]:
+        row = await self.get(run_id)
+        workflow = self._load_workflow(row["working_dir"])
+        stage_spec = workflow["stages"][row["stage"]]
+        role = "operator"
+        if agent_id == row["owner_agent_id"]:
+            role = "owner"
+        elif agent_id == row["reviewer_agent_id"]:
+            role = "reviewer"
+        elif agent_id == row["vision_guardian_agent_id"]:
+            role = "vision_guardian"
+        role_skills = stage_spec.get("skills_by_role")
+        if isinstance(role_skills, dict):
+            skills = role_skills.get(role, [])
+        else:
+            skills = stage_spec.get("skills")
+            if not isinstance(skills, list):
+                skills = [stage_spec["skill"]] if stage_spec.get("skill") else []
+        if row["stage"] == "review":
+            required_role = "reviewer"
+            required_agent_id = row["reviewer_agent_id"]
+        elif row["stage"] == "acceptance":
+            required_role = "vision_guardian"
+            required_agent_id = row["vision_guardian_agent_id"]
+        else:
+            required_role = "owner"
+            required_agent_id = row["owner_agent_id"]
+        return {
+            "feature_run_id": row["id"],
+            "feature_id": row["feature_id"],
+            "stage": row["stage"],
+            "state": row["state"],
+            "role": role,
+            "suggested_skills": list(skills) if isinstance(skills, list) else [],
+            "next_step": str(stage_spec.get("next_step") or ""),
+            "gate": stage_spec.get("gate"),
+            "canonical_doc": row["feature_doc_path"],
+            "required_actor": {
+                "role": required_role,
+                "agent_id": required_agent_id,
+            },
+        }
 
     async def render_turn_context(
         self, run_id: str, group_id: str, agent_id: str
@@ -577,6 +934,18 @@ class FeatureManager:
             if temporary.exists():
                 temporary.unlink()
 
+    @staticmethod
+    def _write_doc_create_only(path: Path, content: str) -> None:
+        """Publish a complete document without ever replacing an existing one."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_text(content, encoding="utf-8")
+            os.link(temporary, path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
     def _assert_document_baseline(
         self, path: Path, expected_hash: str
     ) -> None:
@@ -611,13 +980,50 @@ class FeatureManager:
                 f"Transition {edge} Git HEAD changed before commit"
             )
 
+    def _assert_git_head(self, working_dir: str, revision: str) -> None:
+        if self._git_head(working_dir) != revision:
+            raise FeatureError("Git HEAD changed before review handoff commit")
+
     async def _flush_doc_sync(self, run_id: str) -> bool:
         def deliver(pending: dict[str, str]) -> bool:
             path = Path(pending["feature_doc_path"])
+            desired_hash = self._document_hash(pending["content"])
+            if pending.get("sync_mode", "update") == "create_only":
+                try:
+                    disk_content = path.read_text(encoding="utf-8-sig")
+                except FileNotFoundError:
+                    try:
+                        self._write_doc_create_only(path, pending["content"])
+                    except FileExistsError:
+                        try:
+                            disk_content = path.read_text(encoding="utf-8-sig")
+                        except OSError:
+                            return False
+                        return self._document_hash(disk_content) == desired_hash
+                    except OSError:
+                        logger.exception(
+                            "Feature %s create-only document sync remains pending",
+                            run_id,
+                        )
+                        return False
+                    return True
+                except OSError:
+                    logger.exception(
+                        "Feature %s create-only document sync remains pending",
+                        run_id,
+                    )
+                    return False
+                if self._document_hash(disk_content) != desired_hash:
+                    logger.error(
+                        "Feature %s create-only document conflicts with an "
+                        "existing file",
+                        run_id,
+                    )
+                    return False
+                return True
             try:
                 disk_content = path.read_text(encoding="utf-8-sig")
                 disk_hash = self._document_hash(disk_content)
-                desired_hash = self._document_hash(pending["content"])
                 if disk_hash != desired_hash:
                     if (
                         not pending["base_hash"]
@@ -637,6 +1043,9 @@ class FeatureManager:
             return True
 
         return await self._db().deliver_feature_doc_sync(run_id, deliver)
+
+    async def deliver_pending_document(self, run_id: str) -> bool:
+        return await self._flush_doc_sync(run_id)
 
     async def reconcile_document_syncs(self) -> None:
         for pending in await self._db().list_feature_doc_syncs():

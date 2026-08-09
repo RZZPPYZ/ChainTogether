@@ -19,6 +19,8 @@ message; the linked FeatureRun owns product progress across all invocations.
 | One group-message custody chain | `group_invocations` | in-memory `GroupRunState` |
 | Feature ↔ invocation relation | `feature_invocation_links` | `feature_run_id` in API responses |
 | Group's current Feature | `group_active_features` | D14 `update-workflow-sop` block on every routed turn |
+| Autonomous start checkpoint | `feature_start_requests` | request-key idempotency, authorization, blocker |
+| Feature dispatch custody | `feature_dispatches` | revision, generation, target, lease, predecessor/successor, capability hash |
 
 Do not edit `.claude/skills/` or `.codex/skills/` directly. They are generated
 provider views. Claude Code and Codex therefore consume the same skill text,
@@ -77,6 +79,37 @@ stage with a reason; it never silently edits history to look linear.
 
 ## Group operation
 
+The primary autonomous entry is `/feature <requirement>` in a group with at
+least three distinct, non-archived Agents whose backends are registered. The
+server validates the roster before side effects, deterministically assigns
+owner, reviewer, and vision guardian, and atomically commits request-key
+idempotency, the FeatureRun, all roles, the active pointer, created event,
+create-only Feature Doc image, policy-bounded authorization, and initial
+dispatch. The original slash command is recorded once in the group timeline.
+
+Use `/feature status`, `/feature resume`, or
+`/feature roles owner=@... reviewer=@... guardian=@...` to inspect or repair
+the run. Role changes are operator-only and retarget only safe unlaunched
+dispatches; Agents cannot assign themselves through MCP.
+
+Each pending FeatureDispatch launches a fresh depth-zero GroupInvocation for
+its exact target. Claude Code and Codex always receive the mandatory Feature
+MCP. `status` is Session-bound and read-only; `transition` and
+`request_review` additionally require the one-time capability for that exact
+dispatch generation. Raw capabilities exist only in the assigned child-turn
+environment, never in DB rows, logs, argv, or MCP config. The exact predecessor
+terminal callback promotes its waiting successor and the scheduler launches
+the next role.
+
+Review is deliberately two-step: `quality -> review` first schedules the owner
+to build a SHA-bound packet with `request-review`; the owner's explicit
+`request_review` MCP call then schedules the independent reviewer. Review
+fixes, re-review, merge, vision, and closure use new generations rather than
+sharing one A2A depth budget.
+
+The following low-level APIs remain available for manual lifecycle operation;
+they do not replace the autonomous dispatch/capability path above:
+
 1. Create a FeatureRun with `POST /api/groups/{group_id}/features`. This creates
    the next canonical `FNNN` dossier and makes it the group's current Feature.
 2. Assign distinct `owner_agent_id`, `reviewer_agent_id`, and
@@ -110,10 +143,11 @@ transaction. A durable outbox retries document delivery after a process or
 filesystem failure, so the database and canonical dossier converge without
 accepting the same transition twice.
 
-D14 is a per-turn advisory signboard, not a scheduler: it tells the Agent where
-the group is and which skill fits its assigned role, while leaving execution and
-handoff decisions to the Agent. Completing a FeatureRun clears it as the group's
-current Feature so stale work is not injected into later turns.
+D14 is the per-turn routing contract: it tells the exact scheduled Agent where
+the group is, which Skill fits its role, what output is required, and the next
+gate. `FeatureDeliveryManager` owns durable scheduling, successor launch, and
+restart reconciliation. Completing a FeatureRun clears the active pointer;
+group status still returns the latest terminal run for audit.
 
 Skill discovery happens before a Skill body is loaded. Therefore every
 lifecycle Skill frontmatter `description` carries its complete `Use when:`,

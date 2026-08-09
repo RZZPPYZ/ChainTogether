@@ -503,6 +503,79 @@ CREATE TABLE IF NOT EXISTS feature_run_events (
 CREATE INDEX IF NOT EXISTS idx_feature_run_events_run
   ON feature_run_events(feature_run_id, id);
 
+-- The durable half of `/feature <requirement>`. The row is written in the
+-- same transaction as its FeatureRun, roles, active pointer, document image,
+-- and initial dispatch so retrying a client request can return one checkpoint.
+CREATE TABLE IF NOT EXISTS feature_start_requests (
+    request_key TEXT PRIMARY KEY,
+    group_id TEXT NOT NULL,
+    feature_run_id TEXT NOT NULL UNIQUE,
+    requirement TEXT NOT NULL,
+    requirement_hash TEXT NOT NULL,
+    authorization TEXT NOT NULL DEFAULT '{}',
+    state TEXT NOT NULL CHECK (
+      state IN ('doc_pending', 'dispatch_pending', 'running', 'blocked', 'done')
+    ),
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (feature_run_id) REFERENCES feature_runs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_feature_start_requests_group
+  ON feature_start_requests(group_id, updated_at DESC);
+
+-- A dispatch is one revision-bound invitation for one FeatureRun actor. It is
+-- deliberately separate from group_invocations: each successor launches a
+-- fresh depth-zero invocation while FeatureRun remains the lifecycle truth.
+CREATE TABLE IF NOT EXISTS feature_dispatches (
+    id TEXT PRIMARY KEY,
+    feature_run_id TEXT NOT NULL,
+    observed_stage TEXT NOT NULL,
+    observed_revision TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK (generation > 0),
+    target_role TEXT NOT NULL CHECK (
+      target_role IN ('owner', 'reviewer', 'vision_guardian')
+    ),
+    target_agent_id TEXT NOT NULL,
+    predecessor_dispatch_id TEXT,
+    state TEXT NOT NULL CHECK (
+      state IN (
+        'pending', 'leased', 'active', 'handoff_committed', 'waiting',
+        'completed', 'failed', 'superseded'
+      )
+    ),
+    lease_owner TEXT,
+    lease_token_hash TEXT,
+    lease_expires_at TEXT,
+    capability_hash TEXT NOT NULL,
+    invocation_id TEXT UNIQUE,
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(feature_run_id, observed_revision, purpose, generation),
+    FOREIGN KEY (feature_run_id) REFERENCES feature_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY (target_agent_id) REFERENCES agents(id) ON DELETE RESTRICT,
+    FOREIGN KEY (predecessor_dispatch_id) REFERENCES feature_dispatches(id)
+      ON DELETE SET NULL,
+    FOREIGN KEY (invocation_id) REFERENCES group_invocations(id)
+      ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_feature_dispatches_run
+  ON feature_dispatches(feature_run_id, generation, created_at);
+CREATE INDEX IF NOT EXISTS idx_feature_dispatches_state
+  ON feature_dispatches(state, lease_expires_at, updated_at);
+CREATE UNIQUE INDEX IF NOT EXISTS feature_dispatches_one_invocation_bearing
+  ON feature_dispatches(feature_run_id)
+  WHERE state IN ('leased', 'active', 'handoff_committed');
+CREATE UNIQUE INDEX IF NOT EXISTS feature_dispatches_one_unlaunched
+  ON feature_dispatches(feature_run_id)
+  WHERE state IN ('pending', 'waiting');
+
 -- Transactional outbox for the canonical Feature Doc. A FeatureRun transition
 -- and its exact target document content commit together; filesystem delivery
 -- is retried after crashes instead of leaving DB and document truth divergent.
@@ -511,6 +584,8 @@ CREATE TABLE IF NOT EXISTS feature_doc_syncs (
     feature_doc_path TEXT NOT NULL,
     content TEXT NOT NULL,
     base_hash TEXT NOT NULL,
+    sync_mode TEXT NOT NULL DEFAULT 'update'
+      CHECK (sync_mode IN ('create_only', 'update')),
     updated_at TEXT NOT NULL,
     FOREIGN KEY (feature_run_id) REFERENCES feature_runs(id) ON DELETE CASCADE
 );
@@ -518,8 +593,10 @@ CREATE TABLE IF NOT EXISTS feature_doc_syncs (
 CREATE TABLE IF NOT EXISTS feature_invocation_links (
     invocation_id TEXT PRIMARY KEY,
     feature_run_id TEXT NOT NULL,
+    dispatch_id TEXT UNIQUE,
     FOREIGN KEY (invocation_id) REFERENCES group_invocations(id) ON DELETE CASCADE,
-    FOREIGN KEY (feature_run_id) REFERENCES feature_runs(id) ON DELETE CASCADE
+    FOREIGN KEY (feature_run_id) REFERENCES feature_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY (dispatch_id) REFERENCES feature_dispatches(id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_feature_invocation_links_run
@@ -645,6 +722,22 @@ class Database:
                 "ALTER TABLE feature_doc_syncs ADD COLUMN "
                 "base_hash TEXT NOT NULL DEFAULT ''"
             )
+        if not await self._has_column("feature_doc_syncs", "sync_mode"):
+            await self._conn.execute(
+                "ALTER TABLE feature_doc_syncs ADD COLUMN "
+                "sync_mode TEXT NOT NULL DEFAULT 'update' "
+                "CHECK (sync_mode IN ('create_only', 'update'))"
+            )
+        if not await self._has_column("feature_invocation_links", "dispatch_id"):
+            await self._conn.execute(
+                "ALTER TABLE feature_invocation_links ADD COLUMN dispatch_id TEXT"
+            )
+        await self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "feature_invocation_links_dispatch_unique "
+            "ON feature_invocation_links(dispatch_id) "
+            "WHERE dispatch_id IS NOT NULL"
+        )
         cursor = await self._conn.execute(
             "SELECT feature_run_id, feature_doc_path FROM feature_doc_syncs "
             "WHERE base_hash = ''"
@@ -989,6 +1082,29 @@ class Database:
         rows = await cursor.fetchall()
         return [r[0] for r in rows]
 
+    async def list_live_group_members(
+        self, group_id: str,
+    ) -> list[dict[str, str]]:
+        """Return stable, dispatch-eligible members for role resolution."""
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT a.id, a.name, gm.joined_at, a.backend "
+            "FROM group_members gm "
+            "JOIN agents a ON a.id = gm.agent_id "
+            "WHERE gm.group_id = ? AND a.archived = 0 "
+            "ORDER BY gm.joined_at, a.id",
+            (group_id,),
+        )
+        return [
+            {
+                "id": str(row[0]),
+                "name": str(row[1]),
+                "joined_at": str(row[2]),
+                "backend": str(row[3] or "claude-code"),
+            }
+            for row in await cursor.fetchall()
+        ]
+
     # ------------------------------------------------------------------
     # (group × agent) long-lived member sessions (group-session-reuse.md)
     # ------------------------------------------------------------------
@@ -1134,6 +1250,8 @@ class Database:
             "current_agent_id, depth, held_until, hold_reason, error, "
             "created_at, updated_at, completed_at, "
             "(SELECT feature_run_id FROM feature_invocation_links "
+            " WHERE invocation_id = group_invocations.id), "
+            "(SELECT dispatch_id FROM feature_invocation_links "
             " WHERE invocation_id = group_invocations.id) "
             "FROM group_invocations WHERE id = ?",
             (invocation_id,),
@@ -1150,6 +1268,8 @@ class Database:
             "current_agent_id, depth, held_until, hold_reason, error, "
             "created_at, updated_at, completed_at, "
             "(SELECT feature_run_id FROM feature_invocation_links "
+            " WHERE invocation_id = group_invocations.id), "
+            "(SELECT dispatch_id FROM feature_invocation_links "
             " WHERE invocation_id = group_invocations.id) "
             "FROM group_invocations WHERE group_id = ?"
         )
@@ -1167,6 +1287,8 @@ class Database:
             "current_agent_id, depth, held_until, hold_reason, error, "
             "created_at, updated_at, completed_at, "
             "(SELECT feature_run_id FROM feature_invocation_links "
+            " WHERE invocation_id = group_invocations.id), "
+            "(SELECT dispatch_id FROM feature_invocation_links "
             " WHERE invocation_id = group_invocations.id) "
             "FROM group_invocations "
             "WHERE status IN ('running', 'held') ORDER BY created_at"
@@ -1190,6 +1312,7 @@ class Database:
             "updated_at": row[11],
             "completed_at": row[12],
             "feature_run_id": row[13],
+            "feature_dispatch_id": row[14],
         }
 
     # ------------------------------------------------------------------
@@ -1201,6 +1324,17 @@ class Database:
         "stage, state, priority, owner_agent_id, reviewer_agent_id, "
         "vision_guardian_agent_id, current_gate, operator_quote, "
         "origin_message_seq, artifact_refs, created_at, updated_at, completed_at"
+    )
+    _FEATURE_START_COLUMNS = (
+        "request_key, group_id, feature_run_id, requirement, requirement_hash, "
+        "authorization, state, error, created_at, updated_at"
+    )
+    _FEATURE_DISPATCH_COLUMNS = (
+        "id, feature_run_id, observed_stage, observed_revision, purpose, "
+        "generation, target_role, target_agent_id, predecessor_dispatch_id, "
+        "state, lease_owner, lease_token_hash, lease_expires_at, "
+        "capability_hash, invocation_id, attempt_count, error, created_at, "
+        "updated_at"
     )
 
     async def create_feature_run(
@@ -1261,6 +1395,541 @@ class Database:
         )
         row = await cursor.fetchone()
         return self._feature_run_row(row) if row else None
+
+    async def get_feature_start_request(
+        self, request_key: str,
+    ) -> dict[str, Any] | None:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            f"SELECT {self._FEATURE_START_COLUMNS} "
+            "FROM feature_start_requests WHERE request_key = ?",
+            (request_key,),
+        )
+        row = await cursor.fetchone()
+        return self._feature_start_row(row) if row else None
+
+    async def get_feature_start_for_run(
+        self, run_id: str,
+    ) -> dict[str, Any] | None:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            f"SELECT {self._FEATURE_START_COLUMNS} "
+            "FROM feature_start_requests WHERE feature_run_id = ?",
+            (run_id,),
+        )
+        row = await cursor.fetchone()
+        return self._feature_start_row(row) if row else None
+
+    async def get_feature_dispatch(
+        self, dispatch_id: str,
+    ) -> dict[str, Any] | None:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            f"SELECT {self._FEATURE_DISPATCH_COLUMNS} "
+            "FROM feature_dispatches WHERE id = ?",
+            (dispatch_id,),
+        )
+        row = await cursor.fetchone()
+        return self._feature_dispatch_row(row) if row else None
+
+    async def list_feature_dispatches(
+        self, run_id: str,
+    ) -> list[dict[str, Any]]:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            f"SELECT {self._FEATURE_DISPATCH_COLUMNS} "
+            "FROM feature_dispatches WHERE feature_run_id = ? "
+            "ORDER BY generation, created_at, id",
+            (run_id,),
+        )
+        return [self._feature_dispatch_row(row) for row in await cursor.fetchall()]
+
+    async def create_feature_delivery_checkpoint(
+        self,
+        *,
+        request_key: str,
+        requirement: str,
+        requirement_hash: str,
+        authorization: dict[str, Any],
+        run_id: str,
+        feature_id: str,
+        group_id: str,
+        working_dir: str,
+        feature_doc_path: str,
+        feature_doc_absolute_path: str,
+        document_content: str,
+        title: str,
+        stage: str,
+        priority: str,
+        owner_agent_id: str,
+        reviewer_agent_id: str,
+        vision_guardian_agent_id: str,
+        current_gate: str | None,
+        operator_quote: str,
+        origin_message_seq: int | None,
+        dispatch_id: str,
+        created_at: str,
+    ) -> dict[str, Any]:
+        """Create the complete `/feature` start checkpoint in one transaction.
+
+        The return status is one of created, replayed, request_conflict, or
+        active_conflict. Callers perform filesystem and launch delivery only
+        after this transaction commits.
+        """
+        await self._ensure_connected()
+        async with self._feature_write_lock:
+            try:
+                await self._conn.execute("BEGIN IMMEDIATE")
+                cursor = await self._conn.execute(
+                    f"SELECT {self._FEATURE_START_COLUMNS} "
+                    "FROM feature_start_requests WHERE request_key = ?",
+                    (request_key,),
+                )
+                existing_row = await cursor.fetchone()
+                if existing_row is not None:
+                    existing = self._feature_start_row(existing_row)
+                    await self._conn.rollback()
+                    if (
+                        existing["group_id"] != group_id
+                        or existing["requirement_hash"] != requirement_hash
+                    ):
+                        return {
+                            "status": "request_conflict",
+                            "feature_run_id": existing["feature_run_id"],
+                        }
+                    return {
+                        "status": "replayed",
+                        "feature_run_id": existing["feature_run_id"],
+                    }
+
+                cursor = await self._conn.execute(
+                    "SELECT gaf.feature_run_id, fr.state "
+                    "FROM group_active_features gaf "
+                    "JOIN feature_runs fr ON fr.id = gaf.feature_run_id "
+                    "WHERE gaf.group_id = ?",
+                    (group_id,),
+                )
+                active = await cursor.fetchone()
+                if active is not None and str(active[1]) != "done":
+                    await self._conn.rollback()
+                    return {
+                        "status": "active_conflict",
+                        "feature_run_id": str(active[0]),
+                    }
+                if active is not None:
+                    await self._conn.execute(
+                        "DELETE FROM group_active_features WHERE group_id = ?",
+                        (group_id,),
+                    )
+
+                artifact_refs = json.dumps([feature_doc_path])
+                await self._conn.execute(
+                    "INSERT INTO feature_runs "
+                    "(id, feature_id, group_id, working_dir, feature_doc_path, "
+                    " title, stage, state, priority, owner_agent_id, "
+                    " reviewer_agent_id, vision_guardian_agent_id, current_gate, "
+                    " operator_quote, origin_message_seq, artifact_refs, "
+                    " created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, "
+                    " ?, ?, ?, ?)",
+                    (
+                        run_id,
+                        feature_id,
+                        group_id,
+                        working_dir,
+                        feature_doc_path,
+                        title,
+                        stage,
+                        priority,
+                        owner_agent_id,
+                        reviewer_agent_id,
+                        vision_guardian_agent_id,
+                        current_gate,
+                        operator_quote,
+                        origin_message_seq,
+                        artifact_refs,
+                        created_at,
+                        created_at,
+                    ),
+                )
+                await self._conn.execute(
+                    "INSERT INTO feature_run_events "
+                    "(feature_run_id, from_stage, to_stage, result, "
+                    " actor_agent_id, reason, evidence_refs, revision, created_at) "
+                    "VALUES (?, '', ?, 'created', ?, ?, ?, '', ?)",
+                    (
+                        run_id,
+                        stage,
+                        owner_agent_id,
+                        "Feature created from autonomous group command",
+                        artifact_refs,
+                        created_at,
+                    ),
+                )
+                await self._conn.execute(
+                    "INSERT INTO group_active_features "
+                    "(group_id, feature_run_id, updated_at) VALUES (?, ?, ?)",
+                    (group_id, run_id, created_at),
+                )
+                await self._conn.execute(
+                    "INSERT INTO feature_start_requests "
+                    "(request_key, group_id, feature_run_id, requirement, "
+                    " requirement_hash, authorization, state, created_at, "
+                    " updated_at) VALUES (?, ?, ?, ?, ?, ?, 'doc_pending', ?, ?)",
+                    (
+                        request_key,
+                        group_id,
+                        run_id,
+                        requirement,
+                        requirement_hash,
+                        json.dumps(authorization, sort_keys=True),
+                        created_at,
+                        created_at,
+                    ),
+                )
+                await self._conn.execute(
+                    "INSERT INTO feature_doc_syncs "
+                    "(feature_run_id, feature_doc_path, content, base_hash, "
+                    " sync_mode, updated_at) "
+                    "VALUES (?, ?, ?, '', 'create_only', ?)",
+                    (
+                        run_id,
+                        feature_doc_absolute_path,
+                        document_content,
+                        created_at,
+                    ),
+                )
+                await self._conn.execute(
+                    "INSERT INTO feature_dispatches "
+                    "(id, feature_run_id, observed_stage, observed_revision, "
+                    " purpose, generation, target_role, target_agent_id, state, "
+                    " capability_hash, attempt_count, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, 'stage', 1, 'owner', ?, 'pending', '', "
+                    " 0, ?, ?)",
+                    (
+                        dispatch_id,
+                        run_id,
+                        stage,
+                        created_at,
+                        owner_agent_id,
+                        created_at,
+                        created_at,
+                    ),
+                )
+                await self._conn.commit()
+                return {"status": "created", "feature_run_id": run_id}
+            except Exception:
+                await self._conn.rollback()
+                raise
+
+    async def update_feature_start_state(
+        self,
+        run_id: str,
+        *,
+        state: str,
+        error: str | None,
+        updated_at: str,
+    ) -> None:
+        await self._ensure_connected()
+        await self._conn.execute(
+            "UPDATE feature_start_requests SET state = ?, error = ?, "
+            "updated_at = ? WHERE feature_run_id = ?",
+            (state, error, updated_at, run_id),
+        )
+        await self._conn.commit()
+
+    async def lease_next_feature_dispatch(
+        self,
+        run_id: str,
+        *,
+        lease_owner: str,
+        lease_token_hash: str,
+        capability_hash: str,
+        lease_expires_at: str,
+        now: str,
+    ) -> dict[str, Any] | None:
+        """Lease one pending (or expired leased) generation with token rotation."""
+        await self._ensure_connected()
+        async with self._feature_write_lock:
+            try:
+                await self._conn.execute("BEGIN IMMEDIATE")
+                cursor = await self._conn.execute(
+                    "SELECT id FROM feature_dispatches "
+                    "WHERE feature_run_id = ? AND (state = 'pending' OR "
+                    "(state = 'leased' AND lease_expires_at <= ?)) "
+                    "ORDER BY generation, created_at, id LIMIT 1",
+                    (run_id, now),
+                )
+                row = await cursor.fetchone()
+                if row is None:
+                    await self._conn.rollback()
+                    return None
+                dispatch_id = str(row[0])
+                cursor = await self._conn.execute(
+                    "UPDATE feature_dispatches SET state = 'leased', "
+                    "lease_owner = ?, lease_token_hash = ?, "
+                    "lease_expires_at = ?, capability_hash = ?, "
+                    "attempt_count = attempt_count + 1, error = NULL, "
+                    "updated_at = ? WHERE id = ? AND feature_run_id = ? "
+                    "AND (state = 'pending' OR "
+                    "(state = 'leased' AND lease_expires_at <= ?))",
+                    (
+                        lease_owner,
+                        lease_token_hash,
+                        lease_expires_at,
+                        capability_hash,
+                        now,
+                        dispatch_id,
+                        run_id,
+                        now,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    await self._conn.rollback()
+                    return None
+                cursor = await self._conn.execute(
+                    f"SELECT {self._FEATURE_DISPATCH_COLUMNS} "
+                    "FROM feature_dispatches WHERE id = ?",
+                    (dispatch_id,),
+                )
+                leased = await cursor.fetchone()
+                await self._conn.commit()
+                return self._feature_dispatch_row(leased)
+            except Exception:
+                await self._conn.rollback()
+                raise
+
+    async def activate_feature_dispatch(
+        self,
+        dispatch_id: str,
+        *,
+        lease_token_hash: str,
+        invocation_id: str,
+        updated_at: str,
+    ) -> bool:
+        """Bind one leased dispatch to one already-created GroupInvocation."""
+        await self._ensure_connected()
+        async with self._feature_write_lock:
+            try:
+                await self._conn.execute("BEGIN IMMEDIATE")
+                cursor = await self._conn.execute(
+                    "SELECT feature_run_id FROM feature_dispatches "
+                    "WHERE id = ? AND state = 'leased' AND lease_token_hash = ?",
+                    (dispatch_id, lease_token_hash),
+                )
+                dispatch = await cursor.fetchone()
+                if dispatch is None:
+                    await self._conn.rollback()
+                    return False
+                run_id = str(dispatch[0])
+                cursor = await self._conn.execute(
+                    "UPDATE feature_invocation_links SET dispatch_id = ? "
+                    "WHERE invocation_id = ? AND feature_run_id = ? "
+                    "AND dispatch_id IS NULL",
+                    (dispatch_id, invocation_id, run_id),
+                )
+                if cursor.rowcount != 1:
+                    await self._conn.rollback()
+                    return False
+                cursor = await self._conn.execute(
+                    "UPDATE feature_dispatches SET state = 'active', "
+                    "invocation_id = ?, updated_at = ? "
+                    "WHERE id = ? AND state = 'leased' AND lease_token_hash = ?",
+                    (invocation_id, updated_at, dispatch_id, lease_token_hash),
+                )
+                if cursor.rowcount != 1:
+                    await self._conn.rollback()
+                    return False
+                await self._conn.commit()
+                return True
+            except Exception:
+                await self._conn.rollback()
+                raise
+
+    async def fail_feature_dispatch_lease(
+        self,
+        dispatch_id: str,
+        *,
+        lease_token_hash: str,
+        error: str,
+        updated_at: str,
+    ) -> bool:
+        """Fail only the exact lease held by the launch attempt."""
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "UPDATE feature_dispatches SET state = 'failed', error = ?, "
+            "lease_owner = NULL, lease_token_hash = NULL, "
+            "lease_expires_at = NULL, updated_at = ? "
+            "WHERE id = ? AND state = 'leased' AND lease_token_hash = ?",
+            (error, updated_at, dispatch_id, lease_token_hash),
+        )
+        await self._conn.commit()
+        return cursor.rowcount == 1
+
+    async def reset_orphaned_feature_dispatch_leases(
+        self, *, updated_at: str
+    ) -> list[str]:
+        """Return all startup-orphaned leases to pending without raw secrets."""
+        await self._ensure_connected()
+        async with self._feature_write_lock:
+            try:
+                await self._conn.execute("BEGIN IMMEDIATE")
+                cursor = await self._conn.execute(
+                    "SELECT DISTINCT feature_run_id FROM feature_dispatches "
+                    "WHERE state = 'leased'"
+                )
+                run_ids = [str(row[0]) for row in await cursor.fetchall()]
+                await self._conn.execute(
+                    "UPDATE feature_dispatches SET state = 'pending', "
+                    "lease_owner = NULL, lease_token_hash = NULL, "
+                    "lease_expires_at = NULL, capability_hash = '', "
+                    "updated_at = ? WHERE state = 'leased'",
+                    (updated_at,),
+                )
+                await self._conn.commit()
+                return run_ids
+            except Exception:
+                await self._conn.rollback()
+                raise
+
+    async def complete_feature_dispatch_invocation(
+        self,
+        dispatch_id: str,
+        invocation_id: str,
+        *,
+        terminal_status: str,
+        updated_at: str,
+    ) -> dict[str, Any] | None:
+        """Apply an exact invocation callback and promote only its successor."""
+        await self._ensure_connected()
+        async with self._feature_write_lock:
+            try:
+                await self._conn.execute("BEGIN IMMEDIATE")
+                cursor = await self._conn.execute(
+                    f"SELECT {self._FEATURE_DISPATCH_COLUMNS} "
+                    "FROM feature_dispatches WHERE id = ? AND invocation_id = ?",
+                    (dispatch_id, invocation_id),
+                )
+                row = await cursor.fetchone()
+                if row is None:
+                    await self._conn.rollback()
+                    return None
+                dispatch = self._feature_dispatch_row(row)
+                if dispatch["state"] == "handoff_committed":
+                    await self._conn.execute(
+                        "UPDATE feature_dispatches SET state = 'completed', "
+                        "lease_owner = NULL, lease_token_hash = NULL, "
+                        "lease_expires_at = NULL, updated_at = ? WHERE id = ?",
+                        (updated_at, dispatch_id),
+                    )
+                    await self._conn.execute(
+                        "UPDATE feature_dispatches SET state = 'pending', "
+                        "updated_at = ? WHERE predecessor_dispatch_id = ? "
+                        "AND state = 'waiting'",
+                        (updated_at, dispatch_id),
+                    )
+                elif dispatch["state"] in {"active", "leased"}:
+                    await self._conn.execute(
+                        "UPDATE feature_dispatches SET state = 'failed', "
+                        "error = ?, lease_owner = NULL, lease_token_hash = NULL, "
+                        "lease_expires_at = NULL, updated_at = ? WHERE id = ?",
+                        (
+                            "Invocation ended before lifecycle handoff: "
+                            f"{terminal_status}",
+                            updated_at,
+                            dispatch_id,
+                        ),
+                    )
+                cursor = await self._conn.execute(
+                    f"SELECT {self._FEATURE_DISPATCH_COLUMNS} "
+                    "FROM feature_dispatches WHERE id = ?",
+                    (dispatch_id,),
+                )
+                updated = await cursor.fetchone()
+                await self._conn.commit()
+                return self._feature_dispatch_row(updated)
+            except Exception:
+                await self._conn.rollback()
+                raise
+
+    async def ensure_recovery_feature_dispatch(
+        self,
+        run_id: str,
+        *,
+        expected_stage: str,
+        expected_revision: str,
+        target_role: str,
+        target_agent_id: str,
+        dispatch_id: str,
+        created_at: str,
+    ) -> dict[str, Any] | None:
+        """Return a current generation or create one after a terminal gap."""
+        await self._ensure_connected()
+        async with self._feature_write_lock:
+            try:
+                await self._conn.execute("BEGIN IMMEDIATE")
+                cursor = await self._conn.execute(
+                    f"SELECT {self._FEATURE_DISPATCH_COLUMNS} "
+                    "FROM feature_dispatches WHERE feature_run_id = ? "
+                    "AND state IN ('pending', 'leased', 'active', "
+                    "'handoff_committed', 'waiting') "
+                    "ORDER BY generation DESC, created_at DESC LIMIT 1",
+                    (run_id,),
+                )
+                current = await cursor.fetchone()
+                if current is not None:
+                    await self._conn.rollback()
+                    return self._feature_dispatch_row(current)
+                cursor = await self._conn.execute(
+                    "SELECT stage, updated_at, state FROM feature_runs "
+                    "WHERE id = ?",
+                    (run_id,),
+                )
+                run = await cursor.fetchone()
+                if (
+                    run is None
+                    or str(run[0]) != expected_stage
+                    or str(run[1]) != expected_revision
+                    or str(run[2]) == "done"
+                ):
+                    await self._conn.rollback()
+                    return None
+                cursor = await self._conn.execute(
+                    "SELECT COALESCE(MAX(generation), 0) "
+                    "FROM feature_dispatches WHERE feature_run_id = ?",
+                    (run_id,),
+                )
+                generation = int((await cursor.fetchone())[0]) + 1
+                await self._conn.execute(
+                    "INSERT INTO feature_dispatches "
+                    "(id, feature_run_id, observed_stage, observed_revision, "
+                    "purpose, generation, target_role, target_agent_id, state, "
+                    "capability_hash, attempt_count, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, 'recovery', ?, ?, ?, 'pending', '', "
+                    "0, ?, ?)",
+                    (
+                        dispatch_id,
+                        run_id,
+                        expected_stage,
+                        expected_revision,
+                        generation,
+                        target_role,
+                        target_agent_id,
+                        created_at,
+                        created_at,
+                    ),
+                )
+                cursor = await self._conn.execute(
+                    f"SELECT {self._FEATURE_DISPATCH_COLUMNS} "
+                    "FROM feature_dispatches WHERE id = ?",
+                    (dispatch_id,),
+                )
+                result = await cursor.fetchone()
+                await self._conn.commit()
+                return self._feature_dispatch_row(result)
+            except Exception:
+                await self._conn.rollback()
+                raise
 
     async def list_feature_runs(
         self,
@@ -1359,11 +2028,13 @@ class Database:
                     return False
                 await self._conn.execute(
                     "INSERT INTO feature_doc_syncs "
-                    "(feature_run_id, feature_doc_path, content, base_hash, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?) "
+                    "(feature_run_id, feature_doc_path, content, base_hash, "
+                    " sync_mode, updated_at) "
+                    "VALUES (?, ?, ?, ?, 'update', ?) "
                     "ON CONFLICT(feature_run_id) DO UPDATE SET "
                     "feature_doc_path = excluded.feature_doc_path, "
                     "content = excluded.content, base_hash = excluded.base_hash, "
+                    "sync_mode = excluded.sync_mode, "
                     "updated_at = excluded.updated_at",
                     (
                         run_id,
@@ -1373,6 +2044,31 @@ class Database:
                         updated_at,
                     ),
                 )
+                await self._conn.execute(
+                    "UPDATE feature_dispatches SET observed_revision = ?, "
+                    "updated_at = ? WHERE feature_run_id = ? "
+                    "AND state IN ('pending', 'waiting') "
+                    "AND observed_stage = (SELECT stage FROM feature_runs "
+                    "WHERE id = ?)",
+                    (updated_at, updated_at, run_id, run_id),
+                )
+                for field, target_role in (
+                    ("owner_agent_id", "owner"),
+                    ("reviewer_agent_id", "reviewer"),
+                    ("vision_guardian_agent_id", "vision_guardian"),
+                ):
+                    if field in updates and updates[field] is not None:
+                        await self._conn.execute(
+                            "UPDATE feature_dispatches SET target_agent_id = ?, "
+                            "updated_at = ? WHERE feature_run_id = ? "
+                            "AND target_role = ? AND state IN ('pending', 'waiting')",
+                            (
+                                updates[field],
+                                updated_at,
+                                run_id,
+                                target_role,
+                            ),
+                        )
                 await self._conn.commit()
                 return True
             except Exception:
@@ -1397,6 +2093,8 @@ class Database:
         feature_doc_path: str,
         document_content: str,
         document_base_hash: str,
+        dispatch_authority: dict[str, Any] | None = None,
+        successor_dispatch: dict[str, Any] | None = None,
         clear_active_group_id: str | None = None,
         precondition: Callable[[], None] | None = None,
     ) -> bool:
@@ -1408,6 +2106,28 @@ class Database:
             try:
                 if precondition is not None:
                     precondition()
+                predecessor_generation: int | None = None
+                if dispatch_authority is not None:
+                    cursor = await self._conn.execute(
+                        "SELECT generation FROM feature_dispatches "
+                        "WHERE id = ? AND feature_run_id = ? AND state = 'active' "
+                        "AND observed_stage = ? AND observed_revision = ? "
+                        "AND target_agent_id = ? AND capability_hash = ? "
+                        "AND invocation_id IS NOT NULL",
+                        (
+                            dispatch_authority["dispatch_id"],
+                            run_id,
+                            expected_stage,
+                            expected_updated_at,
+                            dispatch_authority["actor_agent_id"],
+                            dispatch_authority["capability_hash"],
+                        ),
+                    )
+                    dispatch_row = await cursor.fetchone()
+                    if dispatch_row is None:
+                        await self._conn.rollback()
+                        return False
+                    predecessor_generation = int(dispatch_row[0])
                 cursor = await self._conn.execute(
                     f"UPDATE feature_runs SET {assignments} "
                     "WHERE id = ? AND stage = ? AND updated_at = ? "
@@ -1436,11 +2156,13 @@ class Database:
                 )
                 await self._conn.execute(
                     "INSERT INTO feature_doc_syncs "
-                    "(feature_run_id, feature_doc_path, content, base_hash, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?) "
+                    "(feature_run_id, feature_doc_path, content, base_hash, "
+                    " sync_mode, updated_at) "
+                    "VALUES (?, ?, ?, ?, 'update', ?) "
                     "ON CONFLICT(feature_run_id) DO UPDATE SET "
                     "feature_doc_path = excluded.feature_doc_path, "
                     "content = excluded.content, base_hash = excluded.base_hash, "
+                    "sync_mode = excluded.sync_mode, "
                     "updated_at = excluded.updated_at",
                     (
                         run_id,
@@ -1456,6 +2178,45 @@ class Database:
                         "WHERE group_id = ? AND feature_run_id = ?",
                         (clear_active_group_id, run_id),
                     )
+                if dispatch_authority is not None:
+                    cursor = await self._conn.execute(
+                        "UPDATE feature_dispatches SET state = "
+                        "'handoff_committed', updated_at = ? "
+                        "WHERE id = ? AND state = 'active' AND capability_hash = ?",
+                        (
+                            created_at,
+                            dispatch_authority["dispatch_id"],
+                            dispatch_authority["capability_hash"],
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        await self._conn.rollback()
+                        return False
+                    if successor_dispatch is not None:
+                        assert predecessor_generation is not None
+                        await self._conn.execute(
+                            "INSERT INTO feature_dispatches "
+                            "(id, feature_run_id, observed_stage, "
+                            " observed_revision, purpose, generation, "
+                            " target_role, target_agent_id, "
+                            " predecessor_dispatch_id, state, capability_hash, "
+                            " attempt_count, created_at, updated_at) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting', '', "
+                            "0, ?, ?)",
+                            (
+                                successor_dispatch["id"],
+                                run_id,
+                                to_stage,
+                                created_at,
+                                successor_dispatch.get("purpose", "stage"),
+                                predecessor_generation + 1,
+                                successor_dispatch["target_role"],
+                                successor_dispatch["target_agent_id"],
+                                dispatch_authority["dispatch_id"],
+                                created_at,
+                                created_at,
+                            ),
+                        )
                 await self._conn.commit()
                 return True
             except Exception:
@@ -1524,7 +2285,8 @@ class Database:
     async def list_feature_doc_syncs(self) -> list[dict[str, str]]:
         await self._ensure_connected()
         cursor = await self._conn.execute(
-            "SELECT feature_run_id, feature_doc_path, content, base_hash, updated_at "
+            "SELECT feature_run_id, feature_doc_path, content, base_hash, "
+            "sync_mode, updated_at "
             "FROM feature_doc_syncs ORDER BY updated_at"
         )
         return [
@@ -1533,7 +2295,8 @@ class Database:
                 "feature_doc_path": str(row[1]),
                 "content": str(row[2]),
                 "base_hash": str(row[3]),
-                "updated_at": str(row[4]),
+                "sync_mode": str(row[4]),
+                "updated_at": str(row[5]),
             }
             for row in await cursor.fetchall()
         ]
@@ -1541,7 +2304,8 @@ class Database:
     async def get_feature_doc_sync(self, run_id: str) -> dict[str, str] | None:
         await self._ensure_connected()
         cursor = await self._conn.execute(
-            "SELECT feature_run_id, feature_doc_path, content, base_hash, updated_at "
+            "SELECT feature_run_id, feature_doc_path, content, base_hash, "
+            "sync_mode, updated_at "
             "FROM feature_doc_syncs WHERE feature_run_id = ?",
             (run_id,),
         )
@@ -1553,7 +2317,8 @@ class Database:
             "feature_doc_path": str(row[1]),
             "content": str(row[2]),
             "base_hash": str(row[3]),
-            "updated_at": str(row[4]),
+            "sync_mode": str(row[4]),
+            "updated_at": str(row[5]),
         }
 
     async def deliver_feature_doc_sync(
@@ -1566,7 +2331,7 @@ class Database:
         async with self._feature_write_lock:
             cursor = await self._conn.execute(
                 "SELECT feature_run_id, feature_doc_path, content, "
-                "base_hash, updated_at FROM feature_doc_syncs "
+                "base_hash, sync_mode, updated_at FROM feature_doc_syncs "
                 "WHERE feature_run_id = ?",
                 (run_id,),
             )
@@ -1578,7 +2343,8 @@ class Database:
                 "feature_doc_path": str(row[1]),
                 "content": str(row[2]),
                 "base_hash": str(row[3]),
-                "updated_at": str(row[4]),
+                "sync_mode": str(row[4]),
+                "updated_at": str(row[5]),
             }
             if not deliver(pending):
                 return False
@@ -1664,6 +2430,49 @@ class Database:
             "created_at": row[16],
             "updated_at": row[17],
             "completed_at": row[18],
+        }
+
+    @staticmethod
+    def _feature_start_row(row: Any) -> dict[str, Any]:
+        try:
+            authorization = json.loads(row[5] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            authorization = {}
+        return {
+            "request_key": row[0],
+            "group_id": row[1],
+            "feature_run_id": row[2],
+            "requirement": row[3],
+            "requirement_hash": row[4],
+            "authorization": authorization,
+            "state": row[6],
+            "error": row[7],
+            "created_at": row[8],
+            "updated_at": row[9],
+        }
+
+    @staticmethod
+    def _feature_dispatch_row(row: Any) -> dict[str, Any]:
+        return {
+            "id": row[0],
+            "feature_run_id": row[1],
+            "observed_stage": row[2],
+            "observed_revision": row[3],
+            "purpose": row[4],
+            "generation": row[5],
+            "target_role": row[6],
+            "target_agent_id": row[7],
+            "predecessor_dispatch_id": row[8],
+            "state": row[9],
+            "lease_owner": row[10],
+            "lease_token_hash": row[11],
+            "lease_expires_at": row[12],
+            "capability_hash": row[13],
+            "invocation_id": row[14],
+            "attempt_count": row[15],
+            "error": row[16],
+            "created_at": row[17],
+            "updated_at": row[18],
         }
 
     async def _column_info(self, table: str) -> list[tuple[Any, ...]]:

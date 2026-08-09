@@ -37,6 +37,9 @@ Current focus areas:
   and noisy model output.
 - A group-first feature lifecycle that carries one canonical Feature Doc across
   discovery, implementation, independent review, merge, and vision acceptance.
+- Autonomous group delivery from `/feature <requirement>`: deterministic
+  owner/reviewer/vision roles, mandatory Feature MCP, fresh stage invocations,
+  restart-safe dispatch history, and visible status/resume/role correction.
 
 ## Personas
 
@@ -102,6 +105,14 @@ every routed Agent turn reloads it and receives a D14 `update-workflow-sop`
 block with feature ID, stage, role, gate, canonical doc, suggested skill, and
 next step. See [the lifecycle guide](docs/feature-lifecycle.md) for the full
 discovery-to-delivery process and review handoff contract.
+
+In a group with at least three eligible Agents, enter
+`/feature <one-sentence requirement>`. ChainTogether creates one idempotent
+FeatureRun and continues it through Discovery, Design, Planning, Worktree/TDD,
+Quality, owner-prepared independent Review, Merge, Vision, and Closure. Use
+`/feature status`, `/feature resume`, or
+`/feature roles owner=@... reviewer=@... guardian=@...` when intervention is
+needed; the status panel preserves stage, roles, next Skill, and blockers.
 
 Project skills have one canonical source under `.chaintogether/skills/` and a
 machine-readable catalog at `.chaintogether/skills.yaml`. Generated

@@ -23,6 +23,13 @@ from .profile import McpServerEntry
 # import resolves regardless of the child's cwd.
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent.parent)
 
+_CORE_MODULES = {
+    # Lifecycle mutations are a host control-plane capability, not an optional
+    # agent preference. Direct-chat turns receive it too; without Feature env
+    # its tools fail closed and expose no ambient authority.
+    "feature": "server.mcp_servers.feature",
+}
+
 # In-app MCP servers the agent can enable (subset of these; None = all).
 _BUILTIN_MODULES = {
     "bg": "server.mcp_servers.bg",
@@ -45,7 +52,12 @@ def repo_root() -> str:
 
 
 def build_callback_env(
-    session_id: str | None, session_capability: str | None = None
+    session_id: str | None,
+    session_capability: str | None = None,
+    *,
+    feature_run_id: str | None = None,
+    feature_dispatch_id: str | None = None,
+    feature_dispatch_capability: str | None = None,
 ) -> dict[str, str]:
     """The env our bg/ask MCP servers use to call back into FastAPI."""
     from ..config import settings as _settings  # local import: avoid cycle at load
@@ -59,6 +71,14 @@ def build_callback_env(
         env["OCTOPUS_SESSION_ID"] = session_id
     if session_capability:
         env["OCTOPUS_SESSION_CAPABILITY"] = session_capability
+    if feature_run_id:
+        env["OCTOPUS_FEATURE_RUN_ID"] = feature_run_id
+    if feature_dispatch_id:
+        env["OCTOPUS_FEATURE_DISPATCH_ID"] = feature_dispatch_id
+    if feature_dispatch_capability:
+        env["OCTOPUS_FEATURE_DISPATCH_CAPABILITY"] = (
+            feature_dispatch_capability
+        )
     return env
 
 
@@ -72,6 +92,14 @@ def select_mcp_servers(
     connectors — so rendered argv is deterministic for tests. Unknown names in
     `mcp_servers` (e.g. a legacy `"viewer"` from before the viewer became a
     client-only flow) are silently filtered."""
+    core_specs: dict[str, dict[str, Any]] = {
+        key: {
+            "command": sys.executable,
+            "args": ["-m", module],
+            "env": {},
+        }
+        for key, module in _CORE_MODULES.items()
+    }
     builtin_specs: dict[str, dict[str, Any]] = {
         key: {
             "command": sys.executable,
@@ -88,6 +116,9 @@ def select_mcp_servers(
         selected = builtin_specs
 
     entries: list[McpServerEntry] = [
+        McpServerEntry(key=key, command=spec["command"], args=spec["args"], env=spec["env"])
+        for key, spec in core_specs.items()
+    ] + [
         McpServerEntry(key=key, command=spec["command"], args=spec["args"], env=spec["env"])
         for key, spec in selected.items()
     ]

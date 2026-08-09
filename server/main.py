@@ -16,6 +16,7 @@ from .auth import verify_token
 
 from .bg_tasks import bg_task_manager
 from .delegations import delegation_manager
+from .feature_delivery import feature_delivery_manager
 from .feature_manager import feature_manager
 from .group_manager import group_manager
 from .research import research_manager
@@ -99,18 +100,26 @@ async def lifespan(app: FastAPI):
 
     # Feature lifecycle is durable across many short-lived group invocations.
     feature_manager.bind(db)
+    feature_delivery_manager.bind(db, feature_manager)
     await feature_manager.reconcile_document_syncs()
     features_router.set_feature_manager(feature_manager)
+    features_router.set_feature_delivery_manager(feature_delivery_manager)
     app.state.feature_manager = feature_manager
+    app.state.feature_delivery_manager = feature_delivery_manager
 
     # Group chat manager (multi-agent @-mention routing groups.md).
     group_manager.bind(
-        session_mgr=session_manager, db=db, feature_mgr=feature_manager
+        session_mgr=session_manager,
+        db=db,
+        feature_mgr=feature_manager,
+        feature_delivery_mgr=feature_delivery_manager,
     )
+    feature_delivery_manager.bind_group_manager(group_manager)
     groups_router.set_group_manager(group_manager)
     app.state.group_manager = group_manager
     await group_manager.initialize_prompt_assets()
     await group_manager.reconcile_zombies()
+    await feature_delivery_manager.reconcile_startup()
 
     # Native deep research (native-deep-research.md). Tracks research jobs as
     # async tasks; injects the final report back into the session.

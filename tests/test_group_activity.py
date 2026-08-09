@@ -16,7 +16,14 @@ class _FakeSessionManager:
         self.events = events
         self.activities: list[dict[str, Any]] = []
 
-    async def send_message(self, _session_id: str, _prompt: str):
+    async def send_message(
+        self,
+        _session_id: str,
+        _prompt: str,
+        *,
+        feature_turn_authority: object | None = None,
+    ):
+        self.feature_turn_authority = feature_turn_authority
         for event in self.events:
             yield event
 
