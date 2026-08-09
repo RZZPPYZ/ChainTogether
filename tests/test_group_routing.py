@@ -185,6 +185,27 @@ class GroupRoutingTests(unittest.TestCase):
 
 
 class GroupRoutingDynamicDirectiveTests(unittest.IsolatedAsyncioTestCase):
+    async def test_list_invocations_hides_persisted_dynamic_envelope(self) -> None:
+        manager = GroupManager()
+        persisted = manager._encode_dynamic_directive_state(
+            "pingpong_blocked",
+            from_agent="Builder",
+            target_agent="Reviewer",
+            count=4,
+        )
+        manager.db = AsyncMock()
+        manager.db.get_group.return_value = {"id": "group-1"}
+        manager.db.list_group_invocations.return_value = [{
+            "id": "invocation-1",
+            "group_id": "group-1",
+            "error": persisted,
+        }]
+
+        rows = await manager.list_invocations("group-1")
+
+        self.assertIn("A2A ping-pong circuit open", rows[0]["error"])
+        self.assertNotIn("controller_dynamic", rows[0]["error"])
+
     async def test_persisted_pingpong_block_resumes_with_trusted_dynamic(self) -> None:
         breaker = GroupManager()
         breaker.db = AsyncMock()

@@ -2276,9 +2276,16 @@ class GroupManager:
             return []
         if await self.db.get_group(group_id) is None:
             raise GroupError("Group not found", status_code=404)
-        return await self.db.list_group_invocations(
+        rows = await self.db.list_group_invocations(
             group_id, active_only=active_only
         )
+        return [
+            {
+                **row,
+                "error": self._public_invocation_error(row.get("error")),
+            }
+            for row in rows
+        ]
 
     async def cancel_invocation(
         self, group_id: str, invocation_id: str,
