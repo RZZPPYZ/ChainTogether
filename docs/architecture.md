@@ -87,8 +87,9 @@ their Sessions, Schedules, and bridge bindings. A protected **Default Agent**
 | `crypto.py` | Fernet encryption (keyed off `OCTOPUS_AUTH_TOKEN`) for secrets at rest. |
 | `models.py` | Pydantic request/response models + enums (`SessionStatus`, `MessageRole`, agent/schedule/connector/credential DTOs). |
 | `session_manager.py` | Core turn engine. Owns in-memory `Session` objects, drives each turn through the **Harness**, persists + broadcasts events to WebSocket clients and bridges, runs tool-result forwarding, interactive questions, mid-turn interrupt, the per-session message queue, premature-exit auto-respawn, and large-prompt spill. |
-| `group_manager.py` | Group CRUD, default responder selection, user/A2A `@` routing, group-member reuse sessions, routing guards, D-layer cursor advancement, and optional FeatureRun context injection. |
+| `group_manager.py` | Group CRUD, default responder selection, user/A2A `@` routing, group-member reuse sessions, routing guards, D-layer cursor advancement, and exact FeatureDispatch invocation launch/terminal callbacks. |
 | `feature_manager.py` | Durable group-first feature control plane: canonical dossier creation, role separation, workflow transitions, gate evidence, event history, and per-agent lifecycle context. See [`feature-lifecycle.md`](feature-lifecycle.md). |
+| `feature_delivery.py` | Autonomous `/feature` start checkpoints, deterministic three-role assignment, dispatch leasing, fresh successor launch, resume, and restart reconciliation. |
 | `prompt_governance.py` + `assets/` | Compiles versioned prompt templates and machine routing policy once, renders per-turn L0/D prompts, and derives per-group roster snapshots from canonical database rows. |
 | `harness/` | The single boundary for all model/runtime interaction (see below). |
 | `agent_manager.py` | Agent CRUD (the durable assistant definitions). |
@@ -133,8 +134,9 @@ split into two layers with different lifetimes:
   current FeatureRun. Each routed turn reloads it and renders the registered
   `dynamic.update_workflow_sop` template with FeatureRun/Feature, stage/state,
   receiving role, canonical doc, gate, role-aware suggested skill, and concrete
-  next step. An explicit `feature_run_id` switches the group context; later
-  messages inherit it. Invocation custody and feature progress remain separate.
+  next step. `/feature` dispatches bind that context to an exact target turn;
+  accepted handoffs schedule a new depth-zero invocation for the successor.
+  Invocation custody and feature progress remain separate.
 - **Incremental cursor:** `group_agent_sessions.last_seen_group_seq` stores the
   highest group sequence successfully shown to each member. The cursor advances
   monotonically only after a successful backend turn. The current trigger is
@@ -171,11 +173,13 @@ The harness is the **only** place that talks to a model runtime. There is one
 ### In-app MCP servers (`server/mcp_servers/`)
 
 Every turn injects a small set of stdio MCP servers into the CLI's
-`--mcp-config`. The built-ins are configurable per agent (default
-`["ask", "bg", "ask_agent"]`); each enabled connector adds one more.
+`--mcp-config`. Optional built-ins are configurable per agent (default
+`["ask", "bg", "ask_agent"]`); the Feature MCP is mandatory core control
+plane, and each enabled connector adds one more.
 
 | Server | Tool(s) | Purpose |
 |---|---|---|
+| `feature.py` | `status` / `transition` / `request_review` | Session-bound FeatureRun inspection and exact-generation lifecycle handoff. Mutation authority is injected only into the assigned turn's child environment. |
 | `bg.py` | `mcp__bg__run` / `cancel` / `list` | Fire-and-forget shell commands that run **across turns**; the result arrives as a follow-up turn. |
 | `ask.py` | `mcp__ask__user(questions)` | Structured multiple-choice question rendered as a form in the UI; long-polls for the answer. Caller-aware: when invoked from a delegation-origin session the question is also injected as an `[agent-question:…]` turn into the parent agent's session — same pending queue, two answer producers. Replaces the old permission-prompt hack. |
 | `ask_agent.py` | `mcp__ask_agent__ask` / `cancel` / `answer` / `list` | Agent-to-agent delegation. `ask(request, name=…, delegation_id=…, files=…)` is bimodal: pass `name` to spawn a fresh child session under the named agent, or pass `delegation_id` to continue a prior delegation in the same child session so the target keeps her transcript across rounds; exactly one id is required. `answer` drains a child's pending question with the parent's chosen label; `cancel` stops a delegation (cascade-cancels descendants); `list` enumerates this session's delegations. Same env-injection + bg-task-style follow-up-turn pattern as `bg`. Design: [`plans/agent-collaboration.md`](plans/agent-collaboration.md). |

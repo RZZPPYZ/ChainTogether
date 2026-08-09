@@ -51,6 +51,19 @@ from .project_config import project_system_prompts
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class FeatureTurnAuthority:
+    """Ephemeral authority for one exact feature-dispatch turn.
+
+    The raw dispatch capability is deliberately carried through call arguments
+    rather than stored on the durable Session object.
+    """
+
+    feature_run_id: str
+    dispatch_id: str
+    dispatch_capability: str
+
+
 class ForkError(Exception):
     """A fork request was rejected for a reason the route maps to a status
     code (session-rewind.md §5.1). `reason` is a stable machine token;
@@ -1889,6 +1902,8 @@ class SessionManager:
         session_id: str,
         prompt: str,
         attachment_ids: list[str] | None = None,
+        *,
+        feature_turn_authority: FeatureTurnAuthority | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         session = self.sessions.get(session_id)
         if session is None:
@@ -2003,7 +2018,11 @@ class SessionManager:
             backend_dispatch_prompt = spill_if_large(session_id, augmented_prompt)
 
             try:
-                async for ws_event in self._run_backend(session, backend_dispatch_prompt):
+                async for ws_event in self._run_backend(
+                    session,
+                    backend_dispatch_prompt,
+                    feature_turn_authority=feature_turn_authority,
+                ):
                     await self._broadcast(ws_event)
                     yield ws_event
             except Exception as e:
@@ -2153,7 +2172,11 @@ class SessionManager:
     _TRANSIENT_RETRY_BASE_DELAY = 1.0  # seconds; doubles each attempt
 
     async def _run_backend(
-        self, session: Session, prompt: str
+        self,
+        session: Session,
+        prompt: str,
+        *,
+        feature_turn_authority: FeatureTurnAuthority | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Drive one logical turn through the backend, recovering from
         CLI premature-exit-after-tool-roundtrip if it fires.
@@ -2193,7 +2216,12 @@ class SessionManager:
         resume_at_turn_start = session.claude_session_id
 
         while True:
-            backend = self._make_run(session, agent, connectors)
+            backend = self._make_run(
+                session,
+                agent,
+                connectors,
+                feature_turn_authority=feature_turn_authority,
+            )
             session._backend = backend
             saw_result = False
             saw_tool_use = False
@@ -2487,12 +2515,19 @@ class SessionManager:
         session: Session,
         agent: dict[str, Any] | None = None,
         connectors: list[tuple[Any, Any]] | None = None,
+        *,
+        feature_turn_authority: FeatureTurnAuthority | None = None,
     ) -> HarnessRun:
         """Build the per-turn run for a session via its harness. Single seam
         the run loop calls (and tests monkeypatch); dispatches on
         `session.backend` through the registry — no kind branching here."""
         return get_harness(session.backend).create_run(
-            self._run_config(session, agent, connectors)
+            self._run_config(
+                session,
+                agent,
+                connectors,
+                feature_turn_authority=feature_turn_authority,
+            )
         )
 
     def _run_config(
@@ -2500,6 +2535,8 @@ class SessionManager:
         session: Session,
         agent: dict[str, Any] | None = None,
         connectors: list[tuple[Any, Any]] | None = None,
+        *,
+        feature_turn_authority: FeatureTurnAuthority | None = None,
     ) -> RunConfig:
         """Build the per-turn RunConfig from the (freshly-loaded) agent. The
         agent supplies the system prompt, model, built-in MCP set, and tool
@@ -2595,6 +2632,21 @@ class SessionManager:
             connectors=connectors or [],
             memory_dir=memory_dir,
             fork_note=fork_note,
+            feature_run_id=(
+                feature_turn_authority.feature_run_id
+                if feature_turn_authority is not None
+                else None
+            ),
+            feature_dispatch_id=(
+                feature_turn_authority.dispatch_id
+                if feature_turn_authority is not None
+                else None
+            ),
+            feature_dispatch_capability=(
+                feature_turn_authority.dispatch_capability
+                if feature_turn_authority is not None
+                else None
+            ),
         )
 
     # Refresh the access_token if it expires within this many seconds. A

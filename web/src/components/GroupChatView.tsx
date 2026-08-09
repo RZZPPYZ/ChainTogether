@@ -13,6 +13,7 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconClock,
+  IconGitBranch,
   IconLoader2,
   IconMenu2,
   IconMessageCircle,
@@ -34,12 +35,58 @@ import {
   type GroupAgentRun,
   type GroupInvocation,
   type Message,
+  type Agent,
 } from "../stores/sessionStore";
 import { Button } from "./ui/button";
 import { MessageNavigator } from "./MessageNavigator";
 import { buildUserMessageMarkers } from "../lib/messageNavigation";
+import {
+  SlashCommandMenu,
+  filterSlashCommands,
+  type SlashCommand,
+} from "./SlashCommandMenu";
+import {
+  parseFeatureCommand,
+  resolveFeatureRoles,
+} from "../lib/featureCommand";
 
 const API = window.location.origin;
+
+const GROUP_SLASH_COMMANDS: SlashCommand[] = [
+  {
+    name: "/feature",
+    hint: "<requirement>",
+    description: "Run a requirement through the full group delivery lifecycle",
+    Icon: IconGitBranch,
+  },
+];
+
+interface FeatureDeliveryStatus {
+  feature_id?: string;
+  stage?: string;
+  state?: string;
+  suggested_skills?: string[];
+  next_step?: string;
+  blocker?: string | null;
+  checkpoint_state?: string | null;
+  run?: {
+    id: string;
+    feature_id: string;
+    stage: string;
+    state: string;
+  };
+  roles?: Record<string, { id?: string | null; name?: string | null }>;
+  dispatch?: { state?: string; target_role?: string } | null;
+}
+
+async function apiError(response: Response): Promise<string> {
+  try {
+    const payload = (await response.json()) as { detail?: string };
+    return payload.detail || `Request failed (${response.status})`;
+  } catch {
+    return `Request failed (${response.status})`;
+  }
+}
 
 /** @-mention input detection. Unicode-aware so non-ASCII agent names
  * (中文, éàü, …) trigger + complete the same way ASCII ones do — JS's
@@ -274,13 +321,23 @@ export function parseGroupAgentMessage(content: string): {
     };
   }
   const invocation = content.match(
-    /^\[group-invocation:[^:]+:[^\]]+\]\s*\n\n([\s\S]*)$/,
+    /^\[(?:group-invocation:[^:]+:[^\]]+|feature-dispatch:[^\]]+)\]\s*\n\n([\s\S]*)$/,
   );
   if (invocation) {
     return {
       body: invocation[1],
       isError: false,
       isInvocation: true,
+    };
+  }
+  const featureRequest = content.match(
+    /^\[feature-request:[^\]]+\]\s*\n\n([\s\S]*)$/,
+  );
+  if (featureRequest) {
+    return {
+      body: featureRequest[1],
+      isError: false,
+      isInvocation: false,
     };
   }
   return { body: content, isError: false, isInvocation: false };
@@ -662,7 +719,7 @@ export function GroupChatView({
       group
         ? group.agentIds
             .map((id) => agents.find((a) => a.id === id))
-            .filter(Boolean)
+            .filter((agent): agent is Agent => Boolean(agent))
         : [],
     [group, agents],
   );
@@ -718,6 +775,11 @@ export function GroupChatView({
   const [mentionIndex, setMentionIndex] = useState(-1);
   const [mentionSearch, setMentionSearch] = useState("");
   const [showMentions, setShowMentions] = useState(false);
+  const [slashIndex, setSlashIndex] = useState(0);
+  const [slashDismissed, setSlashDismissed] = useState(false);
+  const [featureStatus, setFeatureStatus] =
+    useState<FeatureDeliveryStatus | null>(null);
+  const [featureError, setFeatureError] = useState<string | null>(null);
   const [invocationAction, setInvocationAction] = useState<string | null>(null);
   const [defaultSaving, setDefaultSaving] = useState(false);
   const [activeUserMessageIndex, setActiveUserMessageIndex] = useState<
@@ -810,6 +872,39 @@ export function GroupChatView({
     return () => controller.abort();
   }, [activeGroupId, token, setGroupInvocations]);
 
+  const loadFeatureStatus = useCallback(async () => {
+    if (!activeGroupId || !token) return null;
+    try {
+      const response = await fetch(
+        `${API}/api/groups/${activeGroupId}/feature-delivery/status`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (!response.ok) {
+        if (response.status === 404) setFeatureStatus(null);
+        return null;
+      }
+      const payload = (await response.json()) as FeatureDeliveryStatus | null;
+      setFeatureStatus(payload);
+      return payload;
+    } catch {
+      return null;
+    }
+  }, [activeGroupId, token]);
+
+  useEffect(() => {
+    if (!activeGroupId || !token) return;
+    const initial = window.setTimeout(() => {
+      setFeatureError(null);
+      setFeatureStatus(null);
+      void loadFeatureStatus();
+    }, 0);
+    const timer = window.setInterval(() => void loadFeatureStatus(), 4000);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(timer);
+    };
+  }, [activeGroupId, token, loadFeatureStatus]);
+
   const mentionOptions = useMemo(() => {
     const handles = members.flatMap((agent) => {
       if (!agent) return [];
@@ -826,6 +921,11 @@ export function GroupChatView({
         handle.toLowerCase().includes(q) || agent.name.toLowerCase().includes(q),
     );
   }, [showMentions, mentionSearch, members]);
+  const slashCommands = useMemo(
+    () => filterSlashCommands(input, GROUP_SLASH_COMMANDS),
+    [input],
+  );
+  const showSlashMenu = slashCommands.length > 0 && !slashDismissed;
 
   // Auto-scroll to bottom on new messages or streaming text.
   useEffect(() => {
@@ -855,10 +955,12 @@ export function GroupChatView({
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       const v = e.target.value;
       setInput(v);
+      setSlashIndex(0);
+      setSlashDismissed(false);
       const pos = e.target.selectionStart;
       const before = v.slice(0, pos);
       const m = before.match(MENTION_PARTIAL_RE);
-      if (m) {
+      if (m && !v.startsWith("/")) {
         setShowMentions(true);
         setMentionSearch(m[1]);
         setMentionIndex(0);
@@ -870,6 +972,17 @@ export function GroupChatView({
     },
     [],
   );
+
+  const completeSlash = useCallback((command: SlashCommand) => {
+    setInput(`${command.name} `);
+    setSlashIndex(0);
+    setSlashDismissed(false);
+    requestAnimationFrame(() => {
+      const position = command.name.length + 1;
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(position, position);
+    });
+  }, []);
 
   const insertMention = useCallback(
     (agentName: string) => {
@@ -891,12 +1004,65 @@ export function GroupChatView({
   );
 
   const handleSend = async () => {
-    const content = input.trim();
+    const draft = input;
+    const content = draft.trim();
     if (!content || !activeGroupId || sending) return;
-    setSending(true);
-    setInput("");
-    setShowMentions(false);
+    let featureCommand;
     try {
+      featureCommand = parseFeatureCommand(content);
+    } catch (error) {
+      setFeatureError(
+        error instanceof Error ? error.message : "Invalid /feature command.",
+      );
+      return;
+    }
+    setSending(true);
+    setShowMentions(false);
+    setSlashDismissed(false);
+    setFeatureError(null);
+    try {
+      if (featureCommand) {
+        let path = `${API}/api/groups/${activeGroupId}/feature-delivery`;
+        let method = "POST";
+        let body: Record<string, unknown> | undefined;
+        if (featureCommand.kind === "start") {
+          body = {
+            request_key:
+              globalThis.crypto?.randomUUID?.() ??
+              `feature-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            requirement: featureCommand.requirement,
+            priority: "P1",
+          };
+        } else if (featureCommand.kind === "status") {
+          path += "/status";
+          method = "GET";
+        } else if (featureCommand.kind === "resume") {
+          path += "/resume";
+        } else {
+          path += "/roles";
+          method = "PUT";
+          body = { ...resolveFeatureRoles(featureCommand.handles, members) };
+        }
+        const response = await fetch(path, {
+          method,
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        if (!response.ok) {
+          setFeatureError(await apiError(response));
+          setInput(draft);
+          return;
+        }
+        const payload = (await response.json()) as FeatureDeliveryStatus;
+        setFeatureStatus(payload);
+        setInput("");
+        await loadFeatureStatus();
+        return;
+      }
+      setInput("");
       const response = await fetch(`${API}/api/groups/${activeGroupId}/send`, {
         method: "POST",
         headers: {
@@ -911,8 +1077,14 @@ export function GroupChatView({
           upsertGroupInvocation(payload.invocation as GroupInvocation);
         }
       }
-    } catch {
-      // best-effort; the WS handler still renders whatever the server emits
+    } catch (error) {
+      if (featureCommand) {
+        setFeatureError(
+          error instanceof Error ? error.message : "Feature request failed.",
+        );
+        setInput(draft);
+      }
+      // Ordinary sends remain best-effort; WS may still render server output.
     } finally {
       setSending(false);
     }
@@ -978,6 +1150,32 @@ export function GroupChatView({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      if (showSlashMenu && slashCommands.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setSlashIndex((index) => (index + 1) % slashCommands.length);
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setSlashIndex(
+            (index) =>
+              (index - 1 + slashCommands.length) % slashCommands.length,
+          );
+          return;
+        }
+        if (e.key === "Tab" || e.key === "Enter") {
+          e.preventDefault();
+          const selected = slashCommands[slashIndex] ?? slashCommands[0];
+          if (selected) completeSlash(selected);
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setSlashDismissed(true);
+          return;
+        }
+      }
       if (showMentions && mentionOptions.length > 0) {
         if (e.key === "ArrowDown") {
           e.preventDefault();
@@ -1010,7 +1208,16 @@ export function GroupChatView({
         void handleSend();
       }
     },
-    [showMentions, mentionOptions, mentionIndex, insertMention],
+    [
+      showSlashMenu,
+      slashCommands,
+      slashIndex,
+      completeSlash,
+      showMentions,
+      mentionOptions,
+      mentionIndex,
+      insertMention,
+    ],
   );
 
   const renderMessage = useCallback(
@@ -1153,6 +1360,81 @@ export function GroupChatView({
         </span>
       </div>
 
+      {(featureStatus || featureError) && (
+        <div className="shrink-0 border-b border-border bg-primary/5 px-4 py-2">
+          {featureStatus && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+              <span className="font-semibold text-foreground">
+                {featureStatus.run?.feature_id || featureStatus.feature_id || "Feature"}
+              </span>
+              <span className="rounded-full bg-primary/10 px-2 py-0.5 font-medium text-primary">
+                {featureStatus.run?.stage || featureStatus.stage || "starting"}
+              </span>
+              <span className="text-muted-foreground">
+                {featureStatus.dispatch?.state ||
+                  featureStatus.checkpoint_state ||
+                  featureStatus.run?.state ||
+                  featureStatus.state}
+              </span>
+              {featureStatus.roles && (
+                <>
+                  <span className="truncate text-muted-foreground">
+                    Owner @{featureStatus.roles.owner?.name || "unassigned"} · Review @{featureStatus.roles.reviewer?.name || "unassigned"} · Vision @{featureStatus.roles.vision_guardian?.name || "unassigned"}
+                  </span>
+                  {featureStatus.run?.state !== "done" && (
+                    <button
+                      type="button"
+                      className="rounded px-1.5 py-0.5 font-medium text-primary hover:bg-primary/10"
+                      onClick={() => {
+                        const roles = featureStatus.roles;
+                        setInput(
+                          `/feature roles owner=@${roles?.owner?.name || "Owner"} ` +
+                            `reviewer=@${roles?.reviewer?.name || "Reviewer"} ` +
+                            `guardian=@${roles?.vision_guardian?.name || "Guardian"}`,
+                        );
+                        inputRef.current?.focus();
+                      }}
+                    >
+                      Edit roles
+                    </button>
+                  )}
+                </>
+              )}
+              {featureStatus.suggested_skills?.[0] && (
+                <span className="text-muted-foreground">
+                  Next skill: {featureStatus.suggested_skills[0]}
+                </span>
+              )}
+              {featureStatus.next_step && (
+                <span className="basis-full truncate text-muted-foreground">
+                  Next: {featureStatus.next_step}
+                </span>
+              )}
+            </div>
+          )}
+          {(featureError || featureStatus?.blocker) && (
+            <div className="mt-1 flex items-center gap-2 text-xs text-destructive">
+              <IconAlertCircle size={14} className="shrink-0" />
+              <span className="min-w-0 flex-1 truncate">
+                {featureError || featureStatus?.blocker}
+              </span>
+              {featureStatus && featureStatus.run?.state !== "done" && (
+                <button
+                  type="button"
+                  className="rounded px-2 py-1 font-medium hover:bg-destructive/10"
+                  onClick={() => {
+                    setInput("/feature resume");
+                    inputRef.current?.focus();
+                  }}
+                >
+                  Prepare resume
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {visibleInvocations.length > 0 && (
         <div className="shrink-0 border-b border-border bg-muted/35 px-4 py-2 space-y-1.5">
           {visibleInvocations.map((invocation) => {
@@ -1284,6 +1566,15 @@ export function GroupChatView({
 
       {/* Composer with @-mention autocomplete */}
       <div className="chat-composer shrink-0 border-t border-border bg-background px-3 py-2 relative">
+        {showSlashMenu && (
+          <SlashCommandMenu
+            commands={slashCommands}
+            activeIndex={slashIndex}
+            onSelect={completeSlash}
+            onHoverIndex={setSlashIndex}
+            className="absolute bottom-full left-3 right-3 mb-1"
+          />
+        )}
         {showMentions && mentionOptions.length > 0 && (
           <div className="absolute bottom-full left-3 right-3 mb-1 bg-popover border border-border rounded-lg shadow-lg overflow-hidden z-50">
             {mentionOptions.map(({ agent, handle, isAlias }, i) => (

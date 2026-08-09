@@ -2,7 +2,7 @@
 schema_version: 1
 id: F002
 title: "Autonomous Group Feature Delivery"
-stage: implementation
+stage: review
 state: active
 priority: P1
 owner: "codex"
@@ -12,7 +12,7 @@ origin_kind: "codex_conversation"
 origin_group_id: ""
 origin_message_seq: null
 created_at: 2026-08-02
-updated_at: 2026-08-02
+updated_at: 2026-08-09
 related_features: ["F001"]
 blocked_by: []
 research_refs: ["docs/features/F002-autonomous-group-feature-delivery/evidence/discovery.md", "docs/features/F002-autonomous-group-feature-delivery/evidence/orchestration-design.md", "docs/features/F001-group-feature-lifecycle/evidence/vision-verdict-0c5482d.md"]
@@ -35,16 +35,20 @@ transition API calls.
 
 ## Current State
 
-- The group composer has @mention routing but no group slash-command menu.
-- REST APIs can create FeatureRuns, update roles, activate a run, and perform
-  Session-bound transitions.
+- The group composer advertises `/feature`; start/status/resume/role commands
+  use dedicated delivery APIs and preserve a failed draft.
+- FeatureStart and FeatureDispatch rows durably record idempotency,
+  policy-bounded authorization, roles, revision/generation custody, exact
+  invocation links, blockers, and restart recovery.
+- Three eligible Agents are assigned deterministic run-scoped owner, reviewer,
+  and vision-guardian roles; unavailable/archived actors block safely.
+- Claude Code and Codex receive the mandatory Feature MCP. Session identity and
+  one-time exact-dispatch authority are child-env-only.
 - D14 injects stage, role, suggested Skill, next step, gate, and canonical doc
-  on every group Agent turn.
-- Built-in MCP servers do not expose Feature status or transition tools.
-- A group may contain two members and has no permanent coding/review/guardian
-  role metadata.
-- Existing group invocations already provide durable, depth-bounded A2A
-  handoff custody; this Feature should compose with that system.
+  on every scheduled group Agent turn.
+- Every accepted handoff creates a fresh depth-zero successor invocation;
+  owner-prepared review packets, independent review/re-review, merge, vision,
+  and closure retain their separate actors and gates.
 
 ## Scope
 
@@ -112,57 +116,57 @@ transition API calls.
 
 ## Acceptance Criteria
 
-- [ ] AC-1: The group composer advertises and accepts `/feature <requirement>`,
+- [x] AC-1: The group composer advertises and accepts `/feature <requirement>`,
   `/feature status`, and `/feature resume`; empty new requirements are rejected
   without sending an ordinary group message.
-- [ ] AC-2: A group with fewer than three live members receives an actionable
+- [x] AC-2: A group with fewer than three live members receives an actionable
   error before any FeatureRun, Feature Doc, role update, or invocation is
   created.
-- [ ] AC-3: With at least three members and no preassigned roles, start chooses
+- [x] AC-3: With at least three members and no preassigned roles, start chooses
   three distinct live, non-archived Agents deterministically using
   `(joined_at, agent_id)`, prefers a valid default responder as owner, persists
   complete assignments, and returns names/IDs to the UI.
-- [ ] AC-4: Start commits request-key idempotency, complete roles, FeatureRun,
+- [x] AC-4: Start commits request-key idempotency, complete roles, FeatureRun,
   created event, active pointer, create-only Feature Doc outbox image, and
   initial dispatch in one DB transaction; every later filesystem/launch crash
   point resumes the same run without an orphan or duplicate.
-- [ ] AC-5: Every group Agent receives the mandatory core Feature MCP with
+- [x] AC-5: Every group Agent receives the mandatory core Feature MCP with
   `status`, `transition`, and `request_review` tools; tool results identify the
   run, stage, role, suggested Skill, next step, dispatch state, and required
   successor actor. Each dispatched turn additionally receives an unlisted,
   one-time dispatch capability through process env, absent from argv/config.
-- [ ] AC-6: MCP derives identity from `OCTOPUS_SESSION_ID` plus the Session
+- [x] AC-6: MCP derives identity from `OCTOPUS_SESSION_ID` plus the Session
   capability and binds mutation to the exact active invocation generation with
   its dispatch capability. The first transition/request consumes that token in
   the same transaction as lifecycle change and successor insert; replay, wrong
   Session/token/role, missing evidence, stale Git, or invalid edge fails closed.
-- [ ] AC-7: Start creates an initial dispatch. Each accepted transition or
+- [x] AC-7: Start creates an initial dispatch. Each accepted transition or
   `request_review` atomically marks its active predecessor
   `handoff_committed` and creates one `waiting` revision-bound successor. Only
   the exact predecessor terminal callback promotes it; one fresh depth-zero
   invocation then launches for the actor matrix, supporting multi-round Review.
-- [ ] AC-8: The group header/composer shows active Feature ID, stage, state, and
+- [x] AC-8: The group header/composer shows active Feature ID, stage, state, and
   role assignments, and reflects start/status/resume failures without losing
   the operator's requirement.
-- [ ] AC-9: Two concurrent starts (same or different request keys) produce one
+- [x] AC-9: Two concurrent starts (same or different request keys) produce one
   active-pointer winner; retries return the same checkpoint/run and explicit
   status/resume path rather than creating another doc, run, or invocation.
-- [ ] AC-10: Dispatch state, revision, lease, target, purpose, generation, and
+- [x] AC-10: Dispatch state, revision, lease, target, purpose, generation, and
   invocation/predecessor link and capability hash survive restart. Two resumes,
   transition-vs-resume, double transition from an old turn, terminal-vs-lease,
   token replay, and a late callback converge to one current actor invocation;
   dead/blocked runs recompute from FeatureRun truth.
-- [ ] AC-11: Claude Code and Codex always expose Feature MCP as an unremovable
+- [x] AC-11: Claude Code and Codex always expose Feature MCP as an unremovable
   core control-plane server without leaking Session capability in argv or
   connector configuration, regardless of an Agent's optional MCP selection.
-- [ ] AC-12: Focused backend, MCP, group journey, and frontend tests pass;
+- [x] AC-12: Focused backend, MCP, group journey, and frontend tests pass;
   generated API contracts, Skill/Feature validators, typecheck, and production
   build remain synchronized.
-- [ ] AC-13: `/feature roles owner=@... reviewer=@... guardian=@...` visibly
+- [x] AC-13: `/feature roles owner=@... reviewer=@... guardian=@...` visibly
   patches three distinct live members through the operator API; removal,
   archival, or unavailable backend blocks affected dispatch/edge until roles
   are corrected and resumed. Agents cannot self-reassign through MCP.
-- [ ] AC-14: `/feature <requirement>` records run-scoped authorization for
+- [x] AC-14: `/feature <requirement>` records run-scoped authorization for
   commit, push, PR, and merge only after green gates and repository policy.
   Force push, protection/CI bypass, deployment, unrelated external effects, or
   unresolved value decisions remain blocked and visible.
@@ -217,6 +221,13 @@ transition API calls.
 - **Plan**: `docs/features/F002-autonomous-group-feature-delivery/plan.md`
 - **Worktree**: `F:\\RZP_program\\my_project\\ChainTogether\\.worktrees\\F002-autonomous-group-feature`
 - **Branch**: `codex/f002-autonomous-group-feature`
+- **Control plane**: mandatory Feature MCP, Session/dispatch-bound routes,
+  atomic handoff pairs, restart reconciliation
+- **Group UX**: `/feature` autocomplete, start/status/resume/roles, live stage
+  and role panel, blocker and draft recovery
+- **Journey test**: owner stages -> owner review preparation -> independent
+  review -> owner fixes -> re-review -> merge -> guardian -> closure, with a
+  fresh generation at every handoff
 
 ## Review Provenance
 
@@ -225,6 +236,13 @@ transition API calls.
 - **Base SHA**: `3ea65be7a99ef19e3271ab235ef3921d0666e454`
 - **Reviewed HEAD**:
 - **Verdict**: pending
+
+## Quality Gate
+
+- **Verdict**: pass
+- **Evidence**: `evidence/quality-report.md`
+- **Fresh matrix**: backend 88 tests (1 skipped), frontend 25 tests,
+  typecheck/build/validators/contracts/diff check green; no new lint error
 
 ## Vision Gate
 
@@ -237,13 +255,13 @@ transition API calls.
 
 | ID | Type | Item | Owner | Status |
 |---|---|---|---|---|
-| RISK-1 | correctness | A start request can create a run before group invocation launch fails; active-run conflict must make retry resume rather than duplicate. | implementer | design mitigation defined |
-| RISK-2 | security | Feature MCP must not turn the shared bearer into cross-Session impersonation. | implementer | reuse Session capability gate |
+| RISK-1 | correctness | A start request can create a run before group invocation launch fails; active-run conflict must make retry resume rather than duplicate. | implementer | mitigated by atomic checkpoint, exact lease failure, same-key recovery |
+| RISK-2 | security | Feature MCP must not turn the shared bearer into cross-Session impersonation. | implementer | verified Session + one-time dispatch capability; raw tokens child-env-only |
 | RISK-3 | product | Deterministic role assignment does not measure model suitability. | operator | accepted fallback; assignment is visible and patchable |
-| RISK-4 | operations | A group chain can stop on process crash or Agent failure. | implementer | durable status plus idempotent resume |
+| RISK-4 | operations | A group chain can stop on process crash or Agent failure. | implementer | startup lease reclaim, zombie completion, status and idempotent resume implemented |
 | RISK-5 | policy | One-sentence autonomy cannot authorize bypassing repo merge policy or unresolved operator value decisions. | operator | fail closed and surface blocker |
-| RISK-6 | concurrency | Start, resume, transition, and late workers can duplicate delivery without database claims. | implementer | revision dispatch/lease protocol defined |
-| RISK-7 | routing | One GroupInvocation depth cap cannot sustain multi-round Review. | implementer | fresh successor invocation per dispatch |
+| RISK-6 | concurrency | Start, resume, transition, and late workers can duplicate delivery without database claims. | implementer | DB CAS, partial uniqueness, handoff pair, replay tests implemented |
+| RISK-7 | routing | One GroupInvocation depth cap cannot sustain multi-round Review. | implementer | verified fresh depth-zero successor per dispatch |
 
 ## Timeline
 
@@ -257,3 +275,7 @@ transition API calls.
 | 2026-08-02 | Discovery added handoff-committed/waiting successor protocol and one-time dispatch capability | `evidence/orchestration-design.md` |
 | 2026-08-02 | Independent Design Gate approved exact Feature Doc revision `ed9bda4` | `evidence/design-verdict-ed9bda4.md` |
 | 2026-08-02 | Isolated implementation worktree prepared; Python and frontend baselines are green | `evidence/worktree-record.md` |
+| 2026-08-09 | Mandatory Feature MCP and Session/dispatch-bound control APIs implemented | `evidence/tdd-task-4.md`, `evidence/tdd-task-5.md` |
+| 2026-08-09 | Fresh successor runtime, restart recovery, and multi-round review-to-closure journey implemented | `evidence/tdd-task-6.md` |
+| 2026-08-09 | Group `/feature` command, role grammar, status panel, errors, and exact draft restoration implemented | `evidence/tdd-task-7.md` |
+| 2026-08-09 | Quality Gate passed with full tests/build/validators and an explicit no-new-error lint baseline disposition | `evidence/quality-report.md` |

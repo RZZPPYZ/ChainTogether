@@ -100,11 +100,14 @@ export function slashQuery(input: string): string | null {
 }
 
 /** Commands whose name starts with the current query (case-insensitive). */
-export function filterSlashCommands(input: string): SlashCommand[] {
+export function filterSlashCommands(
+  input: string,
+  commands: SlashCommand[] = SLASH_COMMANDS,
+): SlashCommand[] {
   const q = slashQuery(input);
   if (q === null) return [];
   const lower = q.toLowerCase();
-  return SLASH_COMMANDS.filter((c) => c.name.startsWith(lower));
+  return commands.filter((c) => c.name.startsWith(lower));
 }
 
 interface Props {

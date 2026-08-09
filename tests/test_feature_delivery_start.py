@@ -98,6 +98,26 @@ class FeatureDeliveryStartTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(0, await self._count(table), table)
         self.assertFalse((self.workspace / "docs" / "features").exists())
 
+    async def test_ac13_unavailable_backend_is_not_dispatch_eligible(self) -> None:
+        await self.db.update_agent(
+            self.agents[2]["id"], backend="missing-feature-backend"
+        )
+        unavailable_group = await self.groups.create_group(
+            "Unavailable backend",
+            [agent["id"] for agent in self.agents[:3]],
+            working_dir=str(self.workspace),
+        )
+
+        with self.assertRaisesRegex(FeatureError, "available backends"):
+            await self.delivery.start(
+                unavailable_group["id"],
+                request_key="request-unavailable-backend",
+                requirement="Do not dispatch to an unavailable backend",
+            )
+
+        self.assertEqual(0, await self._count("feature_runs"))
+        self.assertEqual(0, await self._count("feature_dispatches"))
+
     async def test_ac3_ac4_start_assigns_roles_and_commits_one_checkpoint(self) -> None:
         result = await self.delivery.start(
             self.group["id"],

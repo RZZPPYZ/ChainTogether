@@ -646,6 +646,34 @@ class GroupFeatureCreate(BaseModel):
     origin_message_seq: int | None = Field(default=None, ge=0)
 
 
+class FeatureDeliveryStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_key: str = Field(min_length=1, max_length=200)
+    requirement: str = Field(min_length=1, max_length=10000)
+    priority: str = Field(default="P1", pattern=r"^P[0-3]$")
+    origin_message_seq: int | None = Field(default=None, ge=0)
+
+
+class FeatureDeliveryRolesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    owner_agent_id: str = Field(min_length=1, max_length=80)
+    reviewer_agent_id: str = Field(min_length=1, max_length=80)
+    vision_guardian_agent_id: str = Field(min_length=1, max_length=80)
+
+
+class FeatureReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(
+        default="SHA-bound review packet is ready for independent review",
+        max_length=4000,
+    )
+    evidence_refs: list[str] = Field(default_factory=list)
+    revision: str = Field(default="", max_length=64)
+
+
 class GroupActiveFeatureUpdate(BaseModel):
     feature_run_id: str | None = None
 

@@ -1088,7 +1088,7 @@ class Database:
         """Return stable, dispatch-eligible members for role resolution."""
         await self._ensure_connected()
         cursor = await self._conn.execute(
-            "SELECT a.id, a.name, gm.joined_at "
+            "SELECT a.id, a.name, gm.joined_at, a.backend "
             "FROM group_members gm "
             "JOIN agents a ON a.id = gm.agent_id "
             "WHERE gm.group_id = ? AND a.archived = 0 "
@@ -1096,7 +1096,12 @@ class Database:
             (group_id,),
         )
         return [
-            {"id": str(row[0]), "name": str(row[1]), "joined_at": str(row[2])}
+            {
+                "id": str(row[0]),
+                "name": str(row[1]),
+                "joined_at": str(row[2]),
+                "backend": str(row[3] or "claude-code"),
+            }
             for row in await cursor.fetchall()
         ]
 
@@ -1245,6 +1250,8 @@ class Database:
             "current_agent_id, depth, held_until, hold_reason, error, "
             "created_at, updated_at, completed_at, "
             "(SELECT feature_run_id FROM feature_invocation_links "
+            " WHERE invocation_id = group_invocations.id), "
+            "(SELECT dispatch_id FROM feature_invocation_links "
             " WHERE invocation_id = group_invocations.id) "
             "FROM group_invocations WHERE id = ?",
             (invocation_id,),
@@ -1261,6 +1268,8 @@ class Database:
             "current_agent_id, depth, held_until, hold_reason, error, "
             "created_at, updated_at, completed_at, "
             "(SELECT feature_run_id FROM feature_invocation_links "
+            " WHERE invocation_id = group_invocations.id), "
+            "(SELECT dispatch_id FROM feature_invocation_links "
             " WHERE invocation_id = group_invocations.id) "
             "FROM group_invocations WHERE group_id = ?"
         )
@@ -1278,6 +1287,8 @@ class Database:
             "current_agent_id, depth, held_until, hold_reason, error, "
             "created_at, updated_at, completed_at, "
             "(SELECT feature_run_id FROM feature_invocation_links "
+            " WHERE invocation_id = group_invocations.id), "
+            "(SELECT dispatch_id FROM feature_invocation_links "
             " WHERE invocation_id = group_invocations.id) "
             "FROM group_invocations "
             "WHERE status IN ('running', 'held') ORDER BY created_at"
@@ -1301,6 +1312,7 @@ class Database:
             "updated_at": row[11],
             "completed_at": row[12],
             "feature_run_id": row[13],
+            "feature_dispatch_id": row[14],
         }
 
     # ------------------------------------------------------------------
@@ -1734,6 +1746,52 @@ class Database:
                 await self._conn.rollback()
                 raise
 
+    async def fail_feature_dispatch_lease(
+        self,
+        dispatch_id: str,
+        *,
+        lease_token_hash: str,
+        error: str,
+        updated_at: str,
+    ) -> bool:
+        """Fail only the exact lease held by the launch attempt."""
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "UPDATE feature_dispatches SET state = 'failed', error = ?, "
+            "lease_owner = NULL, lease_token_hash = NULL, "
+            "lease_expires_at = NULL, updated_at = ? "
+            "WHERE id = ? AND state = 'leased' AND lease_token_hash = ?",
+            (error, updated_at, dispatch_id, lease_token_hash),
+        )
+        await self._conn.commit()
+        return cursor.rowcount == 1
+
+    async def reset_orphaned_feature_dispatch_leases(
+        self, *, updated_at: str
+    ) -> list[str]:
+        """Return all startup-orphaned leases to pending without raw secrets."""
+        await self._ensure_connected()
+        async with self._feature_write_lock:
+            try:
+                await self._conn.execute("BEGIN IMMEDIATE")
+                cursor = await self._conn.execute(
+                    "SELECT DISTINCT feature_run_id FROM feature_dispatches "
+                    "WHERE state = 'leased'"
+                )
+                run_ids = [str(row[0]) for row in await cursor.fetchall()]
+                await self._conn.execute(
+                    "UPDATE feature_dispatches SET state = 'pending', "
+                    "lease_owner = NULL, lease_token_hash = NULL, "
+                    "lease_expires_at = NULL, capability_hash = '', "
+                    "updated_at = ? WHERE state = 'leased'",
+                    (updated_at,),
+                )
+                await self._conn.commit()
+                return run_ids
+            except Exception:
+                await self._conn.rollback()
+                raise
+
     async def complete_feature_dispatch_invocation(
         self,
         dispatch_id: str,
@@ -1986,6 +2044,23 @@ class Database:
                         updated_at,
                     ),
                 )
+                for field, target_role in (
+                    ("owner_agent_id", "owner"),
+                    ("reviewer_agent_id", "reviewer"),
+                    ("vision_guardian_agent_id", "vision_guardian"),
+                ):
+                    if field in updates and updates[field] is not None:
+                        await self._conn.execute(
+                            "UPDATE feature_dispatches SET target_agent_id = ?, "
+                            "updated_at = ? WHERE feature_run_id = ? "
+                            "AND target_role = ? AND state IN ('pending', 'waiting')",
+                            (
+                                updates[field],
+                                updated_at,
+                                run_id,
+                                target_role,
+                            ),
+                        )
                 await self._conn.commit()
                 return True
             except Exception:

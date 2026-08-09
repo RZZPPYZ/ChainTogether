@@ -1435,6 +1435,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/groups/{group_id}/feature-delivery": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start Feature Delivery */
+        post: operations["start_feature_delivery_api_groups__group_id__feature_delivery_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/groups/{group_id}/feature-delivery/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Feature Delivery Status */
+        get: operations["get_feature_delivery_status_api_groups__group_id__feature_delivery_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/groups/{group_id}/feature-delivery/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resume Feature Delivery */
+        post: operations["resume_feature_delivery_api_groups__group_id__feature_delivery_resume_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/groups/{group_id}/feature-delivery/roles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Feature Delivery Roles */
+        put: operations["update_feature_delivery_roles_api_groups__group_id__feature_delivery_roles_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/groups/{group_id}/active-feature": {
         parameters: {
             query?: never;
@@ -1498,6 +1566,57 @@ export interface paths {
         put?: never;
         /** Transition Feature */
         post: operations["transition_feature_api_sessions__session_id__features__run_id__transition_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/features/{run_id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Feature Delivery Status For Session */
+        get: operations["get_feature_delivery_status_for_session_api_sessions__session_id__features__run_id__status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/features/{run_id}/dispatch/transition": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Transition Feature Dispatch */
+        post: operations["transition_feature_dispatch_api_sessions__session_id__features__run_id__dispatch_transition_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/features/{run_id}/dispatch/request-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request Feature Review */
+        post: operations["request_feature_review_api_sessions__session_id__features__run_id__dispatch_request_review_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2072,6 +2191,44 @@ export interface components {
         DuplicateSessionRequest: {
             /** Label */
             label?: string | null;
+        };
+        /** FeatureDeliveryRolesRequest */
+        FeatureDeliveryRolesRequest: {
+            /** Owner Agent Id */
+            owner_agent_id: string;
+            /** Reviewer Agent Id */
+            reviewer_agent_id: string;
+            /** Vision Guardian Agent Id */
+            vision_guardian_agent_id: string;
+        };
+        /** FeatureDeliveryStartRequest */
+        FeatureDeliveryStartRequest: {
+            /** Request Key */
+            request_key: string;
+            /** Requirement */
+            requirement: string;
+            /**
+             * Priority
+             * @default P1
+             */
+            priority: string;
+            /** Origin Message Seq */
+            origin_message_seq?: number | null;
+        };
+        /** FeatureReviewRequest */
+        FeatureReviewRequest: {
+            /**
+             * Reason
+             * @default SHA-bound review packet is ready for independent review
+             */
+            reason: string;
+            /** Evidence Refs */
+            evidence_refs?: string[];
+            /**
+             * Revision
+             * @default
+             */
+            revision: string;
         };
         /** FeatureRolesUpdate */
         FeatureRolesUpdate: {
@@ -6013,6 +6170,138 @@ export interface operations {
             };
         };
     };
+    start_feature_delivery_api_groups__group_id__feature_delivery_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                group_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FeatureDeliveryStartRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_feature_delivery_status_api_groups__group_id__feature_delivery_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                group_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resume_feature_delivery_api_groups__group_id__feature_delivery_resume_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                group_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_feature_delivery_roles_api_groups__group_id__feature_delivery_roles_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                group_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FeatureDeliveryRolesRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_active_group_feature_api_groups__group_id__active_feature_get: {
         parameters: {
             query?: never;
@@ -6170,6 +6459,120 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FeatureRunInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_feature_delivery_status_for_session_api_sessions__session_id__features__run_id__status_get: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Octopus-Session-Capability": string;
+            };
+            path: {
+                session_id: string;
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    transition_feature_dispatch_api_sessions__session_id__features__run_id__dispatch_transition_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Octopus-Session-Capability": string;
+                "X-Octopus-Feature-Dispatch": string;
+                "X-Octopus-Dispatch-Capability": string;
+            };
+            path: {
+                session_id: string;
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FeatureTransitionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_feature_review_api_sessions__session_id__features__run_id__dispatch_request_review_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Octopus-Session-Capability": string;
+                "X-Octopus-Feature-Dispatch": string;
+                "X-Octopus-Dispatch-Capability": string;
+            };
+            path: {
+                session_id: string;
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FeatureReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

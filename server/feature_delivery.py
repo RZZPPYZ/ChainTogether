@@ -5,10 +5,14 @@ import hashlib
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .database import Database
 from .feature_manager import FeatureError, FeatureManager
+from .harness import has_backend
+
+if TYPE_CHECKING:
+    from .group_manager import GroupManager
 
 
 _RUN_AUTHORIZATION: dict[str, bool] = {
@@ -37,11 +41,17 @@ class FeatureDeliveryManager:
     def __init__(self) -> None:
         self.db: Database | None = None
         self.feature_manager: FeatureManager | None = None
+        self.group_manager: GroupManager | None = None
         self._start_lock = asyncio.Lock()
+        self._dispatch_lock = asyncio.Lock()
+        self._worker_id = f"feature-runtime-{uuid.uuid4().hex[:12]}"
 
     def bind(self, db: Database, feature_manager: FeatureManager) -> None:
         self.db = db
         self.feature_manager = feature_manager
+
+    def bind_group_manager(self, group_manager: "GroupManager") -> None:
+        self.group_manager = group_manager
 
     def _db(self) -> Database:
         if self.db is None:
@@ -90,11 +100,15 @@ class FeatureDeliveryManager:
     async def _resolve_roles(
         self, group: dict[str, Any],
     ) -> dict[str, dict[str, str]]:
-        members = await self._db().list_live_group_members(str(group["id"]))
+        live_members = await self._db().list_live_group_members(str(group["id"]))
+        members = [
+            member for member in live_members if has_backend(member.get("backend"))
+        ]
         if len(members) < 3:
             raise FeatureError(
                 "Autonomous feature delivery requires at least three live "
-                "group agents for owner, reviewer, and vision guardian",
+                "group agents with available backends for owner, reviewer, "
+                "and vision guardian",
                 status_code=409,
             )
         by_id = {member["id"]: member for member in members}
@@ -145,7 +159,9 @@ class FeatureDeliveryManager:
                         "Feature request key is already bound to another request",
                         status_code=409,
                     )
-                return await self._resume_start(existing, replayed=True)
+                result = await self._resume_start(existing, replayed=True)
+                await self.drive_pending(str(existing["feature_run_id"]))
+                return await self._refresh_start_result(result)
 
             roles = await self._resolve_roles(group)
             created_at = _now()
@@ -206,10 +222,24 @@ class FeatureDeliveryManager:
                 )
             checkpoint = await self._db().get_feature_start_request(request_key)
             assert checkpoint is not None
-            return await self._resume_start(
+            result = await self._resume_start(
                 checkpoint,
                 replayed=status == "replayed",
             )
+            await self.drive_pending(run_id)
+            return await self._refresh_start_result(result)
+
+    async def _refresh_start_result(
+        self, result: dict[str, Any]
+    ) -> dict[str, Any]:
+        run_id = str(result["run"]["id"])
+        checkpoint = await self._db().get_feature_start_for_run(run_id)
+        dispatches = await self._db().list_feature_dispatches(run_id)
+        if checkpoint is not None:
+            result["checkpoint_state"] = checkpoint["state"]
+            result["checkpoint_error"] = checkpoint["error"]
+        result["dispatch"] = dispatches[-1] if dispatches else None
+        return result
 
     async def _resume_start(
         self,
@@ -290,6 +320,85 @@ class FeatureDeliveryManager:
             "dispatch_capability": dispatch_capability,
         }
 
+    async def drive_pending(self, run_id: str) -> dict[str, Any] | None:
+        """Lease and launch at most one pending generation for ``run_id``."""
+        if self.group_manager is None:
+            return None
+        async with self._dispatch_lock:
+            leased = await self.lease_next_dispatch(
+                run_id,
+                worker_id=self._worker_id,
+                lease_seconds=30,
+            )
+            if leased is None:
+                return None
+            dispatch = leased["dispatch"]
+            run = await self._db().get_feature_run(run_id)
+            if run is None:
+                raise FeatureError("Feature run not found", status_code=404)
+            checkpoint = await self._db().get_feature_start_for_run(run_id)
+            try:
+                return await self.group_manager.launch_feature_dispatch(
+                    group_id=str(run["group_id"]),
+                    feature_run_id=run_id,
+                    dispatch_id=str(dispatch["id"]),
+                    target_agent_id=str(dispatch["target_agent_id"]),
+                    target_role=str(dispatch["target_role"]),
+                    observed_stage=str(dispatch["observed_stage"]),
+                    requirement=(
+                        str(checkpoint["requirement"]) if checkpoint else ""
+                    ),
+                    lease_token=leased["lease_token"],
+                    dispatch_capability=leased["dispatch_capability"],
+                )
+            except Exception as exc:
+                await self._db().fail_feature_dispatch_lease(
+                    str(dispatch["id"]),
+                    lease_token_hash=self._token_hash(leased["lease_token"]),
+                    error=f"Dispatch launch failed: {type(exc).__name__}",
+                    updated_at=_now(),
+                )
+                await self._db().update_feature_start_state(
+                    run_id,
+                    state="blocked",
+                    error="Feature dispatch could not be launched",
+                    updated_at=_now(),
+                )
+                raise
+
+    async def reconcile_startup(self) -> None:
+        """Recover dispatch custody after the previous server process died."""
+        await self._db().reset_orphaned_feature_dispatch_leases(updated_at=_now())
+        for run in await self._db().list_feature_runs():
+            if run["state"] == "done":
+                continue
+            dispatches = await self._db().list_feature_dispatches(str(run["id"]))
+            latest = dispatches[-1] if dispatches else None
+            if latest is None or latest["state"] == "failed":
+                try:
+                    await self.resume(str(run["id"]))
+                except FeatureError:
+                    continue
+            elif latest["state"] == "active" and latest["invocation_id"]:
+                invocation = await self._db().get_group_invocation(
+                    str(latest["invocation_id"])
+                )
+                if invocation and invocation["status"] not in {"running", "held"}:
+                    await self.complete_dispatch_invocation(
+                        str(latest["id"]),
+                        str(latest["invocation_id"]),
+                        terminal_status=str(invocation["status"]),
+                    )
+                    refreshed = await self._db().get_feature_dispatch(
+                        str(latest["id"])
+                    )
+                    if refreshed and refreshed["state"] == "failed":
+                        try:
+                            await self.resume(str(run["id"]))
+                        except FeatureError:
+                            continue
+            await self.drive_pending(str(run["id"]))
+
     async def activate_dispatch(
         self,
         dispatch_id: str,
@@ -344,6 +453,17 @@ class FeatureDeliveryManager:
                 error=str(dispatch["error"] or "Feature dispatch failed"),
                 updated_at=_now(),
             )
+        elif dispatch["state"] == "completed":
+            run = await self._db().get_feature_run(
+                str(dispatch["feature_run_id"])
+            )
+            if run is not None and run["state"] == "done":
+                await self._db().update_feature_start_state(
+                    str(dispatch["feature_run_id"]),
+                    state="done",
+                    error=None,
+                    updated_at=_now(),
+                )
         return dispatch
 
     async def resume(self, run_id: str) -> dict[str, Any]:
@@ -361,11 +481,12 @@ class FeatureDeliveryManager:
         live = {
             member["id"]
             for member in await self._db().list_live_group_members(run["group_id"])
+            if has_backend(member.get("backend"))
         }
         if target_agent_id not in live:
             raise FeatureError(
-                f"Assigned {target_role} is not a live group member; correct "
-                "roles before resume",
+                f"Assigned {target_role} is not a live group member with an "
+                "available backend; correct roles before resume",
                 status_code=409,
             )
         dispatch = await self._db().ensure_recovery_feature_dispatch(
@@ -395,6 +516,145 @@ class FeatureDeliveryManager:
             "dispatch": dispatch,
             "checkpoint_state": checkpoint["state"] if checkpoint else None,
         }
+
+    async def status(
+        self,
+        run_id: str,
+        *,
+        actor_session_id: str | None = None,
+    ) -> dict[str, Any]:
+        run = await self._db().get_feature_run(run_id)
+        if run is None:
+            raise FeatureError("Feature run not found", status_code=404)
+        actor_agent_id: str | None = None
+        if actor_session_id is not None:
+            actor_agent_id = await self._db().get_group_agent_by_session(
+                run["group_id"], actor_session_id
+            )
+            if actor_agent_id is None:
+                raise FeatureError(
+                    "Actor session is not bound to this FeatureRun group",
+                    status_code=403,
+                )
+        routing = await self._features().routing_packet(
+            run_id, agent_id=actor_agent_id
+        )
+        checkpoint = await self._db().get_feature_start_for_run(run_id)
+        dispatches = await self._db().list_feature_dispatches(run_id)
+        dispatch = dispatches[-1] if dispatches else None
+        if run["state"] == "done":
+            routing["required_actor"] = None
+        elif (
+            dispatch
+            and dispatch.get("target_agent_id")
+            and dispatch.get("state")
+            in {"pending", "leased", "active", "handoff_committed", "waiting"}
+        ):
+            routing["required_actor"] = {
+                "role": dispatch.get("target_role"),
+                "agent_id": dispatch.get("target_agent_id"),
+            }
+            if actor_agent_id is None:
+                target_routing = await self._features().routing_packet(
+                    run_id, agent_id=str(dispatch["target_agent_id"])
+                )
+                routing["suggested_skills"] = target_routing[
+                    "suggested_skills"
+                ]
+        role_ids = {
+            "owner": run.get("owner_agent_id"),
+            "reviewer": run.get("reviewer_agent_id"),
+            "vision_guardian": run.get("vision_guardian_agent_id"),
+        }
+        roles: dict[str, dict[str, str | None]] = {}
+        for role, agent_id in role_ids.items():
+            agent = (
+                await self._db().get_agent(agent_id)
+                if isinstance(agent_id, str)
+                else None
+            )
+            roles[role] = {
+                "id": agent_id,
+                "name": str(agent["name"]) if agent is not None else None,
+            }
+        blocker = checkpoint.get("error") if checkpoint else None
+        if dispatch and dispatch["state"] == "failed":
+            blocker = dispatch.get("error") or "Feature dispatch failed"
+        return {
+            **routing,
+            "run": run,
+            "roles": roles,
+            "checkpoint_state": checkpoint.get("state") if checkpoint else None,
+            "dispatch": dispatch,
+            "blocker": blocker,
+            "authorization": (
+                checkpoint.get("authorization") if checkpoint else {}
+            ),
+        }
+
+    async def resume_for_group(self, group_id: str) -> dict[str, Any]:
+        run_id = await self._db().get_group_active_feature_id(group_id)
+        if run_id is None:
+            raise FeatureError(
+                "Group has no active FeatureRun to resume", status_code=404
+            )
+        await self.resume(run_id)
+        await self.drive_pending(run_id)
+        return await self.status(run_id)
+
+    async def status_for_group(self, group_id: str) -> dict[str, Any] | None:
+        run_id = await self._db().get_group_active_feature_id(group_id)
+        if run_id is None:
+            runs = await self._db().list_feature_runs(group_id=group_id)
+            if not runs:
+                return None
+            run_id = str(runs[0]["id"])
+        return await self.status(run_id)
+
+    async def update_roles_for_group(
+        self,
+        group_id: str,
+        *,
+        owner_agent_id: str,
+        reviewer_agent_id: str,
+        vision_guardian_agent_id: str,
+    ) -> dict[str, Any]:
+        run_id = await self._db().get_group_active_feature_id(group_id)
+        if run_id is None:
+            raise FeatureError(
+                "Group has no active FeatureRun", status_code=404
+            )
+        requested = {
+            owner_agent_id,
+            reviewer_agent_id,
+            vision_guardian_agent_id,
+        }
+        if len(requested) != 3:
+            raise FeatureError(
+                "Feature owner, reviewer, and vision guardian must be distinct"
+            )
+        live = {
+            member["id"]
+            for member in await self._db().list_live_group_members(group_id)
+            if has_backend(member.get("backend"))
+        }
+        missing = requested - live
+        if missing:
+            raise FeatureError(
+                "Every Feature role must be a live group member with an "
+                "available backend; unavailable: "
+                + ", ".join(sorted(missing)),
+                status_code=409,
+            )
+        await self._features().update_roles(
+            run_id,
+            {
+                "owner_agent_id": owner_agent_id,
+                "reviewer_agent_id": reviewer_agent_id,
+                "vision_guardian_agent_id": vision_guardian_agent_id,
+            },
+        )
+        return await self.status(run_id)
 
 
 feature_delivery_manager = FeatureDeliveryManager()
