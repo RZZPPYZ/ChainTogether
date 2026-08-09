@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from server.group_manager import (
     AgentTurnResult,
@@ -19,7 +19,7 @@ from server.prompt_governance import GroupPromptGovernance
 class GroupRoutingTests(unittest.TestCase):
     def test_blocked_resume_reinjects_prior_dynamic_directive(self) -> None:
         manager = GroupManager()
-        circuit_directive = manager.prompt_governance.render_dynamic(
+        persisted = manager._encode_dynamic_directive_state(
             "pingpong_blocked",
             from_agent="Builder",
             target_agent="Reviewer",
@@ -28,11 +28,24 @@ class GroupRoutingTests(unittest.TestCase):
 
         directives = manager._resume_dynamic_directives(
             previous_custody="blocked",
-            previous_error=circuit_directive,
+            previous_error=persisted,
             reason="Continue with a substantive result.",
         )
 
-        self.assertEqual(directives, (circuit_directive,))
+        self.assertIn("A2A ping-pong circuit open", directives[0])
+        self.assertIn("Builder and Reviewer", directives[0])
+
+    def test_blocked_resume_does_not_promote_plain_error(self) -> None:
+        manager = GroupManager()
+
+        directives = manager._resume_dynamic_directives(
+            previous_custody="blocked",
+            previous_error="UNTRUSTED backend/user-shaped error",
+            reason="Try again safely.",
+        )
+
+        self.assertNotIn("UNTRUSTED", directives[0])
+        self.assertIn("held invocation resumed", directives[0])
 
     def test_l0_owns_identity_roster_and_exit_check(self) -> None:
         governance = GroupPromptGovernance()
@@ -172,6 +185,89 @@ class GroupRoutingTests(unittest.TestCase):
 
 
 class GroupRoutingDynamicDirectiveTests(unittest.IsolatedAsyncioTestCase):
+    async def test_persisted_pingpong_block_resumes_with_trusted_dynamic(self) -> None:
+        breaker = GroupManager()
+        breaker.db = AsyncMock()
+        breaker._inject_agent_error = AsyncMock()
+        blocked_run = GroupRunState(
+            group_id="group-1",
+            group_session_id="session-1",
+            invocation_id="invocation-1",
+            status="running",
+            custody_state="active",
+            current_agent_id="builder-id",
+            depth=3,
+            pingpong_streak=PingPongStreak(
+                from_agent_id="builder-id",
+                to_agent_id="reviewer-id",
+                count=3,
+            ),
+        )
+
+        await breaker._dispatch_a2a_mentions(
+            run=blocked_run,
+            group={"id": "group-1"},
+            member_agents=[
+                {"id": "builder-id", "name": "Builder"},
+                {"id": "reviewer-id", "name": "Reviewer"},
+            ],
+            spawner_agent_id="builder-id",
+            spawner_agent_name="Builder",
+            spawner_agent_ids=frozenset(),
+            depth=3,
+            reply_text="@Reviewer continue",
+            turn=AgentTurnResult("@Reviewer continue"),
+        )
+        self.assertEqual(blocked_run.custody_state, "blocked")
+        self.assertTrue(
+            blocked_run.error.startswith("controller_dynamic:")
+        )
+        public_error = breaker._invocation_view(blocked_run)["error"]
+        self.assertIn("A2A ping-pong circuit open", public_error)
+        self.assertNotIn("controller_dynamic", public_error)
+
+        row = {
+            "id": "invocation-1",
+            "group_id": "group-1",
+            "feature_run_id": None,
+            "feature_dispatch_id": None,
+            "root_content": "@Builder continue",
+            "status": blocked_run.status,
+            "custody_state": blocked_run.custody_state,
+            "current_agent_id": "builder-id",
+            "depth": blocked_run.depth,
+            "held_until": None,
+            "hold_reason": None,
+            "error": blocked_run.error,
+            "created_at": "2026-08-09T00:00:00+00:00",
+            "updated_at": "2026-08-09T00:00:01+00:00",
+            "completed_at": "2026-08-09T00:00:01+00:00",
+        }
+        resumed_manager = GroupManager()
+        resumed_manager.db = AsyncMock()
+        resumed_manager.db.get_group_invocation.return_value = row
+        resumed_manager.db.get_group.return_value = {
+            "id": "group-1",
+            "session_id": "session-1",
+        }
+        resumed_manager.db.get_agent.return_value = {
+            "id": "builder-id",
+            "name": "Builder",
+        }
+        resumed_manager._ensure_worklist_runner = Mock()
+        resumed_manager._inject_invocation_notice = AsyncMock()
+
+        await resumed_manager.resume_invocation(
+            "group-1", "invocation-1", "Continue with real work."
+        )
+
+        resumed = resumed_manager._invocations["invocation-1"]
+        self.assertEqual(len(resumed.pending), 1)
+        directive = resumed.pending[0].dynamic_directives[0]
+        self.assertIn("A2A ping-pong circuit open", directive)
+        self.assertIn("Builder and Reviewer", directive)
+        self.assertNotIn("controller_dynamic", directive)
+
     async def test_pingpong_breaker_uses_dynamic_template_content(self) -> None:
         manager = GroupManager()
         manager._inject_agent_error = AsyncMock()

@@ -70,6 +70,7 @@ GROUP_A2A_DEPTH_CAP = _ROUTING_POLICY.a2a_depth_cap
 PINGPONG_WARN_THRESHOLD = _ROUTING_POLICY.pingpong_warn_threshold
 PINGPONG_BLOCK_THRESHOLD = _ROUTING_POLICY.pingpong_block_threshold
 PINGPONG_OUTPUT_LEN_THRESHOLD = _ROUTING_POLICY.substantive_output_length
+_DYNAMIC_DIRECTIVE_STATE_PREFIX = "controller_dynamic:"
 NON_SUBSTANTIVE_TOOL_PATTERNS = (
     "cat_cafe_post_message",
     "cat_cafe_multi_mention",
@@ -1605,6 +1606,12 @@ class GroupManager:
                     target_agent=target["name"],
                     count=pair_count,
                 )
+                circuit_state = self._encode_dynamic_directive_state(
+                    "pingpong_blocked",
+                    from_agent=spawner_agent_name,
+                    target_agent=target["name"],
+                    count=pair_count,
+                )
                 logger.warning(
                     "Group %s: @%s A2A rejected "
                     "(ping-pong breaker from %s, count=%d)",
@@ -1619,7 +1626,7 @@ class GroupManager:
                     await self._transition_invocation(
                         run,
                         "routing_blocked",
-                        error=circuit_directive,
+                        error=circuit_state,
                     )
                 continue
             if count_pingpong and self._should_warn_pingpong(
@@ -2127,7 +2134,7 @@ class GroupManager:
             "depth": run.depth,
             "held_until": run.held_until,
             "hold_reason": run.hold_reason,
-            "error": run.error,
+            "error": self._public_invocation_error(run.error),
             "created_at": run.created_at,
             "updated_at": run.updated_at,
             "completed_at": run.completed_at,
@@ -2329,6 +2336,7 @@ class GroupManager:
             run.hold_task.cancel()
         previous_custody = run.custody_state
         previous_error = run.error
+        run.pingpong_streak = None
         await self._transition_invocation(run, "task_resumed")
         run.pending.insert(0, MentionWorkItem(
             agent=agent,
@@ -2353,13 +2361,62 @@ class GroupManager:
         previous_error: str | None,
         reason: str,
     ) -> tuple[str, ...]:
-        if previous_custody == "blocked" and previous_error:
-            return (previous_error,)
+        if previous_custody == "blocked":
+            trusted_directive = self._render_dynamic_directive_state(
+                previous_error
+            )
+            if trusted_directive is not None:
+                return (trusted_directive,)
         return (
             self.prompt_governance.render_dynamic(
                 "hold_resume", reason=reason or "No additional note."
             ),
         )
+
+    def _encode_dynamic_directive_state(
+        self, template_key: str, **values: Any
+    ) -> str:
+        if template_key != "pingpong_blocked":
+            raise ValueError("Unsupported persisted dynamic directive")
+        return _DYNAMIC_DIRECTIVE_STATE_PREFIX + json.dumps(
+            {"template": template_key, "values": values},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def _render_dynamic_directive_state(
+        self, state: str | None
+    ) -> str | None:
+        if not state or not state.startswith(_DYNAMIC_DIRECTIVE_STATE_PREFIX):
+            return None
+        try:
+            payload = json.loads(state[len(_DYNAMIC_DIRECTIVE_STATE_PREFIX):])
+            if not isinstance(payload, dict):
+                return None
+            if payload.get("template") != "pingpong_blocked":
+                return None
+            values = payload.get("values")
+            if not isinstance(values, dict) or set(values) != {
+                "from_agent", "target_agent", "count"
+            }:
+                return None
+            if not all(
+                isinstance(values[name], str) and values[name].strip()
+                for name in ("from_agent", "target_agent")
+            ):
+                return None
+            count = values["count"]
+            if not isinstance(count, int) or count < PINGPONG_BLOCK_THRESHOLD:
+                return None
+            return self.prompt_governance.render_dynamic(
+                "pingpong_blocked", **values
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+    def _public_invocation_error(self, error: str | None) -> str | None:
+        return self._render_dynamic_directive_state(error) or error
 
     async def reconcile_zombies(self) -> None:
         """Restore held timers and fail running invocations after a restart."""
