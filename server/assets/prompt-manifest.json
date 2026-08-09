@@ -33,6 +33,10 @@
       "path": "prompts/dynamic/pingpong-warning.md",
       "required": ["from_agent", "target_agent", "count"]
     },
+    "dynamic.pingpong_blocked": {
+      "path": "prompts/dynamic/pingpong-blocked.md",
+      "required": ["from_agent", "target_agent", "count"]
+    },
     "dynamic.routing_correction": {
       "path": "prompts/dynamic/routing-correction.md",
       "required": ["invalid_handles"]

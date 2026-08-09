@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import AsyncMock
 
 from server.group_manager import (
+    AgentTurnResult,
     GroupManager,
+    GroupRunState,
+    PingPongStreak,
     analyze_agent_routing,
     member_canonical_handles,
     member_routing_handles,
@@ -13,6 +17,23 @@ from server.prompt_governance import GroupPromptGovernance
 
 
 class GroupRoutingTests(unittest.TestCase):
+    def test_blocked_resume_reinjects_prior_dynamic_directive(self) -> None:
+        manager = GroupManager()
+        circuit_directive = manager.prompt_governance.render_dynamic(
+            "pingpong_blocked",
+            from_agent="Builder",
+            target_agent="Reviewer",
+            count=4,
+        )
+
+        directives = manager._resume_dynamic_directives(
+            previous_custody="blocked",
+            previous_error=circuit_directive,
+            reason="Continue with a substantive result.",
+        )
+
+        self.assertEqual(directives, (circuit_directive,))
+
     def test_l0_owns_identity_roster_and_exit_check(self) -> None:
         governance = GroupPromptGovernance()
         members = [
@@ -148,6 +169,47 @@ class GroupRoutingTests(unittest.TestCase):
         analysis = analyze_agent_routing(reply, ["Builder"])
         self.assertEqual(analysis.line_start_mentions, ())
         self.assertEqual(analysis.invalid_inline_mentions, ())
+
+
+class GroupRoutingDynamicDirectiveTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pingpong_breaker_uses_dynamic_template_content(self) -> None:
+        manager = GroupManager()
+        manager._inject_agent_error = AsyncMock()
+        run = GroupRunState(
+            group_id="group-1",
+            group_session_id="session-1",
+            custody_state="active",
+            pingpong_streak=PingPongStreak(
+                from_agent_id="builder-id",
+                to_agent_id="reviewer-id",
+                count=3,
+            ),
+        )
+
+        await manager._dispatch_a2a_mentions(
+            run=run,
+            group={"id": "group-1"},
+            member_agents=[
+                {"id": "builder-id", "name": "Builder"},
+                {"id": "reviewer-id", "name": "Reviewer"},
+            ],
+            spawner_agent_id="builder-id",
+            spawner_agent_name="Builder",
+            spawner_agent_ids=frozenset(),
+            depth=1,
+            reply_text="@Reviewer continue",
+            turn=AgentTurnResult("@Reviewer continue"),
+        )
+
+        expected = manager.prompt_governance.render_dynamic(
+            "pingpong_blocked",
+            from_agent="Builder",
+            target_agent="Reviewer",
+            count=4,
+        )
+        manager._inject_agent_error.assert_awaited_once_with(
+            "session-1", "Reviewer", expected
+        )
 
 
 if __name__ == "__main__":

@@ -1599,6 +1599,12 @@ class GroupManager:
                 pair_count = self._record_pingpong_block(
                     run, spawner_agent_id, target_id, turn
                 )
+                circuit_directive = self.prompt_governance.render_dynamic(
+                    "pingpong_blocked",
+                    from_agent=spawner_agent_name,
+                    target_agent=target["name"],
+                    count=pair_count,
+                )
                 logger.warning(
                     "Group %s: @%s A2A rejected "
                     "(ping-pong breaker from %s, count=%d)",
@@ -1607,16 +1613,13 @@ class GroupManager:
                 await self._inject_agent_error(
                     run.group_session_id,
                     target["name"],
-                    "Group A2A ping-pong terminated after repeated short "
-                    "handoffs between the same two agents. A user message, "
-                    "a different target, or substantive work will reset this "
-                    "routing streak.",
+                    circuit_directive,
                 )
                 if run.invocation_id:
                     await self._transition_invocation(
                         run,
                         "routing_blocked",
-                        error="Ping-pong breaker terminated the invocation.",
+                        error=circuit_directive,
                     )
                 continue
             if count_pingpong and self._should_warn_pingpong(
@@ -1625,22 +1628,18 @@ class GroupManager:
                 pair_count = self._predict_pingpong_count(
                     run, spawner_agent_id, target_id, turn
                 )
+                warning_directive = self.prompt_governance.render_dynamic(
+                    "pingpong_warning",
+                    from_agent=spawner_agent_name,
+                    target_agent=target["name"],
+                    count=pair_count,
+                )
                 await self._inject_routing_warning(
                     run.group_session_id,
                     target["name"],
-                    "You and the previous agent have handed off short "
-                    f"messages {pair_count} times in a row. Continue only "
-                    "if you are adding new substance; otherwise summarize, "
-                    "choose a different target, or stop passing the task back.",
+                    warning_directive,
                 )
-                target_directives.append(
-                    self.prompt_governance.render_dynamic(
-                        "pingpong_warning",
-                        from_agent=spawner_agent_name,
-                        target_agent=target["name"],
-                        count=pair_count,
-                    )
-                )
+                target_directives.append(warning_directive)
 
             item = MentionWorkItem(
                 agent=target,
@@ -2328,22 +2327,39 @@ class GroupManager:
             raise GroupError("Invocation agent no longer exists", status_code=409)
         if run.hold_task and not run.hold_task.done():
             run.hold_task.cancel()
+        previous_custody = run.custody_state
+        previous_error = run.error
         await self._transition_invocation(run, "task_resumed")
         run.pending.insert(0, MentionWorkItem(
             agent=agent,
             depth=max(1, run.depth),
             current_message=reason or "Resume the held group invocation.",
             current_source="User",
-            dynamic_directives=(
-                self.prompt_governance.render_dynamic(
-                    "hold_resume", reason=reason or "No additional note."
-                ),
+            dynamic_directives=self._resume_dynamic_directives(
+                previous_custody=previous_custody,
+                previous_error=previous_error,
+                reason=reason,
             ),
         ))
         self._runs[group_id] = run
         self._ensure_worklist_runner(run, group)
         await self._inject_invocation_notice(run, "This group chain was resumed.")
         return self._invocation_view(run)
+
+    def _resume_dynamic_directives(
+        self,
+        *,
+        previous_custody: CustodyState,
+        previous_error: str | None,
+        reason: str,
+    ) -> tuple[str, ...]:
+        if previous_custody == "blocked" and previous_error:
+            return (previous_error,)
+        return (
+            self.prompt_governance.render_dynamic(
+                "hold_resume", reason=reason or "No additional note."
+            ),
+        )
 
     async def reconcile_zombies(self) -> None:
         """Restore held timers and fail running invocations after a restart."""

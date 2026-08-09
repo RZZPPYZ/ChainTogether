@@ -95,6 +95,21 @@ class PromptGovernanceTests(unittest.TestCase):
         )
         self.assertIn("end naturally without an @handle", prompt)
 
+    def test_a2a_pingpong_block_is_a_registered_dynamic_template(self) -> None:
+        governance = GroupPromptGovernance()
+
+        prompt = governance.render_dynamic(
+            "pingpong_blocked",
+            from_agent="Builder",
+            target_agent="Reviewer",
+            count=4,
+        )
+
+        self.assertIn("A2A ping-pong circuit open", prompt)
+        self.assertIn("Builder and Reviewer", prompt)
+        self.assertIn("4 consecutive", prompt)
+        self.assertIn("Do not repeat the same handoff", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()
