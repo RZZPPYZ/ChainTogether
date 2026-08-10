@@ -1,4 +1,4 @@
 interface:
   display_name: "Worktree"
-  short_description: "Prepare a safe isolated worktree for feature development."
-  default_prompt: "Use $worktree to create an isolated development worktree for this feature."
+  short_description: "Prepare a safe isolated worktree with dependency reuse and baseline evidence."
+  default_prompt: "Use $worktree to create an isolated development worktree for this feature, reusing existing dependencies when safe and recording exact no-activation commands."
