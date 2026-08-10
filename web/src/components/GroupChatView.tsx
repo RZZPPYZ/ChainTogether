@@ -31,12 +31,19 @@ import { exactTurnCostTitle, formatTurnCost } from "../lib/cost";
 import {
   useSessionStore,
   reduceGroupAgentRun,
+  toGroup,
   type GroupAgentActivityEvent,
   type GroupAgentRun,
   type GroupInvocation,
   type Message,
   type Agent,
 } from "../stores/sessionStore";
+import {
+  contextUsageTitle,
+  contextUsageTone,
+  formatContextUsageLabel,
+  type ContextUsage,
+} from "../lib/contextUsage";
 import { Button } from "./ui/button";
 import { MessageNavigator } from "./MessageNavigator";
 import { buildUserMessageMarkers } from "../lib/messageNavigation";
@@ -268,6 +275,27 @@ function formatToolName(name: string): string {
     return `${parts[1]} · ${parts.slice(2).join(" ").replaceAll("_", " ")}`;
   }
   return name.replaceAll("_", " ");
+}
+
+function ContextUsageBadge({
+  usage,
+  className = "",
+}: {
+  usage?: ContextUsage | null;
+  className?: string;
+}) {
+  const label = formatContextUsageLabel(usage);
+  if (!label) return null;
+  return (
+    <span
+      className={`shrink-0 rounded border px-1.5 py-0.5 text-[11px] font-medium ${contextUsageTone(
+        usage,
+      )} ${className}`}
+      title={contextUsageTitle(usage)}
+    >
+      {label}
+    </span>
+  );
 }
 
 function summarizeToolInput(input: Record<string, unknown>): string {
@@ -514,6 +542,7 @@ export function GroupAgentRunBlock({
               Cost {costLabel}
             </span>
           )}
+          <ContextUsageBadge usage={run.contextUsage} />
           <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
             {formatElapsed(elapsed)}
           </span>
@@ -723,6 +752,17 @@ export function GroupChatView({
         : [],
     [group, agents],
   );
+
+  const memberSessionByAgent = useMemo(() => {
+    const map = new Map<
+      string,
+      { agentId: string; sessionId: string; contextUsage?: ContextUsage | null }
+    >();
+    for (const session of group?.memberSessions || []) {
+      map.set(session.agentId, session);
+    }
+    return map;
+  }, [group]);
 
   const memberHandles = useMemo(
     () =>
@@ -1158,15 +1198,7 @@ export function GroupChatView({
         });
         if (response.ok) {
           const updated = await response.json();
-          upsertGroup({
-            id: updated.id,
-            name: updated.name,
-            agentIds: updated.agent_ids,
-            createdAt: updated.created_at,
-            sessionId: updated.session_id ?? null,
-            defaultAgentId: updated.default_agent_id ?? null,
-            workingDir: updated.working_dir,
-          });
+          upsertGroup(toGroup(updated));
         }
       } finally {
         setDefaultSaving(false);
@@ -1375,15 +1407,21 @@ export function GroupChatView({
           </select>
         </div>
         <span className="flex items-center gap-1 shrink-0">
-          {members.map((a) => (
-            <span
-              key={a!.id}
-              className="text-base leading-none"
-              title={a!.name}
-            >
-              {a!.avatar || "\u{1F419}"}
-            </span>
-          ))}
+          {members.map((a) => {
+            const usage = memberSessionByAgent.get(a.id)?.contextUsage;
+            return (
+              <span
+                key={a.id}
+                className="inline-flex items-center gap-1 rounded-md px-1 py-0.5"
+                title={a.name}
+              >
+                <span className="text-base leading-none">
+                  {a.avatar || "\u{1F419}"}
+                </span>
+                <ContextUsageBadge usage={usage} />
+              </span>
+            );
+          })}
         </span>
       </div>
 

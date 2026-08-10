@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useSessionStore, type Group } from "../stores/sessionStore";
+import { toGroup, useSessionStore } from "../stores/sessionStore";
 import { Button } from "./ui/button";
 import {
   Dialog,
@@ -90,15 +90,7 @@ export function CreateGroupDialog({
         return;
       }
       const g = await res.json();
-      upsertGroup({
-        id: g.id,
-        name: g.name,
-        agentIds: g.agent_ids,
-        createdAt: g.created_at,
-        sessionId: g.session_id ?? null,
-        defaultAgentId: g.default_agent_id ?? null,
-        workingDir: g.working_dir,
-      } as Group);
+      upsertGroup(toGroup(g));
       onOpenChange(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Network error");

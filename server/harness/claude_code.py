@@ -254,6 +254,7 @@ class ClaudeEventParser(EventParser):
 
     def __init__(self) -> None:
         self._captured_session_id: str | None = None
+        self._last_usage: dict[str, Any] | None = None
 
     def parse(self, obj: dict[str, Any]) -> ParseOutput:
         kind = obj.get("type")
@@ -274,7 +275,11 @@ class ClaudeEventParser(EventParser):
             return ParseOutput()
 
         if kind == "assistant":
-            return ParseOutput(events=self._assistant_blocks(obj.get("message", {})))
+            message = obj.get("message", {})
+            usage = message.get("usage") if isinstance(message, dict) else None
+            if isinstance(usage, dict):
+                self._last_usage = usage
+            return ParseOutput(events=self._assistant_blocks(message))
 
         if kind == "user":
             return ParseOutput(events=self._user_blocks(obj.get("message", {})))
@@ -333,6 +338,9 @@ class ClaudeEventParser(EventParser):
 
     def _result(self, obj: dict[str, Any]) -> HarnessEvent:
         sid = obj.get("session_id") or self._captured_session_id
+        raw = dict(obj)
+        if "usage" not in raw and self._last_usage is not None:
+            raw["usage"] = self._last_usage
         return HarnessEvent(
             type="result",
             session_id=sid,
@@ -340,7 +348,7 @@ class ClaudeEventParser(EventParser):
             duration_ms=obj.get("duration_ms"),
             num_turns=obj.get("num_turns"),
             is_error=bool(obj.get("is_error")),
-            raw=obj,
+            raw=raw,
         )
 
 

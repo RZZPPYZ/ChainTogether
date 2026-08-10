@@ -30,6 +30,11 @@ import { Button } from "./ui/button";
 import { isSessionBusy } from "../lib/deferredFork";
 import { MessageNavigator } from "./MessageNavigator";
 import { buildUserMessageMarkers } from "../lib/messageNavigation";
+import {
+  contextUsageTitle,
+  contextUsageTone,
+  formatContextUsageLabel,
+} from "../lib/contextUsage";
 
 const EMPTY_MESSAGES: Message[] = [];
 
@@ -75,6 +80,25 @@ interface Props {
 
 const EMPTY_QUEUE: string[] = [];
 const EMPTY_QUESTIONS: PendingQuestion[] = [];
+
+function HeaderContextUsageBadge({
+  usage,
+}: {
+  usage?: SessionInfo["context_usage"];
+}) {
+  const label = formatContextUsageLabel(usage);
+  if (!label) return null;
+  return (
+    <span
+      className={`shrink-0 rounded border px-1.5 py-0.5 text-[11px] font-medium ${contextUsageTone(
+        usage,
+      )}`}
+      title={contextUsageTitle(usage)}
+    >
+      {label}
+    </span>
+  );
+}
 
 export function ChatView({
   sendMessage,
@@ -960,6 +984,7 @@ export function ChatView({
             {activeSession.name || "Session"}
           </h3>
           {renderStatusBadge(activeSession.status)}
+          <HeaderContextUsageBadge usage={activeSession.context_usage} />
         </>
       )}
       <span

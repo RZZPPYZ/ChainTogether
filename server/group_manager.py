@@ -1233,6 +1233,7 @@ class GroupManager:
             turn = await self._collect_agent_reply(
                 reuse_session_id, augmented,
                 group_session_id=run.group_session_id,
+                group_id=run.group_id,
                 agent_id=agent_id,
                 agent_name=agent_name,
                 invocation_id=run.invocation_id or None,
@@ -1692,6 +1693,7 @@ class GroupManager:
     async def _collect_agent_reply(
         self, reuse_session_id: str, prompt: str, *,
         group_session_id: str,
+        group_id: str | None = None,
         agent_id: str | None = None,
         agent_name: str,
         invocation_id: str | None = None,
@@ -1713,9 +1715,11 @@ class GroupManager:
                 group_session_id,
                 {
                     "run_id": run_id,
+                    "group_id": group_id,
                     "invocation_id": invocation_id,
                     "agent_id": agent_id,
                     "agent_name": agent_name,
+                    "reuse_session_id": reuse_session_id,
                     "phase": phase,
                     "timestamp_ms": int(time.time() * 1000),
                     **details,
@@ -1783,6 +1787,7 @@ class GroupManager:
                         "result",
                         duration_ms=event.get("duration_ms"),
                         cost=event.get("cost"),
+                        context_usage=event.get("context_usage"),
                         is_error=is_error,
                     )
                     if is_error:
@@ -1845,6 +1850,7 @@ class GroupManager:
                 reuse_session_id,
                 prompt,
                 group_session_id=run.group_session_id,
+                group_id=run.group_id,
                 agent_id=agent_id,
                 agent_name=agent_name,
                 invocation_id=run.invocation_id or None,

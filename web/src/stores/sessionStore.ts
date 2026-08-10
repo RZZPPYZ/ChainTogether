@@ -10,12 +10,15 @@ import type {
   SessionInfo as ApiSessionInfo,
   SessionStatus as ApiSessionStatus,
 } from "../api";
+import type { ContextUsage } from "../lib/contextUsage";
 
 // Re-export contract types under the names the rest of the frontend
 // already uses. Source of truth is `web/src/api/contracts.ts`, regenerated
 // from FastAPI's openapi.json via `bun run generate:contracts`.
 export type SessionStatus = ApiSessionStatus;
-export type SessionInfo = ApiSessionInfo;
+export type SessionInfo = ApiSessionInfo & {
+  context_usage?: ContextUsage | null;
+};
 export type Agent = ApiAgentRead;
 export type BackendKind = ApiBackendKind;
 export type CredentialInfo = ApiCredentialInfo;
@@ -38,6 +41,7 @@ export interface Message {
   is_error?: boolean;
   session_id?: string;
   cost?: number;
+  context_usage?: ContextUsage | null;
   // User-uploaded files attached to this message. Present on user
   // messages that the user attached files to (image, PDF, anything).
   // The chat UI renders thumbnails / file chips below the message text.
@@ -89,6 +93,10 @@ interface SessionStore {
   sessions: SessionInfo[];
   setSessions: (s: SessionInfo[]) => void;
   updateSessionStatus: (id: string, status: SessionStatus) => void;
+  upsertSessionContextUsage: (
+    sessionId: string,
+    contextUsage: ContextUsage,
+  ) => void;
 
   // Mirror of `archived=true` rows from `GET /api/sessions?include_archived=true`.
   // SessionList fetches into this lazily when the user expands the
@@ -195,6 +203,12 @@ interface SessionStore {
   setGroups: (g: Group[]) => void;
   upsertGroup: (g: Group) => void;
   removeGroup: (id: string) => void;
+  upsertGroupMemberContextUsage: (
+    groupId: string,
+    agentId: string,
+    sessionId: string,
+    contextUsage: ContextUsage,
+  ) => void;
   activeGroupId: string | null;
   setActiveGroupId: (id: string | null) => void;
 
@@ -291,6 +305,51 @@ export interface Group {
   sessionId: string | null;
   defaultAgentId?: string | null;
   workingDir: string;
+  memberSessions?: GroupMemberSession[];
+}
+
+export interface GroupMemberSession {
+  agentId: string;
+  sessionId: string;
+  backend?: BackendKind | string;
+  status?: SessionStatus;
+  contextUsage?: ContextUsage | null;
+}
+
+export interface ApiGroupInfo {
+  id: string;
+  name: string;
+  agent_ids: string[];
+  created_at: string;
+  session_id?: string | null;
+  default_agent_id?: string | null;
+  working_dir: string;
+  member_sessions?: Array<{
+    agent_id: string;
+    session_id: string;
+    backend?: BackendKind | string;
+    status?: SessionStatus;
+    context_usage?: ContextUsage | null;
+  }>;
+}
+
+export function toGroup(g: ApiGroupInfo): Group {
+  return {
+    id: g.id,
+    name: g.name,
+    agentIds: g.agent_ids,
+    createdAt: g.created_at,
+    sessionId: g.session_id ?? null,
+    defaultAgentId: g.default_agent_id ?? null,
+    workingDir: g.working_dir,
+    memberSessions: (g.member_sessions || []).map((member) => ({
+      agentId: member.agent_id,
+      sessionId: member.session_id,
+      backend: member.backend,
+      status: member.status,
+      contextUsage: member.context_usage ?? null,
+    })),
+  };
 }
 
 export interface GroupInvocation {
@@ -353,15 +412,18 @@ export interface GroupAgentRun {
   finishedAt?: number;
   durationMs?: number;
   cost?: number;
+  contextUsage?: ContextUsage;
   error?: string;
   blocks: GroupAgentActivityBlock[];
 }
 
 export interface GroupAgentActivityEvent {
   run_id?: string;
+  group_id?: string | null;
   invocation_id?: string | null;
   agent_id?: string | null;
   agent_name: string;
+  reuse_session_id?: string | null;
   timestamp_ms?: number;
   phase:
     | "started"
@@ -380,6 +442,7 @@ export interface GroupAgentActivityEvent {
   is_error?: boolean;
   duration_ms?: number | null;
   cost?: number | null;
+  context_usage?: ContextUsage | null;
   detail?: string;
 }
 
@@ -401,7 +464,7 @@ export function reduceGroupAgentRun(
 ): GroupAgentRun {
   const now = event.timestamp_ms ?? Date.now();
   const runId = event.run_id || `${event.agent_name}-${event.invocation_id || "turn"}`;
-  let run: GroupAgentRun =
+  const run: GroupAgentRun =
     event.phase === "started" || !existing
       ? {
           runId,
@@ -511,6 +574,7 @@ export function reduceGroupAgentRun(
     run.blocks = finishRunningPhaseBlocks(run.blocks, now);
     run.durationMs = event.duration_ms ?? run.durationMs;
     run.cost = event.cost ?? run.cost;
+    run.contextUsage = event.context_usage ?? run.contextUsage;
     if (event.is_error) run.status = "failed";
   } else if (event.phase === "completed") {
     run.blocks = run.blocks.map((block) =>
@@ -615,6 +679,19 @@ export const useSessionStore = create<SessionStore>((set) => ({
     set((s) => ({
       sessions: s.sessions.map((sess) =>
         sess.id === id ? { ...sess, status } : sess
+      ),
+    })),
+  upsertSessionContextUsage: (sessionId, contextUsage) =>
+    set((s) => ({
+      sessions: s.sessions.map((sess) =>
+        sess.id === sessionId
+          ? { ...sess, context_usage: contextUsage }
+          : sess
+      ),
+      archivedSessions: s.archivedSessions.map((sess) =>
+        sess.id === sessionId
+          ? { ...sess, context_usage: contextUsage }
+          : sess
       ),
     })),
 
@@ -840,6 +917,29 @@ export const useSessionStore = create<SessionStore>((set) => ({
     }),
   removeGroup: (id) =>
     set((s) => ({ groups: s.groups.filter((g) => g.id !== id) })),
+  upsertGroupMemberContextUsage: (groupId, agentId, sessionId, contextUsage) =>
+    set((s) => ({
+      groups: s.groups.map((group) => {
+        if (group.id !== groupId) return group;
+        const current = group.memberSessions || [];
+        const index = current.findIndex((item) => item.agentId === agentId);
+        const nextMember = {
+          ...(index >= 0 ? current[index] : {}),
+          agentId,
+          sessionId,
+          contextUsage,
+        };
+        const memberSessions =
+          index >= 0
+            ? [
+                ...current.slice(0, index),
+                nextMember,
+                ...current.slice(index + 1),
+              ]
+            : [...current, nextMember];
+        return { ...group, memberSessions };
+      }),
+    })),
   activeGroupId: null,
   setActiveGroupId: (activeGroupId) => set({ activeGroupId }),
 

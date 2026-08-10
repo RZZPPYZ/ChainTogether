@@ -56,6 +56,15 @@ describe("group agent activity blocks", () => {
       phase: "result",
       duration_ms: 1250,
       cost: 0.01,
+      context_usage: {
+        input_tokens: 90000,
+        output_tokens: 10000,
+        total_tokens: 100000,
+        context_window: 400000,
+        remaining_tokens: 300000,
+        remaining_ratio: 0.75,
+        source: "estimated",
+      },
     });
     apply("group-session", { ...base, phase: "completed" });
 
@@ -81,5 +90,7 @@ describe("group agent activity blocks", () => {
     });
     expect(run.durationMs).toBe(1250);
     expect(run.cost).toBe(0.01);
+    expect(run.contextUsage?.remaining_ratio).toBe(0.75);
+    expect(run.contextUsage?.remaining_tokens).toBe(300000);
   });
 });

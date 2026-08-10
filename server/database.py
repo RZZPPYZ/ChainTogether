@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE,  -- owner; nullable in SQLite, required by API
     origin TEXT NOT NULL DEFAULT 'user',   -- 'user' | 'schedule' | 'bridge' | 'delegation'
     backend TEXT NOT NULL DEFAULT 'claude-code',  -- 'claude-code' | 'codex' (codex-backend.md §4.1)
+    context_usage TEXT,                    -- JSON ContextUsageInfo for the latest completed turn
     -- Agent-to-agent: a delegation child session points at the parent
     -- session it was spawned from. SET NULL on parent delete (orphan beats
     -- mass-delete; sessions are precious). NULL on every non-delegation
@@ -700,6 +701,11 @@ class Database:
         except Exception:
             pass
 
+        if not await self._has_column("sessions", "context_usage"):
+            await self._conn.execute(
+                "ALTER TABLE sessions ADD COLUMN context_usage TEXT"
+            )
+
         await self._migrate_agents()
         await self._migrate_schedule_recurrence()
 
@@ -980,6 +986,7 @@ class Database:
             "working_dir": working_dir,
             "created_at": created_at,
             "agent_ids": list(agent_ids),
+            "member_sessions": [],
         }
 
     async def get_group(self, group_id: str) -> dict[str, Any] | None:
@@ -994,6 +1001,7 @@ class Database:
         if row is None:
             return None
         members = await self._group_members(group_id)
+        member_sessions = await self._group_member_sessions(group_id)
         return {
             "id": row[0],
             "name": row[1],
@@ -1002,6 +1010,7 @@ class Database:
             "working_dir": row[4],
             "created_at": row[5],
             "agent_ids": members,
+            "member_sessions": member_sessions,
         }
 
     async def list_groups(self) -> list[dict[str, Any]]:
@@ -1015,6 +1024,7 @@ class Database:
         out: list[dict[str, Any]] = []
         for row in rows:
             members = await self._group_members(row[0])
+            member_sessions = await self._group_member_sessions(row[0])
             out.append({
                 "id": row[0],
                 "name": row[1],
@@ -1023,6 +1033,7 @@ class Database:
                 "working_dir": row[4],
                 "created_at": row[5],
                 "agent_ids": members,
+                "member_sessions": member_sessions,
             })
         return out
 
@@ -1081,6 +1092,33 @@ class Database:
         )
         rows = await cursor.fetchall()
         return [r[0] for r in rows]
+
+    async def _group_member_sessions(self, group_id: str) -> list[dict[str, Any]]:
+        cursor = await self._conn.execute(
+            "SELECT gas.agent_id, gas.session_id, s.backend, s.context_usage "
+            "FROM group_agent_sessions gas "
+            "JOIN sessions s ON s.id = gas.session_id "
+            "WHERE gas.group_id = ? "
+            "ORDER BY gas.created_at, gas.agent_id",
+            (group_id,),
+        )
+        rows = await cursor.fetchall()
+        out: list[dict[str, Any]] = []
+        for agent_id, session_id, backend, context_usage_raw in rows:
+            context_usage = None
+            if context_usage_raw:
+                try:
+                    context_usage = json.loads(context_usage_raw)
+                except json.JSONDecodeError:
+                    context_usage = None
+            out.append({
+                "agent_id": agent_id,
+                "session_id": session_id,
+                "backend": backend or "claude-code",
+                "status": "idle",
+                "context_usage": context_usage,
+            })
+        return out
 
     async def list_live_group_members(
         self, group_id: str,
@@ -2767,7 +2805,7 @@ class Database:
             "credential_id, archived, agent_id, origin, backend, "
             "parent_session_id, delegation_request, forked_from_session_id, "
             "fork_after_seq, fork_needs_replay, fork_metadata, "
-            "fork_revert_record, fork_status FROM sessions"
+            "fork_revert_record, fork_status, context_usage FROM sessions"
         )
         if not include_archived:
             query += " WHERE archived = 0"
@@ -2793,6 +2831,7 @@ class Database:
                 "fork_metadata": row[15],
                 "fork_revert_record": row[16],
                 "fork_status": row[17],
+                "context_usage": json.loads(row[18]) if row[18] else None,
             }
             for row in rows
         ]
@@ -3656,6 +3695,7 @@ class Database:
             "agent_id",
             "origin",
             "backend",
+            "context_usage",
             # Fork columns (session-rewind.md §4). fork_metadata is
             # nullable+clearable (set to None to clear after first turn);
             # the others are written across the §5.1 saga.
@@ -3673,7 +3713,7 @@ class Database:
         # first turn reloads the bogus hint and spawns `codex resume <bogus>`
         # (Vera review BLOCKING #1). Other columns omitted by the caller are
         # left untouched.
-        nullable = {"fork_metadata", "claude_session_id"}
+        nullable = {"fork_metadata", "claude_session_id", "context_usage"}
         bool_fields = {"archived", "fork_needs_replay"}
         updates: dict[str, Any] = {}
         for k, v in fields.items():
@@ -3681,7 +3721,10 @@ class Database:
                 continue
             if v is None and k not in nullable:
                 continue
-            updates[k] = int(bool(v)) if k in bool_fields else v
+            if k == "context_usage" and v is not None:
+                updates[k] = json.dumps(v)
+            else:
+                updates[k] = int(bool(v)) if k in bool_fields else v
         if not updates:
             return
         set_clause = ", ".join(f"{k} = ?" for k in updates)

@@ -9,6 +9,7 @@ import {
   type ResearchJob,
   type SessionStatus,
 } from "../stores/sessionStore";
+import type { ContextUsage } from "../lib/contextUsage";
 
 type BgTaskStatus = BgTask["status"];
 
@@ -51,6 +52,8 @@ function handleWsMessage(data: Record<string, unknown>) {
     removePendingQuestion,
     setLastAppliedSeq,
     lastAppliedSeq,
+    upsertSessionContextUsage,
+    upsertGroupMemberContextUsage,
   } = getState();
   const sessionId = data.session_id as string;
   const type = data.type as string;
@@ -148,11 +151,18 @@ function handleWsMessage(data: Record<string, unknown>) {
       break;
 
     case "result":
+      if (data.context_usage && typeof data.context_usage === "object") {
+        upsertSessionContextUsage(
+          sessionId,
+          data.context_usage as ContextUsage,
+        );
+      }
       addMessage(sessionId, {
         role: "system",
         type: "result",
         cost: data.cost as number,
         session_id: data.claude_session_id as string,
+        context_usage: (data.context_usage as ContextUsage) ?? null,
       });
       break;
 
@@ -240,6 +250,19 @@ function handleWsMessage(data: Record<string, unknown>) {
           sessionId,
           activity,
         );
+        if (
+          activity.context_usage &&
+          activity.group_id &&
+          activity.agent_id &&
+          activity.reuse_session_id
+        ) {
+          upsertGroupMemberContextUsage(
+            activity.group_id,
+            activity.agent_id,
+            activity.reuse_session_id,
+            activity.context_usage,
+          );
+        }
       }
       break;
     }

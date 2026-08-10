@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { IconPlus, IconUsers, IconTrash } from "@tabler/icons-react";
-import { useSessionStore } from "../stores/sessionStore";
+import { toGroup, useSessionStore, type ApiGroupInfo } from "../stores/sessionStore";
 
 const API = window.location.origin;
 
@@ -30,18 +30,8 @@ export function GroupList({ onCreateGroup }: { onCreateGroup: () => void }) {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((r) => (r.ok ? r.json() : []))
-      .then((data: Array<{ id: string; name: string; agent_ids: string[]; created_at: string; session_id?: string | null; default_agent_id?: string | null; working_dir: string }>) => {
-        setGroups(
-          data.map((g) => ({
-            id: g.id,
-            name: g.name,
-            agentIds: g.agent_ids,
-            createdAt: g.created_at,
-            sessionId: g.session_id ?? null,
-            defaultAgentId: g.default_agent_id ?? null,
-            workingDir: g.working_dir,
-          })),
-        );
+      .then((data: ApiGroupInfo[]) => {
+        setGroups(data.map(toGroup));
       })
       .catch(() => {});
   }, [token, setGroups]);

@@ -33,6 +33,7 @@ from .harness import (
 )
 from . import fork_helpers
 from .config import settings
+from .context_usage import normalize_context_usage
 from .crypto import decrypt, encrypt
 from .database import Database
 from .oauth_errors import RefreshErrorCode
@@ -218,6 +219,7 @@ class Session:
     origin: str = "user"
     # Which AI backend drives this session ('claude-code' | 'codex').
     backend: str = "claude-code"
+    context_usage: dict[str, Any] | None = None
     # Agent-to-agent: parent session that spawned this delegation, or None
     # for every non-delegation session. Used by the delegation listener to
     # route replies/questions/errors back to the parent and by guards to
@@ -311,6 +313,7 @@ class SessionManager:
                 agent_id=row.get("agent_id"),
                 origin=row.get("origin") or "user",
                 backend=row.get("backend") or "claude-code",
+                context_usage=row.get("context_usage"),
                 parent_session_id=row.get("parent_session_id"),
                 delegation_request=row.get("delegation_request"),
                 **_session_fork_kwargs(row),
@@ -1385,6 +1388,7 @@ class SessionManager:
                     "agent_id": row.get("agent_id"),
                     "origin": row.get("origin") or "user",
                     "backend": row.get("backend") or "claude-code",
+                    "context_usage": row.get("context_usage"),
                     "parent_session_id": row.get("parent_session_id"),
                     "delegation_request": row.get("delegation_request"),
                     "archived": True,
@@ -1427,6 +1431,7 @@ class SessionManager:
             agent_id=match.get("agent_id"),
             origin=match.get("origin") or "user",
             backend=match.get("backend") or "claude-code",
+            context_usage=match.get("context_usage"),
             parent_session_id=match.get("parent_session_id"),
             delegation_request=match.get("delegation_request"),
             **fork_info_fields(
@@ -1473,6 +1478,7 @@ class SessionManager:
             # without these, an unarchived delegation child would lose
             # its parent_session_id pointer and the "Delegated from"
             # banner / cycle walk would break.
+            context_usage=match.get("context_usage"),
             parent_session_id=match.get("parent_session_id"),
             delegation_request=match.get("delegation_request"),
             **_session_fork_kwargs(match),
@@ -2267,6 +2273,20 @@ class SessionManager:
                         saw_tool_use = True
                     if event.type == "text" and event.content and event.content.strip():
                         saw_text = True
+
+                    if event.type == "result":
+                        context_usage = normalize_context_usage(
+                            backend=session.backend,
+                            model=(agent or {}).get("model") if agent else None,
+                            raw=event.raw,
+                        )
+                        if context_usage is not None:
+                            event.context_usage = context_usage
+                            session.context_usage = context_usage
+                            if self.db:
+                                await self.db.update_session_field(
+                                    session.id, context_usage=context_usage
+                                )
 
                     # Persist whichever message shape this event maps to. The
                     # returned seq goes onto the WS event so reconnecting
@@ -3139,6 +3159,7 @@ class SessionManager:
                 type="result",
                 session_id=event.session_id,
                 cost=event.cost,
+                context_usage=event.context_usage,
             )
         return None
 
@@ -3187,6 +3208,7 @@ class SessionManager:
                 "turns": event.num_turns,
                 "duration_ms": event.duration_ms,
                 "is_error": event.is_error,
+                "context_usage": event.context_usage,
             }
         return None
 

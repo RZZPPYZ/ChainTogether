@@ -72,6 +72,21 @@ class ForkRevertRecord(BaseModel):
     error: str | None = None
 
 
+class ContextUsageInfo(BaseModel):
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cached_input_tokens: int | None = None
+    cache_creation_input_tokens: int | None = None
+    total_tokens: int | None = None
+    context_window: int | None = None
+    remaining_tokens: int | None = None
+    remaining_ratio: float | None = None
+    model: str | None = None
+    backend: str | None = None
+    source: str = "reported"
+    observed_at: str | None = None
+
+
 class SessionInfo(BaseModel):
     id: str
     name: str
@@ -111,6 +126,7 @@ class SessionInfo(BaseModel):
     fork_prefilled_prompt: str | None = None
     fork_revert_record: ForkRevertRecord | None = None
     fork_is_full_copy: bool = False
+    context_usage: ContextUsageInfo | None = None
     # Hidden from the default `GET /api/sessions` list; surfaced only
     # when the caller passes `?include_archived=true` (or for individual
     # GETs by id, which always work). The `/archive` flow sets this;
@@ -149,6 +165,7 @@ class MessageContent(BaseModel):
     is_error: bool | None = None
     session_id: str | None = None
     cost: float | None = None
+    context_usage: ContextUsageInfo | None = None
     # User-uploaded attachments associated with this message (only ever
     # set on user-role messages today). Persisted as JSON in the DB and
     # round-trips back via load_messages.
@@ -560,6 +577,14 @@ class UpdateNotifierRequest(BaseModel):
     enabled: bool | None = None
 
 
+class GroupMemberSessionInfo(BaseModel):
+    agent_id: str
+    session_id: str
+    backend: BackendKind = BackendKind.claude_code
+    status: SessionStatus = SessionStatus.idle
+    context_usage: ContextUsageInfo | None = None
+
+
 # Group chat -- multi-agent conversations with @-mention routing (groups.md).
 
 
@@ -571,6 +596,7 @@ class GroupInfo(BaseModel):
     session_id: str | None = None  # backing group session (1:1)
     default_agent_id: str | None = None
     working_dir: str
+    member_sessions: list[GroupMemberSessionInfo] = []
 
 
 class GroupCreate(BaseModel):

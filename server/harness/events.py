@@ -50,6 +50,7 @@ class HarnessEvent:
     session_id: str | None = None  # backend's resume id (carried on `result`)
     duration_ms: int | None = None
     num_turns: int | None = None
+    context_usage: dict[str, Any] | None = None
     raw: dict[str, Any] | None = field(default=None, repr=False)
 
 
