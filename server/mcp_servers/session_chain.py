@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from mcp.server.fastmcp import FastMCP  # noqa: E402
 
 
 mcp = FastMCP("chaintogether-session-chain")
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 def _context() -> tuple[str, str, dict[str, str]] | None:
@@ -48,6 +50,11 @@ def _get(path: str, *, params: dict[str, Any] | None = None) -> str:
     return json.dumps(response.json(), ensure_ascii=False, sort_keys=True)
 
 
+def _valid_session_id(value: str) -> bool:
+    """Session ids are opaque single path segments, never URL fragments."""
+    return bool(_SESSION_ID_RE.fullmatch(value))
+
+
 @mcp.tool(name="list_chain")
 def list_chain() -> str:
     """List this group member's generations and sealed predecessors."""
@@ -66,6 +73,8 @@ def read_events(
     limit: int = 50,
 ) -> str:
     """Read a page from one sealed predecessor (view: raw/chat/handoff)."""
+    if not _valid_session_id(predecessor_session_id):
+        return "Error: invalid predecessor session id."
     context = _context()
     if context is None:
         return "Error: Session Chain MCP is unavailable outside a bound turn."
@@ -78,7 +87,9 @@ def read_events(
 
 @mcp.tool(name="read_invocation")
 def read_invocation(predecessor_session_id: str, seq: int) -> str:
-    """Read one exact persisted event by predecessor session and sequence."""
+    """Read one full invocation from its starting user-message sequence."""
+    if not _valid_session_id(predecessor_session_id):
+        return "Error: invalid predecessor session id."
     context = _context()
     if context is None:
         return "Error: Session Chain MCP is unavailable outside a bound turn."
@@ -91,7 +102,9 @@ def read_invocation(predecessor_session_id: str, seq: int) -> str:
 
 @mcp.tool(name="search")
 def search(query: str, limit: int = 20) -> str:
-    """Search exact persisted events across this member's sealed predecessors."""
+    """Search sealed predecessors and return bounded snippets plus locations."""
+    if not query.strip() or len(query) > 256:
+        return "Error: search query must contain 1 to 256 characters."
     context = _context()
     if context is None:
         return "Error: Session Chain MCP is unavailable outside a bound turn."

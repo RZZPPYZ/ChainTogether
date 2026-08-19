@@ -126,6 +126,7 @@ describe("group session chain rotation", () => {
     });
 
     useSessionStore.getState().applyGroupMemberSessionChain({
+      eventType: "successor_created",
       groupId: "group-1",
       agentId: "agent-1",
       previousSessionId: "session-1",

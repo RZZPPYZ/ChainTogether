@@ -1953,6 +1953,13 @@ class SessionManager:
         except asyncio.TimeoutError:
             raise ValueError(f"Session {session_id} is busy")
 
+        # A group-session seal can replace the active object while this turn is
+        # queued on its lock. Never continue through a stale reference after
+        # rotation released the mutex and removed it from the manager.
+        if self.sessions.get(session_id) is not session:
+            session._lock.release()
+            raise ValueError(f"Session {session_id} is no longer active")
+
         try:
             # Resolve attachment ids → on-disk paths so the prompt can
             # cite absolute paths the agent's `Read` tool will open.

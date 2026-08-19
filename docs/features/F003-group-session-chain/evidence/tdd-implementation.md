@@ -1,7 +1,7 @@
 # F003 TDD Implementation Evidence
 
-Date: 2026-08-19  
-Base: `1fb75b26370a2301c94f409d1d817c587d172cb3`  
+Date: 2026-08-19
+Base: `1fb75b26370a2301c94f409d1d817c587d172cb3`
 Implementation checkpoint: `a66dfda7cd1ba437435734fa1f7397f34314edc7`
 
 ## Red-green-refactor record

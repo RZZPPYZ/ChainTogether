@@ -195,15 +195,16 @@ retrieve exact prior evidence instead of guessing.
 - **Implementation commits**: `caa1dd9`, `763af52`, `ba88aef`, `6c8e824`,
   `1860706`, `a66dfda`
 - **TDD evidence**: `evidence/tdd-implementation.md`
-- **Quality Gate**: pass — `evidence/quality-report.md`
+- **Quality Gate**: initial pass superseded by independent review findings;
+  remediation verification pending — `evidence/quality-report.md`
 
 ## Review Provenance
 
 - **Author**: codex
-- **Reviewer**: pending independent reviewer
+- **Reviewer**: independent `f003_independent_review` Agent
 - **Base SHA**: `1fb75b26370a2301c94f409d1d817c587d172cb3`
-- **Reviewed HEAD**: pending
-- **Verdict**: pending
+- **Reviewed HEAD**: `4db1084683db7afc93ef373abac97fb903d5cd2c`
+- **Verdict**: request_changes — `evidence/review-4db1084.md`
 
 ## Vision Gate
 
@@ -233,3 +234,4 @@ retrieve exact prior evidence instead of guessing.
 | 2026-08-19 | Design Gate approved the revision-bound state machine, privacy boundary and degraded recovery path | `evidence/design-verdict-2371014.md` |
 | 2026-08-19 | Implemented durable generations, fresh handoff, mandatory recall MCP, group integration and UI projection through TDD | `evidence/tdd-implementation.md` |
 | 2026-08-19 | Quality Gate passed at implementation checkpoint `a66dfda`; moved to independent review | `evidence/quality-report.md` |
+| 2026-08-19 | Independent review of `4db1084` requested transaction, isolation, recall, UI and evidence corrections | `evidence/review-4db1084.md` |

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import os
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -10,6 +11,7 @@ from fastapi import HTTPException
 from server.database import Database
 from server.group_session_chain import SessionChainAccessError, SessionChainReader
 from server.harness.assembly import build_callback_env, select_mcp_servers
+from server.mcp_servers import session_chain as session_chain_mcp
 from server.routers import session_chains as router_module
 
 
@@ -49,6 +51,13 @@ class SessionChainRecallTests(unittest.IsolatedAsyncioTestCase):
             "session-1", 1, "assistant", "text",
             "Implemented the rotation transaction; reviewer should inspect CAS.",
         )
+        await self.db.append_message(
+            "session-1", 2, "user", "text", "Record the final next step"
+        )
+        await self.db.append_message(
+            "session-1", 3, "assistant", "text",
+            ("large historical detail " * 1000) + " UNIQUE-NEEDLE finish review",
+        )
         await self.db.flush()
         await self.db.begin_group_session_seal(
             "group-1", "agent-1", "session-1",
@@ -80,15 +89,48 @@ class SessionChainRecallTests(unittest.IsolatedAsyncioTestCase):
         )
         hit = await self.reader.search("session-2", "sqlite", limit=5)
         invocation = await self.reader.read_invocation(
-            "session-2", "session-1", seq=1
+            "session-2", "session-1", seq=0
+        )
+        handoff = await self.reader.read_events(
+            "session-2", "session-1", view="handoff", offset=0, limit=10
         )
 
         self.assertEqual(listing["chain_length"], 2)
         self.assertEqual(listing["active_session_id"], "session-2")
         self.assertEqual(page["events"][0]["seq"], 1)
-        self.assertIsNone(page["next_offset"])
+        self.assertEqual(page["next_offset"], 2)
         self.assertEqual(hit["matches"][0]["session_id"], "session-1")
-        self.assertIn("rotation transaction", invocation["content"])
+        self.assertEqual([event["seq"] for event in invocation["events"]], [0, 1])
+        self.assertIn("rotation transaction", invocation["events"][1]["content"])
+        self.assertEqual(handoff["events"][0]["start_seq"], 0)
+        self.assertIn("digest", handoff)
+
+    async def test_recall_bounds_large_fields_queries_and_search_snippets(self) -> None:
+        for seq in range(4, 110):
+            await self.db.append_message(
+                "session-1", seq, "assistant", "text", f"detail {seq}"
+            )
+        await self.db.flush()
+        raw = await self.reader.read_events(
+            "session-2", "session-1", view="raw", offset=3, limit=1
+        )
+        hit = await self.reader.search("session-2", "unique-needle", limit=5)
+        invocation = await self.reader.read_invocation(
+            "session-2", "session-1", seq=2
+        )
+
+        event = raw["events"][0]
+        self.assertTrue(event["truncated"])
+        self.assertLessEqual(len(event["content"]), 8_000)
+        self.assertNotIn("content", hit["matches"][0])
+        self.assertLessEqual(len(hit["matches"][0]["snippet"]), 600)
+        self.assertEqual(hit["matches"][0]["seq"], 3)
+        self.assertEqual(len(invocation["events"]), 100)
+        self.assertTrue(invocation["truncated"])
+        self.assertEqual(invocation["next_seq"], 102)
+        with self.assertRaises(SessionChainAccessError) as caught:
+            await self.reader.search("session-2", "x" * 257, limit=5)
+        self.assertEqual(caught.exception.status_code, 400)
 
     async def test_current_cross_chain_and_unknown_targets_fail_closed(self) -> None:
         with self.assertRaises(SessionChainAccessError):
@@ -125,6 +167,25 @@ class SessionChainRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("session_chain", keys)
         self.assertEqual(env["OCTOPUS_SESSION_ID"], "session-2")
         self.assertEqual(env["OCTOPUS_SESSION_CAPABILITY"], "cap")
+
+    def test_mcp_rejects_path_escape_before_making_http_request(self) -> None:
+        env = {
+            "OCTOPUS_API_BASE": "http://127.0.0.1:8000",
+            "OCTOPUS_AUTH_TOKEN": "auth",
+            "OCTOPUS_SESSION_ID": "session-2",
+            "OCTOPUS_SESSION_CAPABILITY": "cap",
+        }
+        response = Mock(status_code=200)
+        response.json.return_value = {"private": "victim transcript"}
+        with patch.dict(os.environ, env, clear=True), patch.object(
+            session_chain_mcp.httpx, "get", return_value=response
+        ) as get:
+            result = session_chain_mcp.read_events(
+                "../../../sessions/victim?", view="raw"
+            )
+
+        self.assertIn("invalid predecessor session id", result.lower())
+        get.assert_not_called()
 
 
 if __name__ == "__main__":

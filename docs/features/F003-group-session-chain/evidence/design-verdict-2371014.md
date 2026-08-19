@@ -46,4 +46,3 @@ compression-count strategies are explicitly separate future features.
 
 Load `$writing-plans` and produce an AC-complete implementation plan with exact
 files, state invariants, red-green steps and verification commands.
-

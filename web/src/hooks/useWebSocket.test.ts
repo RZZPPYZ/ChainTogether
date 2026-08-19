@@ -32,6 +32,31 @@ describe("group member session chain events", () => {
   it("applies a durable rotation projection from the websocket", () => {
     handleWsMessage({
       type: "group_member_session_chain",
+      event_type: "warning",
+      group_id: "group-1",
+      agent_id: "agent-1",
+      session_id: "session-1",
+    });
+    expect(useSessionStore.getState().groups[0].memberSessions?.[0]).toMatchObject({
+      sessionId: "session-1",
+      chainStatus: "warning",
+      chainEventType: "warning",
+    });
+
+    handleWsMessage({
+      type: "group_member_session_chain",
+      event_type: "summary_degraded",
+      group_id: "group-1",
+      agent_id: "agent-1",
+      session_id: "session-1",
+    });
+    expect(useSessionStore.getState().groups[0].memberSessions?.[0]).toMatchObject({
+      chainStatus: "degraded",
+      summaryDegraded: true,
+    });
+
+    handleWsMessage({
+      type: "group_member_session_chain",
       event_type: "successor_created",
       group_id: "group-1",
       agent_id: "agent-1",
@@ -47,6 +72,21 @@ describe("group member session chain events", () => {
       generation: 2,
       chainLength: 2,
       contextUsage: null,
+      chainStatus: "active",
+      summaryDegraded: true,
+    });
+
+    handleWsMessage({
+      type: "group_member_session_chain",
+      event_type: "bootstrap_consumed",
+      group_id: "group-1",
+      agent_id: "agent-1",
+      session_id: "session-2",
+      generation: 2,
+    });
+    expect(useSessionStore.getState().groups[0].memberSessions?.[0]).toMatchObject({
+      chainEventType: "bootstrap_consumed",
+      chainStatus: "active",
     });
   });
 });

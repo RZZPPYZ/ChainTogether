@@ -302,18 +302,43 @@ function ContextUsageBadge({
 export function SessionGenerationBadge({
   generation,
   chainLength,
+  chainStatus,
+  chainEventType,
+  summaryDegraded,
 }: {
   generation?: number;
   chainLength?: number;
+  chainStatus?: string;
+  chainEventType?: string;
+  summaryDegraded?: boolean;
 }) {
   const current = Math.max(1, generation ?? 1);
   const total = Math.max(current, chainLength ?? current);
+  const title = `Session generation ${current} of ${total}; chain status ${chainStatus || "active"}. Earlier generations are sealed; this fresh session can recall them through Session Chain.`;
+  const lifecycleLabel = (() => {
+    if (chainEventType === "summary_degraded") return "fallback";
+    if (chainEventType === "successor_created") {
+      return summaryDegraded ? "fallback" : "fresh";
+    }
+    if (chainEventType === "bootstrap_consumed") {
+      return summaryDegraded ? "fallback" : "ready";
+    }
+    const labels: Record<string, string> = {
+      unknown: "usage unknown",
+      warning: "warning",
+      sealing_started: "sealing",
+      summary_generated: "summarizing",
+      sealed: "sealed",
+    };
+    return chainEventType ? labels[chainEventType] : undefined;
+  })();
   return (
     <span
       className="shrink-0 rounded border border-border/70 bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-foreground"
-      title={`Session generation ${current} of ${total}. Earlier generations are sealed; this fresh session can recall them through Session Chain.`}
+      title={title}
     >
-      S{current}/{total}
+      <span title={title}>S{current}/{total}</span>
+      {lifecycleLabel ? <span> {lifecycleLabel}</span> : null}
     </span>
   );
 }
@@ -1439,6 +1464,9 @@ export function GroupChatView({
                 <SessionGenerationBadge
                   generation={memberSession?.generation}
                   chainLength={memberSession?.chainLength}
+                  chainStatus={memberSession?.chainStatus}
+                  chainEventType={memberSession?.chainEventType}
+                  summaryDegraded={memberSession?.summaryDegraded}
                 />
                 <ContextUsageBadge usage={usage} />
               </span>

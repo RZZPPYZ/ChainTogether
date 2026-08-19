@@ -65,4 +65,3 @@ degraded summary path, restart path, privacy boundary, terminal state and
 non-goals are explicit. Thresholds are configurable defaults, so no unresolved
 operator value decision blocks Design Gate. Proposed status:
 `ready_for_design`.
-

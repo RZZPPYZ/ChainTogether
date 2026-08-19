@@ -1387,10 +1387,21 @@ class Database:
         successor_backend: str | None = None,
         successor_parent_session_id: str | None = None,
     ) -> bool:
-        """Atomically seal the predecessor and move the preserved pointer."""
+        """Atomically seal the predecessor and move the preserved pointer.
+
+        This saga deliberately uses its own SQLite connection. The ordinary
+        Database connection is shared by every coroutine, so an unrelated
+        ``commit()`` on that connection could otherwise publish half of this
+        multi-statement transition. ``BEGIN IMMEDIATE`` makes the file-backed
+        transaction the sole writer until commit/rollback.
+        """
         await self._ensure_connected()
+        transaction = await aiosqlite.connect(self._db_path)
         try:
-            cursor = await self._conn.execute(
+            await transaction.execute("PRAGMA foreign_keys=ON")
+            await transaction.execute("PRAGMA busy_timeout=5000")
+            await transaction.execute("BEGIN IMMEDIATE")
+            cursor = await transaction.execute(
                 "SELECT generation FROM group_session_generations "
                 "WHERE group_id = ? AND agent_id = ? AND session_id = ? "
                 "AND status = 'sealing' AND EXISTS ("
@@ -1403,15 +1414,18 @@ class Database:
             )
             row = await cursor.fetchone()
             if row is None:
-                existing = await self.get_group_session_generation(successor_session_id)
-                return bool(
-                    existing
-                    and existing["predecessor_session_id"] == predecessor_session_id
-                    and existing["status"] == "active"
+                existing_cursor = await transaction.execute(
+                    "SELECT predecessor_session_id, status "
+                    "FROM group_session_generations WHERE session_id = ?",
+                    (successor_session_id,),
                 )
+                existing = await existing_cursor.fetchone()
+                await transaction.rollback()
+                return bool(existing and existing[0] == predecessor_session_id
+                            and existing[1] == "active")
             next_generation = int(row[0]) + 1
             if successor_name is not None and successor_working_dir is not None:
-                await self._conn.execute(
+                await transaction.execute(
                     "INSERT OR IGNORE INTO sessions "
                     "(id, name, working_dir, created_at, claude_session_id, "
                     "credential_id, agent_id, origin, backend, parent_session_id) "
@@ -1427,7 +1441,7 @@ class Database:
                         successor_parent_session_id,
                     ),
                 )
-            await self._conn.execute(
+            await transaction.execute(
                 "UPDATE group_session_generations SET status = 'sealed', "
                 "sealed_at = ?, digest = ?, digest_provenance = ?, "
                 "digest_error = ? WHERE session_id = ? AND status = 'sealing'",
@@ -1436,7 +1450,12 @@ class Database:
                     predecessor_session_id,
                 ),
             )
-            await self._conn.execute(
+            # Test-only fault injection point used to prove that a cancellation
+            # cannot be committed by an unrelated writer on the main connection.
+            test_hook = getattr(self, "_group_rotation_test_hook", None)
+            if test_hook is not None:
+                await test_hook()
+            await transaction.execute(
                 "INSERT INTO group_session_generations "
                 "(group_id, agent_id, session_id, generation, "
                 "predecessor_session_id, status, created_at) "
@@ -1446,7 +1465,7 @@ class Database:
                     predecessor_session_id, completed_at,
                 ),
             )
-            pointer = await self._conn.execute(
+            pointer = await transaction.execute(
                 "UPDATE group_agent_sessions SET session_id = ? "
                 "WHERE group_id = ? AND agent_id = ? AND session_id = ?",
                 (
@@ -1456,13 +1475,14 @@ class Database:
             )
             if pointer.rowcount != 1:
                 raise RuntimeError("group member pointer changed during rotation")
-            await self._conn.execute(
+            await transaction.execute(
                 "UPDATE sessions SET archived = 1 WHERE id = ?",
                 (predecessor_session_id,),
             )
             await self._append_group_session_event_uncommitted(
                 group_id, agent_id, predecessor_session_id, "sealed",
                 {"successor_session_id": successor_session_id}, completed_at,
+                connection=transaction,
             )
             await self._append_group_session_event_uncommitted(
                 group_id, agent_id, successor_session_id, "successor_created",
@@ -1471,12 +1491,15 @@ class Database:
                     "generation": next_generation,
                 },
                 completed_at,
+                connection=transaction,
             )
-            await self._conn.commit()
+            await transaction.commit()
             return True
-        except Exception:
-            await self._conn.rollback()
+        except BaseException:
+            await transaction.rollback()
             raise
+        finally:
+            await transaction.close()
 
     async def append_group_session_event(
         self,
@@ -1523,8 +1546,11 @@ class Database:
         event_type: str,
         payload: dict[str, Any],
         created_at: str,
+        *,
+        connection: aiosqlite.Connection | None = None,
     ) -> None:
-        await self._conn.execute(
+        target = connection or self._conn
+        await target.execute(
             "INSERT INTO group_session_chain_events "
             "(group_id, agent_id, session_id, event_type, payload, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",

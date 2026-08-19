@@ -73,7 +73,7 @@ async def read_session_chain_invocation(
 @router.get("/{session_id}/session-chain/search")
 async def search_session_chain(
     session_id: str,
-    q: str = Query(..., min_length=1),
+    q: str = Query(..., min_length=1, max_length=256),
     limit: int = Query(20, ge=1, le=100),
     session_capability: str = Header(..., alias="X-Octopus-Session-Capability"),
     _: str = Depends(verify_token),

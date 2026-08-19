@@ -318,16 +318,19 @@ export interface GroupMemberSession {
   generation?: number;
   chainLength?: number;
   chainStatus?: string;
+  chainEventType?: string;
+  summaryDegraded?: boolean;
 }
 
 export interface GroupMemberSessionChainEvent {
+  eventType: string;
   groupId: string;
   agentId: string;
-  previousSessionId: string;
+  previousSessionId?: string;
   sessionId: string;
-  generation: number;
-  chainLength: number;
-  chainStatus: string;
+  generation?: number;
+  chainLength?: number;
+  chainStatus?: string;
 }
 
 export interface ApiGroupInfo {
@@ -968,14 +971,34 @@ export const useSessionStore = create<SessionStore>((set) => ({
         const index = current.findIndex(
           (item) => item.agentId === event.agentId,
         );
+        const previous = index >= 0 ? current[index] : undefined;
+        const isSuccessor = event.eventType === "successor_created";
+        const lifecycleStatus: Record<string, string> = {
+          unknown: "unavailable",
+          warning: "warning",
+          sealing_started: "sealing",
+          summary_generated: "sealing",
+          summary_degraded: "degraded",
+          sealed: "sealed",
+          successor_created: event.chainStatus || "active",
+          bootstrap_consumed: "active",
+        };
         const nextMember: GroupMemberSession = {
-          ...(index >= 0 ? current[index] : {}),
+          ...previous,
           agentId: event.agentId,
-          sessionId: event.sessionId,
-          generation: event.generation,
-          chainLength: event.chainLength,
-          chainStatus: event.chainStatus,
-          contextUsage: null,
+          sessionId: isSuccessor
+            ? event.sessionId
+            : previous?.sessionId || event.sessionId,
+          generation: event.generation ?? previous?.generation,
+          chainLength: event.chainLength ?? previous?.chainLength,
+          chainStatus:
+            lifecycleStatus[event.eventType] ||
+            event.chainStatus ||
+            previous?.chainStatus,
+          chainEventType: event.eventType,
+          summaryDegraded:
+            previous?.summaryDegraded || event.eventType === "summary_degraded",
+          contextUsage: isSuccessor ? null : previous?.contextUsage,
         };
         const memberSessions =
           index >= 0

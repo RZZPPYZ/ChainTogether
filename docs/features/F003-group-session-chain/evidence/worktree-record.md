@@ -15,4 +15,3 @@
 - Baseline: the backend regression suite started from the exact base and ran
   through the established mocked-failure paths without an early collection or
   import failure. A concise exit-code baseline is rerun before implementation.
-

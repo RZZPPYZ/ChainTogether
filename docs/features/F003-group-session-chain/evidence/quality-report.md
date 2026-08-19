@@ -1,5 +1,9 @@
 # F003 Quality Report
 
+> Historical pre-review checkpoint. The independent review of `4db1084`
+> superseded this verdict; see `review-4db1084.md`. A fresh remediation report
+> is required before re-review.
+
 - Date: 2026-08-19
 - Verdict: **pass**
 - Base: `1fb75b26370a2301c94f409d1d817c587d172cb3`

@@ -35,7 +35,7 @@ the state it owns and includes failure-path tests before production changes.
 
 ## Task 1 — Context action policy and configuration
 
-**AC:** AC-3, AC-11  
+**AC:** AC-3, AC-11
 **State owner:** context observation/action decision (pure value, no mutation)
 
 **Modify**
@@ -81,7 +81,7 @@ harness code.
 
 ## Task 2 — Durable generations, events and atomic rotation commit
 
-**AC:** AC-1, AC-2, AC-8, AC-9, AC-10  
+**AC:** AC-1, AC-2, AC-8, AC-9, AC-10
 **State owner:** Database generation/event truth and active pointer
 
 **Modify**
@@ -125,7 +125,7 @@ reconciliation; it never edits `messages`.
 
 ## Task 3 — Complete transcript views, fresh summarizer and safe bootstrap
 
-**AC:** AC-4, AC-5, AC-6  
+**AC:** AC-4, AC-5, AC-6
 **State owner:** immutable transcript projection, digest and bootstrap packet
 
 **Modify/create**
@@ -165,7 +165,7 @@ from the same projection. Register/render the bootstrap through
 
 ## Task 4 — Capability-bound Session Chain REST and mandatory MCP
 
-**AC:** AC-4, AC-7, AC-10  
+**AC:** AC-4, AC-7, AC-10
 **State owner:** read-only recall authorization and query pagination
 
 **Create/modify**
@@ -202,7 +202,7 @@ identity only from environment and pass the capability header. Register it in
 
 ## Task 5 — Group turn integration, sealing and recovery
 
-**AC:** AC-1, AC-2, AC-3, AC-6, AC-8, AC-9, AC-10  
+**AC:** AC-1, AC-2, AC-3, AC-6, AC-8, AC-9, AC-10
 **State owner:** group dispatch chooses current generation and commits rotation
 
 **Modify**
@@ -246,7 +246,7 @@ before dispatching A2A mentions. Broadcast a dedicated
 
 ## Task 6 — Group UI generation and live rotation visibility
 
-**AC:** AC-1, AC-10, AC-11  
+**AC:** AC-1, AC-10, AC-11
 **State owner:** frontend projection only; backend remains truth
 
 **Modify**
@@ -274,7 +274,7 @@ script literal if necessary.
 
 ## Task 7 — Documentation, validators and full evidence
 
-**AC:** AC-11 and final coverage of all ACs  
+**AC:** AC-11 and final coverage of all ACs
 **Modify**
 
 - `docs/architecture.md`
@@ -337,4 +337,3 @@ authorization, transcript immutability, fallback or bootstrap invariants.
 - Base: `1fb75b26370a2301c94f409d1d817c587d172cb3`
 - Dependency decision: reuse root `.venv`; install/reuse worktree-local Bun
   dependencies only when frontend execution begins.
-

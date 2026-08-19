@@ -20,6 +20,29 @@ describe("group member session generations", () => {
       "fresh session",
     );
   });
+
+  it("renders lifecycle health instead of hiding seal progress", () => {
+    const { rerender } = render(
+      <SessionGenerationBadge
+        generation={1}
+        chainLength={1}
+        chainStatus="sealing"
+        chainEventType="sealing_started"
+      />,
+    );
+    expect(screen.getByText("sealing")).toBeTruthy();
+
+    rerender(
+      <SessionGenerationBadge
+        generation={2}
+        chainLength={2}
+        chainStatus="active"
+        chainEventType="successor_created"
+        summaryDegraded
+      />,
+    );
+    expect(screen.getByText("fallback")).toBeTruthy();
+  });
 });
 import {
   useSessionStore,
