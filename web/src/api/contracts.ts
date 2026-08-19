@@ -1640,6 +1640,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/session-chain": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Session Chain */
+        get: operations["list_session_chain_api_sessions__session_id__session_chain_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/session-chain/{target_session_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Session Chain Events */
+        get: operations["read_session_chain_events_api_sessions__session_id__session_chain__target_session_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/session-chain/{target_session_id}/invocations/{seq}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Session Chain Invocation */
+        get: operations["read_session_chain_invocation_api_sessions__session_id__session_chain__target_session_id__invocations__seq__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/session-chain/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Search Session Chain */
+        get: operations["search_session_chain_api_sessions__session_id__session_chain_search_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/backends": {
         parameters: {
             query?: never;
@@ -2057,6 +2125,36 @@ export interface components {
             /** Expires At Epoch */
             expires_at_epoch: number;
         };
+        /** ContextUsageInfo */
+        ContextUsageInfo: {
+            /** Input Tokens */
+            input_tokens?: number | null;
+            /** Output Tokens */
+            output_tokens?: number | null;
+            /** Cached Input Tokens */
+            cached_input_tokens?: number | null;
+            /** Cache Creation Input Tokens */
+            cache_creation_input_tokens?: number | null;
+            /** Total Tokens */
+            total_tokens?: number | null;
+            /** Context Window */
+            context_window?: number | null;
+            /** Remaining Tokens */
+            remaining_tokens?: number | null;
+            /** Remaining Ratio */
+            remaining_ratio?: number | null;
+            /** Model */
+            model?: string | null;
+            /** Backend */
+            backend?: string | null;
+            /**
+             * Source
+             * @default reported
+             */
+            source: string;
+            /** Observed At */
+            observed_at?: string | null;
+        };
         /** CreateCredentialRequest */
         CreateCredentialRequest: {
             backend: components["schemas"]["BackendKind"];
@@ -2435,6 +2533,11 @@ export interface components {
             default_agent_id?: string | null;
             /** Working Dir */
             working_dir: string;
+            /**
+             * Member Sessions
+             * @default []
+             */
+            member_sessions: components["schemas"]["GroupMemberSessionInfo"][];
         };
         /** GroupInvocationInfo */
         GroupInvocationInfo: {
@@ -2477,6 +2580,33 @@ export interface components {
              * @default
              */
             reason: string;
+        };
+        /** GroupMemberSessionInfo */
+        GroupMemberSessionInfo: {
+            /** Agent Id */
+            agent_id: string;
+            /** Session Id */
+            session_id: string;
+            /** @default claude-code */
+            backend: components["schemas"]["BackendKind"];
+            /** @default idle */
+            status: components["schemas"]["SessionStatus"];
+            context_usage?: components["schemas"]["ContextUsageInfo"] | null;
+            /**
+             * Generation
+             * @default 1
+             */
+            generation: number;
+            /**
+             * Chain Length
+             * @default 1
+             */
+            chain_length: number;
+            /**
+             * Chain Status
+             * @default active
+             */
+            chain_status: string;
         };
         /**
          * GroupSendRequest
@@ -2551,6 +2681,7 @@ export interface components {
             session_id?: string | null;
             /** Cost */
             cost?: number | null;
+            context_usage?: components["schemas"]["ContextUsageInfo"] | null;
             /**
              * Attachments
              * @default []
@@ -2801,6 +2932,7 @@ export interface components {
              * @default false
              */
             fork_is_full_copy: boolean;
+            context_usage?: components["schemas"]["ContextUsageInfo"] | null;
             /**
              * Archived
              * @default false
@@ -2877,6 +3009,7 @@ export interface components {
              * @default false
              */
             fork_is_full_copy: boolean;
+            context_usage?: components["schemas"]["ContextUsageInfo"] | null;
             /**
              * Archived
              * @default false
@@ -6604,6 +6737,156 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FeatureRunEventInfo"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_session_chain_api_sessions__session_id__session_chain_get: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Octopus-Session-Capability": string;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_session_chain_events_api_sessions__session_id__session_chain__target_session_id__events_get: {
+        parameters: {
+            query?: {
+                view?: string;
+                offset?: number;
+                limit?: number;
+            };
+            header: {
+                "X-Octopus-Session-Capability": string;
+            };
+            path: {
+                session_id: string;
+                target_session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_session_chain_invocation_api_sessions__session_id__session_chain__target_session_id__invocations__seq__get: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Octopus-Session-Capability": string;
+            };
+            path: {
+                session_id: string;
+                target_session_id: string;
+                seq: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    search_session_chain_api_sessions__session_id__session_chain_search_get: {
+        parameters: {
+            query: {
+                q: string;
+                limit?: number;
+            };
+            header: {
+                "X-Octopus-Session-Capability": string;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */

@@ -5,10 +5,22 @@ import {
   GroupAgentRunBlock,
   GroupChatView,
   GroupMarkdown,
+  SessionGenerationBadge,
   buildGroupTimeline,
   highlightMentions,
   parseGroupAgentMessage,
 } from "./GroupChatView";
+
+describe("group member session generations", () => {
+  it("renders the active generation and chain length", () => {
+    render(<SessionGenerationBadge generation={2} chainLength={3} />);
+
+    expect(screen.getByText("S2/3")).toBeTruthy();
+    expect(screen.getByText("S2/3").getAttribute("title")).toContain(
+      "fresh session",
+    );
+  });
+});
 import {
   useSessionStore,
   type Agent,

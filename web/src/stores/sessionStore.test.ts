@@ -94,3 +94,53 @@ describe("group agent activity blocks", () => {
     expect(run.contextUsage?.remaining_tokens).toBe(300000);
   });
 });
+
+describe("group session chain rotation", () => {
+  it("replaces the active member session and clears stale context usage", () => {
+    useSessionStore.setState({
+      groups: [
+        {
+          id: "group-1",
+          name: "Team",
+          agentIds: ["agent-1"],
+          createdAt: "2026-08-19T00:00:00Z",
+          sessionId: "group-root",
+          workingDir: "C:/workspace",
+          memberSessions: [
+            {
+              agentId: "agent-1",
+              sessionId: "session-1",
+              generation: 1,
+              chainLength: 1,
+              chainStatus: "active",
+              contextUsage: {
+                context_window: 200000,
+                remaining_tokens: 10000,
+                remaining_ratio: 0.05,
+                source: "reported",
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    useSessionStore.getState().applyGroupMemberSessionChain({
+      groupId: "group-1",
+      agentId: "agent-1",
+      previousSessionId: "session-1",
+      sessionId: "session-2",
+      generation: 2,
+      chainLength: 2,
+      chainStatus: "active",
+    });
+
+    expect(useSessionStore.getState().groups[0].memberSessions?.[0]).toMatchObject({
+      sessionId: "session-2",
+      generation: 2,
+      chainLength: 2,
+      chainStatus: "active",
+      contextUsage: null,
+    });
+  });
+});

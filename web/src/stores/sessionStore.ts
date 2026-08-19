@@ -16,7 +16,7 @@ import type { ContextUsage } from "../lib/contextUsage";
 // already uses. Source of truth is `web/src/api/contracts.ts`, regenerated
 // from FastAPI's openapi.json via `bun run generate:contracts`.
 export type SessionStatus = ApiSessionStatus;
-export type SessionInfo = ApiSessionInfo & {
+export type SessionInfo = Omit<ApiSessionInfo, "context_usage"> & {
   context_usage?: ContextUsage | null;
 };
 export type Agent = ApiAgentRead;
@@ -209,6 +209,7 @@ interface SessionStore {
     sessionId: string,
     contextUsage: ContextUsage,
   ) => void;
+  applyGroupMemberSessionChain: (event: GroupMemberSessionChainEvent) => void;
   activeGroupId: string | null;
   setActiveGroupId: (id: string | null) => void;
 
@@ -314,6 +315,19 @@ export interface GroupMemberSession {
   backend?: BackendKind | string;
   status?: SessionStatus;
   contextUsage?: ContextUsage | null;
+  generation?: number;
+  chainLength?: number;
+  chainStatus?: string;
+}
+
+export interface GroupMemberSessionChainEvent {
+  groupId: string;
+  agentId: string;
+  previousSessionId: string;
+  sessionId: string;
+  generation: number;
+  chainLength: number;
+  chainStatus: string;
 }
 
 export interface ApiGroupInfo {
@@ -330,6 +344,9 @@ export interface ApiGroupInfo {
     backend?: BackendKind | string;
     status?: SessionStatus;
     context_usage?: ContextUsage | null;
+    generation?: number;
+    chain_length?: number;
+    chain_status?: string;
   }>;
 }
 
@@ -348,6 +365,9 @@ export function toGroup(g: ApiGroupInfo): Group {
       backend: member.backend,
       status: member.status,
       contextUsage: member.context_usage ?? null,
+      generation: member.generation ?? 1,
+      chainLength: member.chain_length ?? 1,
+      chainStatus: member.chain_status ?? "active",
     })),
   };
 }
@@ -928,6 +948,34 @@ export const useSessionStore = create<SessionStore>((set) => ({
           agentId,
           sessionId,
           contextUsage,
+        };
+        const memberSessions =
+          index >= 0
+            ? [
+                ...current.slice(0, index),
+                nextMember,
+                ...current.slice(index + 1),
+              ]
+            : [...current, nextMember];
+        return { ...group, memberSessions };
+      }),
+    })),
+  applyGroupMemberSessionChain: (event) =>
+    set((s) => ({
+      groups: s.groups.map((group) => {
+        if (group.id !== event.groupId) return group;
+        const current = group.memberSessions || [];
+        const index = current.findIndex(
+          (item) => item.agentId === event.agentId,
+        );
+        const nextMember: GroupMemberSession = {
+          ...(index >= 0 ? current[index] : {}),
+          agentId: event.agentId,
+          sessionId: event.sessionId,
+          generation: event.generation,
+          chainLength: event.chainLength,
+          chainStatus: event.chainStatus,
+          contextUsage: null,
         };
         const memberSessions =
           index >= 0
