@@ -3,11 +3,13 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 from server.agent_manager import AgentManager
 from server.config import settings
 from server.database import Database
 from server.group_manager import AgentTurnResult, GroupError, GroupManager
+from server.group_session_chain import HandoffSummary
 from server.session_manager import SessionManager
 
 
@@ -128,6 +130,61 @@ class GroupWorkingDirectoryTests(unittest.IsolatedAsyncioTestCase):
             await self.db.get_group_agent_cursor(group["id"], self.first["id"]),
             current_seq,
         )
+
+    async def test_near_limit_turn_rotates_and_injects_bootstrap_once(self) -> None:
+        workspace = self.root / "workspace"
+        workspace.mkdir()
+        group = await self.manager.create_group(
+            "Build Team",
+            [self.first["id"], self.second["id"]],
+            working_dir=str(workspace),
+        )
+        stored = await self.db.get_group(group["id"])
+        old_id = await self.manager._get_or_create_member_session(
+            self.manager._runs[group["id"]], self.first, stored
+        )
+        old = self.session_manager.sessions[old_id]
+        old.context_usage = {
+            "total_tokens": 181_000,
+            "context_window": 200_000,
+            "remaining_ratio": 0.095,
+        }
+        await self.db.update_session_field(old_id, context_usage=old.context_usage)
+        assert self.manager.session_chain is not None
+        self.manager.session_chain._summarizer = AsyncMock()
+        self.manager.session_chain._summarizer.summarize.return_value = HandoffSummary(
+            "API complete; next run the independent review.", "fresh_model"
+        )
+        current_seq = await self.session_manager.inject_message(
+            group["session_id"], "user", "@Builder continue"
+        )
+        captured: dict[str, str] = {}
+
+        async def collect(
+            session_id: str, prompt: str, **_kwargs: object
+        ) -> AgentTurnResult:
+            captured["session_id"] = session_id
+            captured["prompt"] = prompt
+            return AgentTurnResult("Continued successfully.", succeeded=True)
+
+        self.manager._collect_agent_reply = collect  # type: ignore[method-assign]
+        await self.manager._run_mentioned_agent(
+            self.manager._runs[group["id"]],
+            self.first,
+            stored,
+            current_message="@Builder continue",
+            current_message_seq=current_seq,
+            current_source="User",
+        )
+
+        self.assertNotEqual(captured["session_id"], old_id)
+        self.assertIn("Session continuity", captured["prompt"])
+        self.assertIn("independent review", captured["prompt"])
+        self.assertNotIn(old_id, self.session_manager.sessions)
+        generation = await self.db.get_group_session_generation(
+            captured["session_id"]
+        )
+        self.assertIsNotNone(generation["bootstrap_consumed_at"])
 
 
 if __name__ == "__main__":

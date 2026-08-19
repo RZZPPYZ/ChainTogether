@@ -583,6 +583,9 @@ class GroupMemberSessionInfo(BaseModel):
     backend: BackendKind = BackendKind.claude_code
     status: SessionStatus = SessionStatus.idle
     context_usage: ContextUsageInfo | None = None
+    generation: int = 1
+    chain_length: int = 1
+    chain_status: str = "active"
 
 
 # Group chat -- multi-agent conversations with @-mention routing (groups.md).

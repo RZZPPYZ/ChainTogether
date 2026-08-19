@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Any, Literal
 from .prompt_governance import GroupPromptGovernance, get_prompt_registry
 from .session_manager import FeatureTurnAuthority, resolve_working_dir
 from .feature_manager import FeatureError
+from .config import settings
+from .group_session_chain import ContextSealPolicy, GroupSessionChainService
 
 if TYPE_CHECKING:
     from .database import Database
@@ -202,6 +204,8 @@ class PingPongStreak:
 class AgentTurnResult:
     text: str
     tool_names: tuple[str, ...] = ()
+    succeeded: bool = True
+    context_usage: dict[str, Any] | None = None
 
     @property
     def output_length(self) -> int:
@@ -521,6 +525,7 @@ class GroupManager:
         self.feature_manager: FeatureManager | None = None
         self.feature_delivery_manager: FeatureDeliveryManager | None = None
         self.prompt_governance = GroupPromptGovernance()
+        self.session_chain: GroupSessionChainService | None = None
         self._runs: dict[str, GroupRunState] = {}
         self._invocations: dict[str, GroupRunState] = {}
 
@@ -535,11 +540,32 @@ class GroupManager:
         self.session_manager = session_mgr
         self.feature_manager = feature_mgr
         self.feature_delivery_manager = feature_delivery_mgr
+        self.session_chain = GroupSessionChainService(
+            db,
+            session_mgr,
+            policy=ContextSealPolicy(
+                enabled=settings.group_session_chain_enabled,
+                warn_ratio=settings.group_session_chain_warn_ratio,
+                action_ratio=settings.group_session_chain_action_ratio,
+                reserve_tokens=settings.group_session_chain_reserve_tokens,
+            ),
+            summary_timeout_seconds=(
+                settings.group_session_chain_summary_timeout_seconds
+            ),
+            bootstrap_max_chars=settings.group_session_chain_bootstrap_max_chars,
+        )
 
     async def initialize_prompt_assets(self) -> None:
         """Materialize roster snapshots for every persisted group at startup."""
         if not self.db:
             return
+        if self.session_chain is not None:
+            repaired = await self.session_chain.reconcile_all()
+            if repaired:
+                logger.info(
+                    "Reconciled %d interrupted group session seal(s)",
+                    len(repaired),
+                )
         for group in await self.db.list_groups():
             await self._refresh_group_roster_snapshot(group["id"])
 
@@ -725,9 +751,13 @@ class GroupManager:
                     raise GroupError("Cannot remove an agent with a pending turn")
 
         # Hard-delete the (group × agent) reuse session if it exists.
-        reuse_sid = await self.db.get_group_agent_session(group_id, agent_id)
-        if reuse_sid:
-            await self._hard_delete_session(reuse_sid)
+        member_sessions = [
+            item for item in await self.db.list_group_agent_sessions(group_id)
+            if item["agent_id"] == agent_id
+        ]
+        for item in member_sessions:
+            await self._hard_delete_session(item["session_id"])
+        if member_sessions:
             # CASCADE on session_id FK also clears the row, but be explicit.
             await self.db.delete_group_agent_session(group_id, agent_id)
 
@@ -1145,6 +1175,32 @@ class GroupManager:
             a = await self.db.get_agent(aid)
             if isinstance(a, dict):
                 member_agents.append(a)
+        cursor = await self.db.get_group_agent_cursor(run.group_id, agent_id)
+        trigger_content = current_message or prompt_override or run.root_content
+        trigger_source = (
+            current_source
+            if current_source != "User" or not spawner_agent_name
+            else f"Agent {spawner_agent_name}"
+        )
+        delta, delta_from, delta_to, highwater = self._build_group_delta_payload(
+            group_messages,
+            member_agents,
+            after_seq=cursor,
+            before_seq=current_message_seq,
+            current_agent_id=agent_id,
+        )
+        # Rotate before prompt assembly if the projected turn would cross the
+        # action threshold. The active pointer retains the durable group cursor.
+        if self.session_chain is not None:
+            projection_chars = len(trigger_content) + len(
+                json.dumps(delta, ensure_ascii=False, default=str)
+            )
+            reuse_session_id = await self.session_chain.maybe_rotate(
+                run.group_id,
+                agent,
+                reuse_session_id,
+                projected_prompt_tokens=max(1, projection_chars // 4),
+            )
         member_session = self.session_manager.get_session(reuse_session_id)
         if member_session is None:
             raise GroupError(
@@ -1166,21 +1222,14 @@ class GroupManager:
                 group, agent, member_agents, persist_snapshot=False
             )
 
-        cursor = await self.db.get_group_agent_cursor(run.group_id, agent_id)
-        trigger_content = current_message or prompt_override or run.root_content
-        trigger_source = (
-            current_source
-            if current_source != "User" or not spawner_agent_name
-            else f"Agent {spawner_agent_name}"
-        )
-        delta, delta_from, delta_to, highwater = self._build_group_delta_payload(
-            group_messages,
-            member_agents,
-            after_seq=cursor,
-            before_seq=current_message_seq,
-            current_agent_id=agent_id,
-        )
         directives = list(dynamic_directives)
+        bootstrap_directive = None
+        if self.session_chain is not None:
+            bootstrap_directive = await self.session_chain.pending_bootstrap(
+                reuse_session_id, agent_name
+            )
+            if bootstrap_directive:
+                directives.insert(0, bootstrap_directive)
         if run.feature_run_id is not None:
             if self.feature_manager is None:
                 raise GroupError(
@@ -1253,6 +1302,12 @@ class GroupManager:
                     else None
                 ),
             )
+            if (
+                bootstrap_directive
+                and turn.succeeded
+                and self.session_chain is not None
+            ):
+                await self.session_chain.consume_bootstrap(reuse_session_id)
             if current_message_seq is not None:
                 highwater = max(highwater, current_message_seq)
             if highwater > cursor:
@@ -1264,6 +1319,8 @@ class GroupManager:
             routing_turn = AgentTurnResult(
                 text=reply_text,
                 tool_names=turn.tool_names,
+                succeeded=turn.succeeded,
+                context_usage=turn.context_usage,
             )
             routing_message_seq: int | None = None
 
@@ -1280,6 +1337,10 @@ class GroupManager:
                 )
                 hold = parse_group_hold(reply_text)
                 if hold is not None:
+                    if turn.succeeded and self.session_chain is not None:
+                        await self.session_chain.maybe_rotate(
+                            run.group_id, agent, reuse_session_id
+                        )
                     seconds, reason = hold
                     await self._hold_invocation(
                         run, agent_name=agent_name, seconds=seconds, reason=reason
@@ -1319,6 +1380,10 @@ class GroupManager:
                             routing_turn = AgentTurnResult(
                                 text=f"{reply_text}\n\n{remedial_text}",
                                 tool_names=turn.tool_names + remedial.tool_names,
+                                succeeded=turn.succeeded and remedial.succeeded,
+                                context_usage=(
+                                    remedial.context_usage or turn.context_usage
+                                ),
                             )
                         else:
                             await self._inject_routing_warning(
@@ -1338,6 +1403,13 @@ class GroupManager:
                 await self._inject_agent_error(
                     run.group_session_id, agent_name,
                     "Agent produced no reply.",
+                )
+
+            # Measured post-turn action happens after the visible reply is
+            # durable but before any A2A successor is dispatched.
+            if turn.succeeded and self.session_chain is not None:
+                await self.session_chain.maybe_rotate(
+                    run.group_id, agent, reuse_session_id
                 )
 
             # A Feature dispatch has exact one-actor custody. Its MCP mutation
@@ -1706,6 +1778,9 @@ class GroupManager:
         error_messages: list[str] = []
         tool_names: list[str] = []
         error_recorded = False
+        saw_result = False
+        result_failed = False
+        last_context_usage: dict[str, Any] | None = None
         run_id = uuid.uuid4().hex[:12]
 
         async def record(phase: str, **details: Any) -> None:
@@ -1782,7 +1857,11 @@ class GroupManager:
                         is_error=bool(event.get("is_error")),
                     )
                 elif etype == "result":
+                    saw_result = True
                     is_error = bool(event.get("is_error"))
+                    result_failed = result_failed or is_error
+                    if isinstance(event.get("context_usage"), dict):
+                        last_context_usage = event["context_usage"]
                     await record(
                         "result",
                         duration_ms=event.get("duration_ms"),
@@ -1813,6 +1892,8 @@ class GroupManager:
             return AgentTurnResult(
                 text="\n\n".join(reply_parts),
                 tool_names=tuple(tool_names),
+                succeeded=saw_result and not result_failed,
+                context_usage=last_context_usage,
             )
         # No assistant text — surface whatever the backend reported so the
         # user sees the real failure instead of a generic "Agent produced
@@ -1822,7 +1903,12 @@ class GroupManager:
                 await record("error", detail="\n".join(error_messages))
             raise _BackendError("\n".join(error_messages))
         await record("completed")
-        return AgentTurnResult(text="", tool_names=tuple(tool_names))
+        return AgentTurnResult(
+            text="",
+            tool_names=tuple(tool_names),
+            succeeded=saw_result and not result_failed,
+            context_usage=last_context_usage,
+        )
 
     async def _run_routing_remedial(
         self,
@@ -1927,6 +2013,10 @@ class GroupManager:
         aid = agent["id"]
         existing = await self.db.get_group_agent_session(run.group_id, aid)
         if existing:
+            if self.session_chain is not None:
+                await self.session_chain.ensure_adopted(
+                    run.group_id, aid, existing
+                )
             return existing
 
         child = await self.session_manager.create_session(
@@ -1942,6 +2032,10 @@ class GroupManager:
             run.group_id, aid, child.id,
             datetime.now(timezone.utc).isoformat(),
         )
+        if self.session_chain is not None:
+            await self.session_chain.ensure_adopted(
+                run.group_id, aid, child.id
+            )
         return child.id
 
     async def _hard_delete_session(self, session_id: str) -> None:

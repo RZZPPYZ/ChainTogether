@@ -1139,16 +1139,25 @@ class Database:
 
     async def _group_member_sessions(self, group_id: str) -> list[dict[str, Any]]:
         cursor = await self._conn.execute(
-            "SELECT gas.agent_id, gas.session_id, s.backend, s.context_usage "
+            "SELECT gas.agent_id, gas.session_id, s.backend, s.context_usage, "
+            "COALESCE(gsg.generation, 1), COALESCE(gsg.status, 'active'), "
+            "COALESCE((SELECT COUNT(*) FROM group_session_generations chain "
+            "WHERE chain.group_id = gas.group_id "
+            "AND chain.agent_id = gas.agent_id), 1) "
             "FROM group_agent_sessions gas "
             "JOIN sessions s ON s.id = gas.session_id "
+            "LEFT JOIN group_session_generations gsg "
+            "ON gsg.session_id = gas.session_id "
             "WHERE gas.group_id = ? "
             "ORDER BY gas.created_at, gas.agent_id",
             (group_id,),
         )
         rows = await cursor.fetchall()
         out: list[dict[str, Any]] = []
-        for agent_id, session_id, backend, context_usage_raw in rows:
+        for (
+            agent_id, session_id, backend, context_usage_raw,
+            generation, chain_status, chain_length,
+        ) in rows:
             context_usage = None
             if context_usage_raw:
                 try:
@@ -1161,6 +1170,9 @@ class Database:
                 "backend": backend or "claude-code",
                 "status": "idle",
                 "context_usage": context_usage,
+                "generation": int(generation),
+                "chain_status": chain_status,
+                "chain_length": int(chain_length),
             })
         return out
 
@@ -1278,6 +1290,20 @@ class Database:
         )
         return [self._group_session_generation_row(row) for row in await cursor.fetchall()]
 
+    async def list_sealing_group_session_generations(
+        self,
+    ) -> list[dict[str, Any]]:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT group_id, agent_id, session_id, generation, "
+            "predecessor_session_id, status, seal_reason, context_usage, "
+            "seal_started_at, sealed_at, digest, digest_provenance, "
+            "digest_error, bootstrap_consumed_at, created_at "
+            "FROM group_session_generations WHERE status = 'sealing' "
+            "ORDER BY seal_started_at, group_id, agent_id"
+        )
+        return [self._group_session_generation_row(row) for row in await cursor.fetchall()]
+
     @staticmethod
     def _group_session_generation_row(row: Any) -> dict[str, Any]:
         context_usage = None
@@ -1355,6 +1381,11 @@ class Database:
         digest_provenance: str,
         completed_at: str,
         digest_error: str | None = None,
+        successor_name: str | None = None,
+        successor_working_dir: str | None = None,
+        successor_credential_id: str | None = None,
+        successor_backend: str | None = None,
+        successor_parent_session_id: str | None = None,
     ) -> bool:
         """Atomically seal the predecessor and move the preserved pointer."""
         await self._ensure_connected()
@@ -1379,6 +1410,23 @@ class Database:
                     and existing["status"] == "active"
                 )
             next_generation = int(row[0]) + 1
+            if successor_name is not None and successor_working_dir is not None:
+                await self._conn.execute(
+                    "INSERT OR IGNORE INTO sessions "
+                    "(id, name, working_dir, created_at, claude_session_id, "
+                    "credential_id, agent_id, origin, backend, parent_session_id) "
+                    "VALUES (?, ?, ?, ?, NULL, ?, ?, 'group_member', ?, ?)",
+                    (
+                        successor_session_id,
+                        successor_name,
+                        successor_working_dir,
+                        completed_at,
+                        successor_credential_id,
+                        agent_id,
+                        successor_backend or "claude-code",
+                        successor_parent_session_id,
+                    ),
+                )
             await self._conn.execute(
                 "UPDATE group_session_generations SET status = 'sealed', "
                 "sealed_at = ?, digest = ?, digest_provenance = ?, "
@@ -1429,6 +1477,43 @@ class Database:
         except Exception:
             await self._conn.rollback()
             raise
+
+    async def append_group_session_event(
+        self,
+        group_id: str,
+        agent_id: str,
+        session_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        created_at: str,
+    ) -> None:
+        await self._ensure_connected()
+        await self._append_group_session_event_uncommitted(
+            group_id, agent_id, session_id, event_type, payload, created_at
+        )
+        await self._conn.commit()
+
+    async def consume_group_session_bootstrap(
+        self, session_id: str, consumed_at: str
+    ) -> bool:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "UPDATE group_session_generations SET bootstrap_consumed_at = ? "
+            "WHERE session_id = ? AND status = 'active' "
+            "AND predecessor_session_id IS NOT NULL "
+            "AND bootstrap_consumed_at IS NULL",
+            (consumed_at, session_id),
+        )
+        consumed = cursor.rowcount == 1
+        if consumed:
+            generation = await self.get_group_session_generation(session_id)
+            assert generation is not None
+            await self._append_group_session_event_uncommitted(
+                generation["group_id"], generation["agent_id"], session_id,
+                "bootstrap_consumed", {}, consumed_at,
+            )
+        await self._conn.commit()
+        return consumed
 
     async def _append_group_session_event_uncommitted(
         self,
@@ -1481,9 +1566,10 @@ class Database:
         to cascade-hard-delete member sessions alongside the backing session."""
         await self._ensure_connected()
         cursor = await self._conn.execute(
-            "SELECT agent_id, session_id FROM group_agent_sessions "
-            "WHERE group_id = ?",
-            (group_id,),
+            "SELECT agent_id, session_id FROM group_session_generations "
+            "WHERE group_id = ? UNION SELECT agent_id, session_id "
+            "FROM group_agent_sessions WHERE group_id = ?",
+            (group_id, group_id),
         )
         rows = await cursor.fetchall()
         return [{"agent_id": r[0], "session_id": r[1]} for r in rows]

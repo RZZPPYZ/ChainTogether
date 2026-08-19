@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 from typing import Any
+import uuid
 
 
 @dataclass(frozen=True)
@@ -130,6 +133,247 @@ class SessionChainAccessError(Exception):
     def __init__(self, message: str, *, status_code: int = 404) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+class GroupSessionChainService:
+    """Orchestrate one active generation per group member."""
+
+    def __init__(
+        self,
+        db: Any,
+        session_manager: Any,
+        *,
+        policy: ContextSealPolicy,
+        summary_timeout_seconds: float,
+        bootstrap_max_chars: int,
+    ) -> None:
+        self._db = db
+        self._session_manager = session_manager
+        self._policy = policy
+        self._bootstrap_max_chars = bootstrap_max_chars
+        self._summarizer = GroupSessionHandoffSummarizer(
+            session_manager,
+            max_chars=bootstrap_max_chars,
+            timeout_seconds=summary_timeout_seconds,
+        )
+        self._locks: dict[tuple[str, str], asyncio.Lock] = {}
+
+    async def ensure_adopted(
+        self, group_id: str, agent_id: str, session_id: str
+    ) -> dict[str, Any]:
+        session = self._session_manager.get_session(session_id)
+        created_at = (
+            session.created_at if session is not None
+            else datetime.now(timezone.utc).isoformat()
+        )
+        return await self._db.adopt_group_session_generation(
+            group_id, agent_id, session_id, created_at
+        )
+
+    async def maybe_rotate(
+        self,
+        group_id: str,
+        agent: dict[str, Any],
+        session_id: str,
+        *,
+        projected_prompt_tokens: int = 0,
+    ) -> str:
+        await self.ensure_adopted(group_id, str(agent["id"]), session_id)
+        session = self._session_manager.get_session(session_id)
+        if session is None:
+            return session_id
+        decision = self._policy.evaluate(
+            session.context_usage,
+            projected_prompt_tokens=projected_prompt_tokens,
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        if decision.action in {"warning", "unknown"}:
+            await self._db.append_group_session_event(
+                group_id,
+                str(agent["id"]),
+                session_id,
+                decision.action,
+                {
+                    "reason": decision.reason,
+                    "used_ratio": decision.used_ratio,
+                    "projected_used_ratio": decision.projected_used_ratio,
+                },
+                now,
+            )
+            return session_id
+        if decision.action != "seal":
+            return session_id
+        return await self._rotate(
+            group_id,
+            agent,
+            session_id,
+            reason=decision.reason,
+            context_usage=session.context_usage,
+        )
+
+    async def _rotate(
+        self,
+        group_id: str,
+        agent: dict[str, Any],
+        session_id: str,
+        *,
+        reason: str,
+        context_usage: dict[str, Any] | None,
+    ) -> str:
+        agent_id = str(agent["id"])
+        lock = self._locks.setdefault((group_id, agent_id), asyncio.Lock())
+        async with lock:
+            pointer = await self._db.get_group_agent_session(group_id, agent_id)
+            if pointer != session_id:
+                return pointer or session_id
+            generation = await self._db.get_group_session_generation(session_id)
+            if generation is None:
+                generation = await self.ensure_adopted(
+                    group_id, agent_id, session_id
+                )
+            if generation["status"] == "active":
+                claimed = await self._db.begin_group_session_seal(
+                    group_id,
+                    agent_id,
+                    session_id,
+                    reason=reason,
+                    context_usage=context_usage,
+                    started_at=datetime.now(timezone.utc).isoformat(),
+                )
+                if not claimed:
+                    return (
+                        await self._db.get_group_agent_session(group_id, agent_id)
+                        or session_id
+                    )
+            elif generation["status"] != "sealing":
+                return pointer or session_id
+            return await self._finish_sealing(group_id, agent, session_id)
+
+    async def _finish_sealing(
+        self, group_id: str, agent: dict[str, Any], predecessor_session_id: str
+    ) -> str:
+        predecessor = self._session_manager.get_session(predecessor_session_id)
+        if predecessor is None:
+            raise RuntimeError(
+                f"Sealing predecessor {predecessor_session_id} is unavailable"
+            )
+        messages = await self._db.load_messages(predecessor_session_id)
+        summary = await self._summarizer.summarize(predecessor, messages)
+        now = datetime.now(timezone.utc).isoformat()
+        agent_id = str(agent["id"])
+        await self._db.append_group_session_event(
+            group_id,
+            agent_id,
+            predecessor_session_id,
+            (
+                "summary_generated"
+                if summary.provenance == "fresh_model"
+                else "summary_degraded"
+            ),
+            {"provenance": summary.provenance, "error": summary.error},
+            now,
+        )
+        successor_id = uuid.uuid4().hex[:12]
+        rotated = await self._db.complete_group_session_rotation(
+            group_id=group_id,
+            agent_id=agent_id,
+            predecessor_session_id=predecessor_session_id,
+            successor_session_id=successor_id,
+            digest=summary.digest,
+            digest_provenance=summary.provenance,
+            digest_error=summary.error,
+            completed_at=now,
+            successor_name=predecessor.name,
+            successor_working_dir=predecessor.working_dir,
+            successor_credential_id=predecessor.credential_id,
+            successor_backend=predecessor.backend,
+            successor_parent_session_id=predecessor.parent_session_id,
+        )
+        if not rotated:
+            return (
+                await self._db.get_group_agent_session(group_id, agent_id)
+                or predecessor_session_id
+            )
+
+        from .session_manager import Session
+
+        successor = Session(
+            id=successor_id,
+            name=predecessor.name,
+            working_dir=predecessor.working_dir,
+            created_at=now,
+            credential_id=predecessor.credential_id,
+            agent_id=predecessor.agent_id,
+            origin="group_member",
+            backend=predecessor.backend,
+            parent_session_id=predecessor.parent_session_id,
+        )
+        self._session_manager.sessions[successor_id] = successor
+        self._session_manager.sessions.pop(predecessor_session_id, None)
+        chain = await self._db.list_group_session_chain(group_id, agent_id)
+        await self._session_manager._broadcast({
+            "type": "group_member_session_chain",
+            "group_id": group_id,
+            "agent_id": agent_id,
+            "previous_session_id": predecessor_session_id,
+            "session_id": successor_id,
+            "generation": chain[-1]["generation"],
+            "chain_length": len(chain),
+            "chain_status": "active",
+        })
+        return successor_id
+
+    async def pending_bootstrap(
+        self, session_id: str, agent_name: str
+    ) -> str | None:
+        generation = await self._db.get_group_session_generation(session_id)
+        if (
+            generation is None
+            or generation["status"] != "active"
+            or generation["predecessor_session_id"] is None
+            or generation["bootstrap_consumed_at"] is not None
+        ):
+            return None
+        predecessor = await self._db.get_group_session_generation(
+            generation["predecessor_session_id"]
+        )
+        if predecessor is None:
+            return None
+        return render_handoff_bootstrap(
+            agent_name=agent_name,
+            generation=generation["generation"],
+            predecessor_session_id=predecessor["session_id"],
+            digest=predecessor["digest"] or "No generated handoff is available.",
+            max_chars=self._bootstrap_max_chars,
+        )
+
+    async def consume_bootstrap(self, session_id: str) -> bool:
+        return await self._db.consume_group_session_bootstrap(
+            session_id, datetime.now(timezone.utc).isoformat()
+        )
+
+    async def reconcile_all(self) -> list[str]:
+        repaired: list[str] = []
+        for generation in await self._db.list_sealing_group_session_generations():
+            agent = await self._db.get_agent(generation["agent_id"])
+            if not isinstance(agent, dict):
+                continue
+            lock = self._locks.setdefault(
+                (generation["group_id"], generation["agent_id"]),
+                asyncio.Lock(),
+            )
+            async with lock:
+                pointer = await self._db.get_group_agent_session(
+                    generation["group_id"], generation["agent_id"]
+                )
+                if pointer != generation["session_id"]:
+                    continue
+                repaired.append(
+                    await self._finish_sealing(
+                        generation["group_id"], agent, generation["session_id"]
+                    )
+                )
+        return repaired
 
 
 class SessionChainReader:

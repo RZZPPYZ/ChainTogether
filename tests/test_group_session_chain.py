@@ -9,7 +9,9 @@ from unittest.mock import AsyncMock, patch
 from server.database import Database
 from server.group_session_chain import (
     ContextSealPolicy,
+    GroupSessionChainService,
     GroupSessionHandoffSummarizer,
+    HandoffSummary,
     render_handoff_bootstrap,
 )
 from server.session_manager import Session, SessionManager
@@ -248,6 +250,113 @@ class GroupSessionGenerationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             [(1, "sealed"), (2, "active")],
         )
         self.assertEqual(chain[1]["predecessor_session_id"], "session-1")
+
+
+class GroupSessionChainRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.db = Database(str(self.root / "test.db"))
+        await self.db.initialize()
+        now = "2026-08-19T00:00:00+00:00"
+        await self.db.save_agent(
+            agent_id="agent-1", name="Builder", created_at=now, updated_at=now,
+            backend="codex",
+        )
+        self.manager = SessionManager()
+        await self.manager.initialize(self.db)
+        root = await self.manager.create_session(
+            "agent-1", name="Group", working_dir=str(self.root), origin="group"
+        )
+        await self.db.create_group(
+            group_id="group-1", name="Team", agent_ids=["agent-1"],
+            created_at=now, session_id=root.id, default_agent_id="agent-1",
+            working_dir=str(self.root),
+        )
+        self.old = await self.manager.create_session(
+            "agent-1", name="Builder @ Team", working_dir=str(self.root),
+            credential_id=None, origin="group_member", backend="codex",
+            parent_session_id=root.id,
+        )
+        await self.db.upsert_group_agent_session(
+            "group-1", "agent-1", self.old.id, now
+        )
+        await self.db.adopt_group_session_generation(
+            "group-1", "agent-1", self.old.id, now
+        )
+        await self.manager.inject_message(self.old.id, "user", "Build rotation")
+        await self.manager.inject_message(
+            self.old.id, "assistant", "Transaction is implemented; review remains."
+        )
+        self.old.context_usage = {
+            "total_tokens": 181_000,
+            "context_window": 200_000,
+            "remaining_ratio": 0.095,
+        }
+        await self.db.update_session_field(
+            self.old.id, context_usage=self.old.context_usage
+        )
+        policy = ContextSealPolicy(
+            enabled=True, warn_ratio=0.85, action_ratio=0.90,
+            reserve_tokens=8_000,
+        )
+        self.service = GroupSessionChainService(
+            self.db,
+            self.manager,
+            policy=policy,
+            summary_timeout_seconds=5,
+            bootstrap_max_chars=2_000,
+        )
+        self.service._summarizer = AsyncMock()
+        self.service._summarizer.summarize.return_value = HandoffSummary(
+            "Transaction is implemented; review remains.", "fresh_model"
+        )
+
+    async def asyncTearDown(self) -> None:
+        await self.db.close()
+        self.temp.cleanup()
+
+    async def test_threshold_rotation_archives_old_and_starts_fresh_successor(self) -> None:
+        successor_id = await self.service.maybe_rotate(
+            "group-1",
+            {"id": "agent-1", "name": "Builder", "backend": "codex"},
+            self.old.id,
+        )
+
+        self.assertNotEqual(successor_id, self.old.id)
+        self.assertNotIn(self.old.id, self.manager.sessions)
+        successor = self.manager.sessions[successor_id]
+        self.assertIsNone(successor.claude_session_id)
+        self.assertEqual(successor.working_dir, self.old.working_dir)
+        self.assertEqual(successor.backend, self.old.backend)
+        chain = await self.db.list_group_session_chain("group-1", "agent-1")
+        self.assertEqual([row["status"] for row in chain], ["sealed", "active"])
+
+        bootstrap = await self.service.pending_bootstrap(successor_id, "Builder")
+        self.assertIn("review remains", bootstrap or "")
+        consumed = await self.service.consume_bootstrap(successor_id)
+        self.assertTrue(consumed)
+        self.assertIsNone(
+            await self.service.pending_bootstrap(successor_id, "Builder")
+        )
+
+    async def test_reconcile_completes_a_crash_left_in_sealing(self) -> None:
+        claimed = await self.db.begin_group_session_seal(
+            "group-1", "agent-1", self.old.id,
+            reason="context_limit", context_usage=self.old.context_usage,
+            started_at="2026-08-19T00:01:00+00:00",
+        )
+        self.assertTrue(claimed)
+
+        repaired = await self.service.reconcile_all()
+
+        self.assertEqual(len(repaired), 1)
+        chain = await self.db.list_group_session_chain("group-1", "agent-1")
+        self.assertEqual([row["status"] for row in chain], ["sealed", "active"])
+        self.assertEqual(
+            await self.db.get_group_agent_session("group-1", "agent-1"),
+            repaired[0],
+        )
 
 
 if __name__ == "__main__":
