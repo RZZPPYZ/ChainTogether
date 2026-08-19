@@ -2,7 +2,7 @@
 schema_version: 1
 id: F003
 title: "Group Session Chain Handoff"
-stage: planning
+stage: review
 state: active
 priority: P1
 owner: "codex"
@@ -107,47 +107,47 @@ retrieve exact prior evidence instead of guessing.
 
 ## Acceptance Criteria
 
-- [ ] AC-1: Each `(group_id, agent_id)` has an ordered generation chain with
+- [x] AC-1: Each `(group_id, agent_id)` has an ordered generation chain with
   exactly one active pointer; each record carries session ID, generation,
   predecessor, lifecycle state, context snapshot, seal reason/timestamps,
   digest metadata and bootstrap-consumption state.
-- [ ] AC-2: The only normal lifecycle is `active -> sealing -> sealed`; a CAS
+- [x] AC-2: The only normal lifecycle is `active -> sealing -> sealed`; a CAS
   prevents two concurrent turns from creating two successors, and startup
   reconciliation repairs an interrupted seal without losing or overwriting a
   transcript.
-- [ ] AC-3: Defaults are enabled for group members with warning at 85% used and
+- [x] AC-3: Defaults are enabled for group members with warning at 85% used and
   action at 90% used. Environment configuration can change/disable them.
   Action is decided both from current usage and a conservative projection of
   the incoming prompt plus turn reserve; missing health fails open and remains
   visible as unavailable rather than fabricating certainty.
-- [ ] AC-4: Every user/assistant/thinking/tool/result message already persisted
+- [x] AC-4: Every user/assistant/thinking/tool/result message already persisted
   for a sealed member session remains immutable and pageable after rotation;
   the implementation does not depend on a provider's private JSONL layout.
-- [ ] AC-5: Generative digest creation uses a new tool-free one-shot invocation
+- [x] AC-5: Generative digest creation uses a new tool-free one-shot invocation
   with no resume ID, MCP servers or old Agent context. It reads a handoff
   projection derived from the complete stored transcript, records generator
   provenance/failure, and falls back to a deterministic extractive digest so
   session rebirth never depends on model availability.
-- [ ] AC-6: The successor's first successful turn receives a D-layer bootstrap
+- [x] AC-6: The successor's first successful turn receives a D-layer bootstrap
   with generation identity, sanitized/capped predecessor digest and exact MCP
   recall instructions. The packet is data-marked, never inserted into L0,
   remains pending after a failed turn, and is consumed once after success.
-- [ ] AC-7: Mandatory read-only Session Chain MCP tools let a member list only
+- [x] AC-7: Mandatory read-only Session Chain MCP tools let a member list only
   its current `(group, agent)` chain, read paged `chat|handoff|raw` events, read
   one invocation, and search exact transcript text with location pointers.
   Session capability plus chain membership fails closed on cross-member,
   cross-group, unknown or unsealed targets.
-- [ ] AC-8: Rotation preserves `group_agent_sessions.last_seen_group_seq`, group
+- [x] AC-8: Rotation preserves `group_agent_sessions.last_seen_group_seq`, group
   working directory, Agent/backend/credential ownership and group backing
   session. It starts a provider conversation with no reused resume ID and does
   not alter ordinary A2A/FeatureRun routing rules.
-- [ ] AC-9: Group deletion and member removal hard-delete every generation;
+- [x] AC-9: Group deletion and member removal hard-delete every generation;
   normal sealing archives rather than deletes predecessor sessions, which stay
   hidden from the ordinary session list but available through chain APIs.
-- [ ] AC-10: Warning, sealing, sealed, successor-created, bootstrap-consumed and
+- [x] AC-10: Warning, sealing, sealed, successor-created, bootstrap-consumed and
   degraded-summary events are durably recorded and broadcast. Group APIs/UI
   show active generation, chain length and lifecycle health after reload.
-- [ ] AC-11: Focused backend/MCP/group/frontend tests, full backend regression,
+- [x] AC-11: Focused backend/MCP/group/frontend tests, full backend regression,
   typecheck/build and project validators pass; generated contracts remain in
   sync.
 
@@ -192,6 +192,10 @@ retrieve exact prior evidence instead of guessing.
 - **Plan**: `docs/features/F003-group-session-chain/plan.md`
 - **Worktree**: `F:\\RZP_program\\my_project\\ChainTogether\\.worktrees\\F003-group-session-chain`
 - **Branch**: `codex/F003-group-session-chain`
+- **Implementation commits**: `caa1dd9`, `763af52`, `ba88aef`, `6c8e824`,
+  `1860706`, `a66dfda`
+- **TDD evidence**: `evidence/tdd-implementation.md`
+- **Quality Gate**: pass — `evidence/quality-report.md`
 
 ## Review Provenance
 
@@ -227,3 +231,5 @@ retrieve exact prior evidence instead of guessing.
 | 2026-08-19 | Created from operator request | current Codex conversation |
 | 2026-08-19 | Discovery compared Lesson 08, clowder-ai and current group/session architecture | `evidence/discovery.md` |
 | 2026-08-19 | Design Gate approved the revision-bound state machine, privacy boundary and degraded recovery path | `evidence/design-verdict-2371014.md` |
+| 2026-08-19 | Implemented durable generations, fresh handoff, mandatory recall MCP, group integration and UI projection through TDD | `evidence/tdd-implementation.md` |
+| 2026-08-19 | Quality Gate passed at implementation checkpoint `a66dfda`; moved to independent review | `evidence/quality-report.md` |
