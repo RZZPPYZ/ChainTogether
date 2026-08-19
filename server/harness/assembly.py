@@ -28,6 +28,9 @@ _CORE_MODULES = {
     # agent preference. Direct-chat turns receive it too; without Feature env
     # its tools fail closed and expose no ambient authority.
     "feature": "server.mcp_servers.feature",
+    # Bound to the live session capability and exact group-member chain.
+    # Direct-chat turns receive the process but its REST surface fails closed.
+    "session_chain": "server.mcp_servers.session_chain",
 }
 
 # In-app MCP servers the agent can enable (subset of these; None = all).

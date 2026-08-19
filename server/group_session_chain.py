@@ -126,6 +126,155 @@ class GroupSessionHandoffSummarizer:
             )
 
 
+class SessionChainAccessError(Exception):
+    def __init__(self, message: str, *, status_code: int = 404) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class SessionChainReader:
+    """Read-only, caller-bound access to sealed predecessors."""
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+
+    async def _caller(self, caller_session_id: str) -> dict[str, Any]:
+        row = await self._db.get_group_session_generation(caller_session_id)
+        if row is None or row["status"] != "active":
+            raise SessionChainAccessError("Session chain not found")
+        active = await self._db.get_group_agent_session(
+            row["group_id"], row["agent_id"]
+        )
+        if active != caller_session_id:
+            raise SessionChainAccessError("Session chain not found")
+        return row
+
+    async def _sealed_target(
+        self, caller_session_id: str, target_session_id: str
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        caller = await self._caller(caller_session_id)
+        target = await self._db.get_group_session_generation(target_session_id)
+        if (
+            target is None
+            or target["status"] != "sealed"
+            or target["group_id"] != caller["group_id"]
+            or target["agent_id"] != caller["agent_id"]
+        ):
+            raise SessionChainAccessError("Sealed predecessor not found")
+        return caller, target
+
+    async def list_chain(self, caller_session_id: str) -> dict[str, Any]:
+        caller = await self._caller(caller_session_id)
+        rows = await self._db.list_group_session_chain(
+            caller["group_id"], caller["agent_id"]
+        )
+        return {
+            "group_id": caller["group_id"],
+            "agent_id": caller["agent_id"],
+            "active_session_id": caller_session_id,
+            "active_generation": caller["generation"],
+            "chain_length": len(rows),
+            "generations": [
+                {
+                    "session_id": row["session_id"],
+                    "generation": row["generation"],
+                    "status": row["status"],
+                    "predecessor_session_id": row["predecessor_session_id"],
+                    "seal_reason": row["seal_reason"],
+                    "sealed_at": row["sealed_at"],
+                    "digest": row["digest"] if row["status"] == "sealed" else None,
+                    "digest_provenance": row["digest_provenance"],
+                }
+                for row in rows
+            ],
+        }
+
+    async def read_events(
+        self,
+        caller_session_id: str,
+        target_session_id: str,
+        *,
+        view: str,
+        offset: int,
+        limit: int,
+    ) -> dict[str, Any]:
+        _, target = await self._sealed_target(
+            caller_session_id, target_session_id
+        )
+        if view not in {"raw", "chat", "handoff"}:
+            raise SessionChainAccessError("Unsupported event view", status_code=400)
+        if view == "handoff":
+            events = [{
+                "session_id": target_session_id,
+                "generation": target["generation"],
+                "digest": target["digest"],
+                "digest_provenance": target["digest_provenance"],
+                "digest_error": target["digest_error"],
+            }]
+        else:
+            events = await self._db.load_messages(target_session_id)
+            if view == "chat":
+                events = [
+                    event for event in events
+                    if event.get("role") in {"user", "assistant"}
+                    and event.get("type") in {"text", "result", "error"}
+                ]
+        safe_offset = max(0, offset)
+        safe_limit = max(1, min(100, limit))
+        page = events[safe_offset:safe_offset + safe_limit]
+        next_offset = safe_offset + len(page)
+        return {
+            "session_id": target_session_id,
+            "view": view,
+            "offset": safe_offset,
+            "limit": safe_limit,
+            "total": len(events),
+            "next_offset": next_offset if next_offset < len(events) else None,
+            "events": page,
+        }
+
+    async def read_invocation(
+        self, caller_session_id: str, target_session_id: str, *, seq: int
+    ) -> dict[str, Any]:
+        await self._sealed_target(caller_session_id, target_session_id)
+        messages = await self._db.load_messages(target_session_id)
+        match = next((item for item in messages if item.get("seq") == seq), None)
+        if match is None:
+            raise SessionChainAccessError("Invocation not found")
+        return match
+
+    async def search(
+        self, caller_session_id: str, query: str, *, limit: int
+    ) -> dict[str, Any]:
+        caller = await self._caller(caller_session_id)
+        needle = query.strip().casefold()
+        if not needle:
+            raise SessionChainAccessError("Search query is required", status_code=400)
+        rows = await self._db.list_group_session_chain(
+            caller["group_id"], caller["agent_id"]
+        )
+        matches: list[dict[str, Any]] = []
+        safe_limit = max(1, min(100, limit))
+        for row in rows:
+            if row["status"] != "sealed":
+                continue
+            for event in await self._db.load_messages(row["session_id"]):
+                searchable = json.dumps(event, ensure_ascii=False, sort_keys=True)
+                if needle not in searchable.casefold():
+                    continue
+                matches.append({
+                    "session_id": row["session_id"],
+                    "generation": row["generation"],
+                    "seq": event.get("seq"),
+                    "role": event.get("role"),
+                    "type": event.get("type"),
+                    "content": event.get("content"),
+                })
+                if len(matches) >= safe_limit:
+                    return {"query": query, "matches": matches, "truncated": True}
+        return {"query": query, "matches": matches, "truncated": False}
+
+
 def build_handoff_projection(
     messages: list[dict[str, Any]], *, max_chars: int
 ) -> str:
