@@ -28,6 +28,7 @@ from .harness import (
     HarnessCredential,
     HarnessEvent,
     HarnessRun,
+    OneShotContext,
     RunConfig,
     get_harness,
 )
@@ -1145,6 +1146,38 @@ class SessionManager:
                 delegation_request=session.delegation_request,
             )
         return session
+
+    async def run_fresh_oneshot(
+        self,
+        source_session: Session,
+        prompt: str,
+        *,
+        timeout: float,
+    ) -> str:
+        """Run a tool-free model call with no provider resume/session identity.
+
+        The source session contributes only backend, Agent configuration,
+        credential selection and working directory. `OneShotContext` cannot
+        carry a resume id or MCP configuration by construction.
+        """
+        harness = get_harness(source_session.backend)
+        agent = (
+            await self.db.get_agent(source_session.agent_id)
+            if self.db and source_session.agent_id
+            else None
+        )
+        credential = await self._resolve_credential(
+            source_session, agent, harness
+        )
+        return await harness.run_oneshot(
+            OneShotContext(
+                prompt=prompt,
+                model=(agent or {}).get("model"),
+                credential=credential,
+                working_dir=source_session.working_dir,
+            ),
+            timeout=timeout,
+        )
 
     async def import_session(
         self,

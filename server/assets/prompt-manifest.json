@@ -58,6 +58,15 @@
         "current_gate",
         "next_step"
       ]
+    },
+    "dynamic.session_chain_bootstrap": {
+      "path": "prompts/dynamic/session-chain-bootstrap.md",
+      "required": [
+        "agent_name",
+        "generation",
+        "predecessor_session_id",
+        "digest"
+      ]
     }
   }
 }
