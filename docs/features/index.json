@@ -16,6 +16,14 @@
       "state": "done",
       "priority": "P1",
       "file": "docs/features/F002-autonomous-group-feature-delivery/feature.md"
+    },
+    {
+      "id": "F003",
+      "title": "Group Session Chain Handoff",
+      "stage": "discovery",
+      "state": "active",
+      "priority": "P1",
+      "file": "docs/features/F003-group-session-chain/feature.md"
     }
   ]
 }
