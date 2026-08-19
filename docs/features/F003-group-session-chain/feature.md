@@ -2,7 +2,7 @@
 schema_version: 1
 id: F003
 title: "Group Session Chain Handoff"
-stage: discovery
+stage: design
 state: active
 priority: P1
 owner: "codex"
@@ -16,7 +16,7 @@ updated_at: 2026-08-19
 related_features: []
 blocked_by: []
 research_refs: ["docs/features/F003-group-session-chain/evidence/discovery.md", "https://github.com/zts212653/cat-cafe-tutorials/blob/main/docs/lessons/08-session-management.md"]
-decision_refs: ["docs/features/F003-group-session-chain/evidence/discovery.md"]
+decision_refs: ["docs/features/F003-group-session-chain/evidence/discovery.md", "docs/features/F003-group-session-chain/evidence/orchestration-design.md"]
 plan_refs: []
 pr_refs: []
 ---
@@ -185,7 +185,7 @@ retrieve exact prior evidence instead of guessing.
 
 - **Verdict**: pending
 - **Feature Doc revision**: pending
-- **Evidence**: pending
+- **Evidence**: `evidence/orchestration-design.md`
 
 ## Delivery
 
