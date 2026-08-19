@@ -586,6 +586,7 @@ class GroupMemberSessionInfo(BaseModel):
     generation: int = 1
     chain_length: int = 1
     chain_status: str = "active"
+    summary_degraded: bool = False
 
 
 # Group chat -- multi-agent conversations with @-mention routing (groups.md).

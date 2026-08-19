@@ -2607,6 +2607,11 @@ export interface components {
              * @default active
              */
             chain_status: string;
+            /**
+             * Summary Degraded
+             * @default false
+             */
+            summary_degraded: boolean;
         };
         /**
          * GroupSendRequest

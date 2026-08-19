@@ -316,6 +316,12 @@ export function SessionGenerationBadge({
   const total = Math.max(current, chainLength ?? current);
   const title = `Session generation ${current} of ${total}; chain status ${chainStatus || "active"}. Earlier generations are sealed; this fresh session can recall them through Session Chain.`;
   const lifecycleLabel = (() => {
+    if (!chainEventType) {
+      if (chainStatus === "sealing") return "sealing";
+      if (chainStatus === "degraded" || summaryDegraded) return "fallback";
+      if (chainStatus === "sealed") return "sealed";
+      return undefined;
+    }
     if (chainEventType === "summary_degraded") return "fallback";
     if (chainEventType === "successor_created") {
       return summaryDegraded ? "fallback" : "fresh";

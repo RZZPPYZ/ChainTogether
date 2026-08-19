@@ -88,5 +88,37 @@ describe("group member session chain events", () => {
       chainEventType: "bootstrap_consumed",
       chainStatus: "active",
     });
+
+    handleWsMessage({
+      type: "group_member_session_chain",
+      event_type: "sealing_started",
+      group_id: "group-1",
+      agent_id: "agent-1",
+      session_id: "session-2",
+    });
+    handleWsMessage({
+      type: "group_member_session_chain",
+      event_type: "summary_generated",
+      group_id: "group-1",
+      agent_id: "agent-1",
+      session_id: "session-2",
+    });
+    handleWsMessage({
+      type: "group_member_session_chain",
+      event_type: "successor_created",
+      group_id: "group-1",
+      agent_id: "agent-1",
+      previous_session_id: "session-2",
+      session_id: "session-3",
+      generation: 3,
+      chain_length: 3,
+      chain_status: "active",
+    });
+    expect(useSessionStore.getState().groups[0].memberSessions?.[0]).toMatchObject({
+      sessionId: "session-3",
+      generation: 3,
+      chainEventType: "successor_created",
+      summaryDegraded: false,
+    });
   });
 });

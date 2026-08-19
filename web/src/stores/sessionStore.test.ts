@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { useSessionStore, type Agent } from "./sessionStore";
+import { toGroup, useSessionStore, type Agent } from "./sessionStore";
 
 describe("agent identity updates", () => {
   it("replaces a cleared alias instead of retaining the old handle", () => {
@@ -96,6 +96,26 @@ describe("group agent activity blocks", () => {
 });
 
 describe("group session chain rotation", () => {
+  it("restores the current generation's degraded handoff state", () => {
+    const group = toGroup({
+      id: "group-1",
+      name: "Team",
+      agent_ids: ["agent-1"],
+      created_at: "2026-08-19T00:00:00Z",
+      working_dir: "C:/workspace",
+      member_sessions: [{
+        agent_id: "agent-1",
+        session_id: "session-2",
+        generation: 2,
+        chain_length: 2,
+        chain_status: "active",
+        summary_degraded: true,
+      }],
+    });
+
+    expect(group.memberSessions?.[0].summaryDegraded).toBe(true);
+  });
+
   it("replaces the active member session and clears stale context usage", () => {
     useSessionStore.setState({
       groups: [

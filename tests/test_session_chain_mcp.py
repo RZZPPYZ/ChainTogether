@@ -118,6 +118,9 @@ class SessionChainRecallTests(unittest.IsolatedAsyncioTestCase):
         invocation = await self.reader.read_invocation(
             "session-2", "session-1", seq=2
         )
+        continuation = await self.reader.read_invocation(
+            "session-2", "session-1", seq=invocation["next_seq"]
+        )
 
         event = raw["events"][0]
         self.assertTrue(event["truncated"])
@@ -128,6 +131,10 @@ class SessionChainRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(invocation["events"]), 100)
         self.assertTrue(invocation["truncated"])
         self.assertEqual(invocation["next_seq"], 102)
+        self.assertEqual(continuation["events"][0]["seq"], 102)
+        self.assertEqual(continuation["events"][-1]["seq"], 109)
+        self.assertFalse(continuation["truncated"])
+        self.assertIsNone(continuation["next_seq"])
         with self.assertRaises(SessionChainAccessError) as caught:
             await self.reader.search("session-2", "x" * 257, limit=5)
         self.assertEqual(caught.exception.status_code, 400)

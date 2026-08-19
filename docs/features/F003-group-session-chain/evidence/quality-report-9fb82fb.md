@@ -1,5 +1,9 @@
 # F003 Remediation Quality Report — 9fb82fb
 
+> Historical first-remediation checkpoint. Independent re-review of `e4dc7d2`
+> found two remaining continuation/state-projection gaps; see
+> `review-e4dc7d2.md`.
+
 - Date: 2026-08-19
 - Verdict: **pass for independent re-review**
 - Base: `1fb75b26370a2301c94f409d1d817c587d172cb3`

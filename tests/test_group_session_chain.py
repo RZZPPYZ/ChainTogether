@@ -18,6 +18,7 @@ from server.group_session_chain import (
 from server.harness.claude_code import build_oneshot_argv as build_claude_oneshot
 from server.harness.codex import build_oneshot_argv as build_codex_oneshot
 from server.harness.profile import OneShotContext
+from server.models import GroupInfo
 from server.session_manager import Session, SessionManager
 
 
@@ -389,6 +390,46 @@ class GroupSessionGenerationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             "session-1",
         )
 
+    async def test_group_projection_tracks_only_the_current_handoff_degradation(self) -> None:
+        await self.db.adopt_group_session_generation(
+            "group-1", "agent-1", "session-1", "2026-08-19T00:00:00+00:00"
+        )
+        await self.db.begin_group_session_seal(
+            "group-1", "agent-1", "session-1", reason="context_limit",
+            context_usage={}, started_at="2026-08-19T00:01:00+00:00",
+        )
+        await self.db.save_session(
+            "session-2", "Builder in Team", str(self.root),
+            "2026-08-19T00:02:00+00:00", agent_id="agent-1",
+            origin="group_member", backend="codex",
+        )
+        await self.db.complete_group_session_rotation(
+            group_id="group-1", agent_id="agent-1",
+            predecessor_session_id="session-1", successor_session_id="session-2",
+            digest="fallback", digest_provenance="extractive_fallback",
+            completed_at="2026-08-19T00:02:00+00:00",
+        )
+        degraded_group = GroupInfo.model_validate(await self.db.get_group("group-1"))
+        self.assertTrue(degraded_group.member_sessions[0].summary_degraded)
+
+        await self.db.begin_group_session_seal(
+            "group-1", "agent-1", "session-2", reason="context_limit",
+            context_usage={}, started_at="2026-08-19T00:03:00+00:00",
+        )
+        await self.db.save_session(
+            "session-3", "Builder in Team", str(self.root),
+            "2026-08-19T00:04:00+00:00", agent_id="agent-1",
+            origin="group_member", backend="codex",
+        )
+        await self.db.complete_group_session_rotation(
+            group_id="group-1", agent_id="agent-1",
+            predecessor_session_id="session-2", successor_session_id="session-3",
+            digest="fresh", digest_provenance="fresh_model",
+            completed_at="2026-08-19T00:04:00+00:00",
+        )
+        healthy_group = GroupInfo.model_validate(await self.db.get_group("group-1"))
+        self.assertFalse(healthy_group.member_sessions[0].summary_degraded)
+
 
 class GroupSessionChainRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -492,6 +533,8 @@ class GroupSessionChainRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "bootstrap_consumed",
             ],
         )
+        successor_event = self.manager._broadcast.await_args_list[3].args[0]
+        self.assertFalse(successor_event["summary_degraded"])
 
     async def test_rotation_waits_for_the_member_turn_lock(self) -> None:
         await self.old._lock.acquire()

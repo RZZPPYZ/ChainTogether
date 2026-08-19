@@ -87,7 +87,7 @@ def read_events(
 
 @mcp.tool(name="read_invocation")
 def read_invocation(predecessor_session_id: str, seq: int) -> str:
-    """Read one full invocation from its starting user-message sequence."""
+    """Read an invocation from its user sequence or a returned next_seq cursor."""
     if not _valid_session_id(predecessor_session_id):
         return "Error: invalid predecessor session id."
     context = _context()

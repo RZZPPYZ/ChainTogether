@@ -364,6 +364,7 @@ class GroupSessionChainService:
             generation=chain[-1]["generation"],
             chain_length=len(chain),
             chain_status="active",
+            summary_degraded=summary.provenance != "fresh_model",
         )
         return successor_id
 
@@ -565,28 +566,37 @@ class SessionChainReader:
     ) -> dict[str, Any]:
         await self._sealed_target(caller_session_id, target_session_id)
         messages = await self._db.load_messages(target_session_id)
-        start = next(
+        cursor = next(
+            (index for index, item in enumerate(messages) if item.get("seq") == seq),
+            None,
+        )
+        if cursor is None:
+            raise SessionChainAccessError("Invocation not found")
+        invocation_start = next(
             (
-                index for index, item in enumerate(messages)
-                if item.get("seq") == seq and item.get("role") == "user"
+                index for index in range(cursor, -1, -1)
+                if messages[index].get("role") == "user"
             ),
             None,
         )
-        if start is None:
+        if invocation_start is None:
             raise SessionChainAccessError("Invocation not found")
         end = next(
             (
-                index for index in range(start + 1, len(messages))
+                index for index in range(invocation_start + 1, len(messages))
                 if messages[index].get("role") == "user"
             ),
             len(messages),
         )
-        invocation_messages = messages[start:end]
+        if cursor >= end:
+            raise SessionChainAccessError("Invocation not found")
+        invocation_messages = messages[cursor:end]
         invocation_events = [
             _bounded_recall_event(item) for item in invocation_messages[:100]
         ]
         return {
             "session_id": target_session_id,
+            "invocation_start_seq": messages[invocation_start].get("seq"),
             "start_seq": seq,
             "end_seq": invocation_events[-1].get("seq") if invocation_events else seq,
             "events": invocation_events,

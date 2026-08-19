@@ -1143,11 +1143,15 @@ class Database:
             "COALESCE(gsg.generation, 1), COALESCE(gsg.status, 'active'), "
             "COALESCE((SELECT COUNT(*) FROM group_session_generations chain "
             "WHERE chain.group_id = gas.group_id "
-            "AND chain.agent_id = gas.agent_id), 1) "
+            "AND chain.agent_id = gas.agent_id), 1), "
+            "CASE WHEN predecessor.digest_provenance = 'extractive_fallback' "
+            "THEN 1 ELSE 0 END "
             "FROM group_agent_sessions gas "
             "JOIN sessions s ON s.id = gas.session_id "
             "LEFT JOIN group_session_generations gsg "
             "ON gsg.session_id = gas.session_id "
+            "LEFT JOIN group_session_generations predecessor "
+            "ON predecessor.session_id = gsg.predecessor_session_id "
             "WHERE gas.group_id = ? "
             "ORDER BY gas.created_at, gas.agent_id",
             (group_id,),
@@ -1156,7 +1160,7 @@ class Database:
         out: list[dict[str, Any]] = []
         for (
             agent_id, session_id, backend, context_usage_raw,
-            generation, chain_status, chain_length,
+            generation, chain_status, chain_length, summary_degraded,
         ) in rows:
             context_usage = None
             if context_usage_raw:
@@ -1173,6 +1177,7 @@ class Database:
                 "generation": int(generation),
                 "chain_status": chain_status,
                 "chain_length": int(chain_length),
+                "summary_degraded": bool(summary_degraded),
             })
         return out
 

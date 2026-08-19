@@ -331,6 +331,7 @@ export interface GroupMemberSessionChainEvent {
   generation?: number;
   chainLength?: number;
   chainStatus?: string;
+  summaryDegraded?: boolean;
 }
 
 export interface ApiGroupInfo {
@@ -350,6 +351,7 @@ export interface ApiGroupInfo {
     generation?: number;
     chain_length?: number;
     chain_status?: string;
+    summary_degraded?: boolean;
   }>;
 }
 
@@ -371,6 +373,7 @@ export function toGroup(g: ApiGroupInfo): Group {
       generation: member.generation ?? 1,
       chainLength: member.chain_length ?? 1,
       chainStatus: member.chain_status ?? "active",
+      summaryDegraded: member.summary_degraded ?? false,
     })),
   };
 }
@@ -983,6 +986,17 @@ export const useSessionStore = create<SessionStore>((set) => ({
           successor_created: event.chainStatus || "active",
           bootstrap_consumed: "active",
         };
+        let summaryDegraded = previous?.summaryDegraded ?? false;
+        if (
+          event.eventType === "sealing_started" ||
+          event.eventType === "summary_generated"
+        ) {
+          summaryDegraded = false;
+        } else if (event.eventType === "summary_degraded") {
+          summaryDegraded = true;
+        } else if (event.summaryDegraded !== undefined) {
+          summaryDegraded = event.summaryDegraded;
+        }
         const nextMember: GroupMemberSession = {
           ...previous,
           agentId: event.agentId,
@@ -996,8 +1010,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
             event.chainStatus ||
             previous?.chainStatus,
           chainEventType: event.eventType,
-          summaryDegraded:
-            previous?.summaryDegraded || event.eventType === "summary_degraded",
+          summaryDegraded,
           contextUsage: isSuccessor ? null : previous?.contextUsage,
         };
         const memberSessions =

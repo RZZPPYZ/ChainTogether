@@ -195,7 +195,8 @@ retrieve exact prior evidence instead of guessing.
 - **Implementation commits**: `caa1dd9`, `763af52`, `ba88aef`, `6c8e824`,
   `1860706`, `a66dfda`, `9fb82fb`
 - **TDD evidence**: `evidence/tdd-implementation.md`
-- **Quality Gate**: remediation pass for independent re-review —
+- **Quality Gate**: first remediation pass superseded by second review;
+  continuation/state-projection fix verification pending —
   `evidence/quality-report-9fb82fb.md`
 
 ## Review Provenance
@@ -203,9 +204,9 @@ retrieve exact prior evidence instead of guessing.
 - **Author**: codex
 - **Reviewer**: independent `f003_independent_review` Agent
 - **Base SHA**: `1fb75b26370a2301c94f409d1d817c587d172cb3`
-- **Reviewed HEAD**: `4db1084683db7afc93ef373abac97fb903d5cd2c`
-- **Verdict**: request_changes on `4db1084`; same-reviewer re-review pending —
-  `evidence/review-4db1084.md`, `evidence/review-fixes-9fb82fb.md`
+- **Reviewed HEAD**: `e4dc7d2c218071273bb051746fc392cc1bc22c45`
+- **Verdict**: request_changes; second remediation in progress —
+  `evidence/review-e4dc7d2.md`
 
 ## Vision Gate
 
@@ -237,3 +238,4 @@ retrieve exact prior evidence instead of guessing.
 | 2026-08-19 | Quality Gate passed at implementation checkpoint `a66dfda`; moved to independent review | `evidence/quality-report.md` |
 | 2026-08-19 | Independent review of `4db1084` requested transaction, isolation, recall, UI and evidence corrections | `evidence/review-4db1084.md` |
 | 2026-08-19 | Fixed every review finding at `9fb82fb`; fresh regressions, build, validators, contracts and diff check passed | `evidence/review-fixes-9fb82fb.md`, `evidence/quality-report-9fb82fb.md` |
+| 2026-08-19 | Same reviewer approved prior P1 closure and found unusable invocation continuation plus generation-stale degraded UI state at `e4dc7d2` | `evidence/review-e4dc7d2.md` |

@@ -42,6 +42,16 @@ describe("group member session generations", () => {
       />,
     );
     expect(screen.getByText("fallback")).toBeTruthy();
+
+    rerender(
+      <SessionGenerationBadge
+        generation={2}
+        chainLength={2}
+        chainStatus="active"
+        summaryDegraded
+      />,
+    );
+    expect(screen.getByText("fallback")).toBeTruthy();
   });
 });
 import {

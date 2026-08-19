@@ -278,6 +278,7 @@ export function handleWsMessage(data: Record<string, unknown>) {
         generation: data.generation as number | undefined,
         chainLength: data.chain_length as number | undefined,
         chainStatus: data.chain_status as string | undefined,
+        summaryDegraded: data.summary_degraded as boolean | undefined,
       });
       break;
     }
