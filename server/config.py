@@ -65,6 +65,16 @@ class Settings(BaseSettings):
     group_turn_idle_timeout_seconds: int = 0
     group_turn_max_seconds: int = 0
 
+    # Proactive group-member session handoff. Ratios express context *used*
+    # rather than remaining. Missing usage data fails open: the current
+    # session continues and the lifecycle records that health is unavailable.
+    group_session_chain_enabled: bool = True
+    group_session_chain_warn_ratio: float = 0.85
+    group_session_chain_action_ratio: float = 0.90
+    group_session_chain_reserve_tokens: int = 8_000
+    group_session_chain_summary_timeout_seconds: int = 60
+    group_session_chain_bootstrap_max_chars: int = 12_000
+
     # Native deep research (native-deep-research.md §6/§8). Max jobs running
     # concurrently across all sessions (per-job leaf fan-out is bounded inside
     # the pipeline); and a hard per-job wall-clock cap.
