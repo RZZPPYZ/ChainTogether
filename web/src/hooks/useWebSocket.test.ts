@@ -32,6 +32,7 @@ describe("group member session chain events", () => {
   it("applies a durable rotation projection from the websocket", () => {
     handleWsMessage({
       type: "group_member_session_chain",
+      event_type: "successor_created",
       group_id: "group-1",
       agent_id: "agent-1",
       previous_session_id: "session-1",

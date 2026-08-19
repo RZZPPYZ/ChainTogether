@@ -269,15 +269,17 @@ export function handleWsMessage(data: Record<string, unknown>) {
     }
 
     case "group_member_session_chain": {
-      applyGroupMemberSessionChain({
-        groupId: data.group_id as string,
-        agentId: data.agent_id as string,
-        previousSessionId: data.previous_session_id as string,
-        sessionId: data.session_id as string,
-        generation: data.generation as number,
-        chainLength: data.chain_length as number,
-        chainStatus: data.chain_status as string,
-      });
+      if (data.event_type === "successor_created") {
+        applyGroupMemberSessionChain({
+          groupId: data.group_id as string,
+          agentId: data.agent_id as string,
+          previousSessionId: data.previous_session_id as string,
+          sessionId: data.session_id as string,
+          generation: data.generation as number,
+          chainLength: data.chain_length as number,
+          chainStatus: data.chain_status as string,
+        });
+      }
       break;
     }
 

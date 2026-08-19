@@ -12,6 +12,7 @@ from server.group_session_chain import (
     GroupSessionChainService,
     GroupSessionHandoffSummarizer,
     HandoffSummary,
+    build_handoff_projection,
     render_handoff_bootstrap,
 )
 from server.session_manager import Session, SessionManager
@@ -135,6 +136,33 @@ class FreshHandoffSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("old-session", rendered)
         self.assertNotIn("\x00", rendered)
         self.assertLessEqual(len(rendered), 220)
+        self.assertTrue(rendered.endswith("</handoff_digest>"))
+
+    def test_bounded_projection_keeps_opening_and_latest_next_step(self) -> None:
+        messages = [
+            {"seq": 0, "role": "user", "type": "text", "content": "Original objective"},
+            *[
+                {
+                    "seq": index,
+                    "role": "assistant",
+                    "type": "text",
+                    "content": f"middle detail {index} " * 8,
+                }
+                for index in range(1, 25)
+            ],
+            {
+                "seq": 25,
+                "role": "assistant",
+                "type": "text",
+                "content": "LATEST NEXT STEP: request independent review",
+            },
+        ]
+
+        projection = build_handoff_projection(messages, max_chars=420)
+
+        self.assertIn("Original objective", projection)
+        self.assertIn("LATEST NEXT STEP", projection)
+        self.assertIn("omitted", projection)
 
 
 class GroupSessionGenerationDatabaseTests(unittest.IsolatedAsyncioTestCase):
@@ -250,6 +278,10 @@ class GroupSessionGenerationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             [(1, "sealed"), (2, "active")],
         )
         self.assertEqual(chain[1]["predecessor_session_id"], "session-1")
+        self.assertEqual(
+            {item["session_id"] for item in await self.db.list_group_agent_sessions("group-1")},
+            {"session-1", "session-2"},
+        )
 
 
 class GroupSessionChainRuntimeTests(unittest.IsolatedAsyncioTestCase):
@@ -311,6 +343,7 @@ class GroupSessionChainRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.service._summarizer.summarize.return_value = HandoffSummary(
             "Transaction is implemented; review remains.", "fresh_model"
         )
+        self.manager._broadcast = AsyncMock()
 
     async def asyncTearDown(self) -> None:
         await self.db.close()
@@ -338,6 +371,20 @@ class GroupSessionChainRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(consumed)
         self.assertIsNone(
             await self.service.pending_bootstrap(successor_id, "Builder")
+        )
+        event_types = [
+            call.args[0].get("event_type")
+            for call in self.manager._broadcast.await_args_list
+        ]
+        self.assertEqual(
+            event_types,
+            [
+                "sealing_started",
+                "summary_generated",
+                "sealed",
+                "successor_created",
+                "bootstrap_consumed",
+            ],
         )
 
     async def test_reconcile_completes_a_crash_left_in_sealing(self) -> None:

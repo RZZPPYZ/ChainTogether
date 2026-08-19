@@ -200,6 +200,15 @@ class GroupSessionChainService:
                 },
                 now,
             )
+            await self._broadcast_event(
+                group_id,
+                str(agent["id"]),
+                session_id,
+                decision.action,
+                reason=decision.reason,
+                used_ratio=decision.used_ratio,
+                projected_used_ratio=decision.projected_used_ratio,
+            )
             return session_id
         if decision.action != "seal":
             return session_id
@@ -245,6 +254,13 @@ class GroupSessionChainService:
                         await self._db.get_group_agent_session(group_id, agent_id)
                         or session_id
                     )
+                await self._broadcast_event(
+                    group_id,
+                    agent_id,
+                    session_id,
+                    "sealing_started",
+                    reason=reason,
+                )
             elif generation["status"] != "sealing":
                 return pointer or session_id
             return await self._finish_sealing(group_id, agent, session_id)
@@ -261,17 +277,26 @@ class GroupSessionChainService:
         summary = await self._summarizer.summarize(predecessor, messages)
         now = datetime.now(timezone.utc).isoformat()
         agent_id = str(agent["id"])
+        summary_event = (
+            "summary_generated"
+            if summary.provenance == "fresh_model"
+            else "summary_degraded"
+        )
         await self._db.append_group_session_event(
             group_id,
             agent_id,
             predecessor_session_id,
-            (
-                "summary_generated"
-                if summary.provenance == "fresh_model"
-                else "summary_degraded"
-            ),
+            summary_event,
             {"provenance": summary.provenance, "error": summary.error},
             now,
+        )
+        await self._broadcast_event(
+            group_id,
+            agent_id,
+            predecessor_session_id,
+            summary_event,
+            provenance=summary.provenance,
+            error=summary.error,
         )
         successor_id = uuid.uuid4().hex[:12]
         rotated = await self._db.complete_group_session_rotation(
@@ -311,16 +336,23 @@ class GroupSessionChainService:
         self._session_manager.sessions[successor_id] = successor
         self._session_manager.sessions.pop(predecessor_session_id, None)
         chain = await self._db.list_group_session_chain(group_id, agent_id)
-        await self._session_manager._broadcast({
-            "type": "group_member_session_chain",
-            "group_id": group_id,
-            "agent_id": agent_id,
-            "previous_session_id": predecessor_session_id,
-            "session_id": successor_id,
-            "generation": chain[-1]["generation"],
-            "chain_length": len(chain),
-            "chain_status": "active",
-        })
+        await self._broadcast_event(
+            group_id,
+            agent_id,
+            predecessor_session_id,
+            "sealed",
+            successor_session_id=successor_id,
+        )
+        await self._broadcast_event(
+            group_id,
+            agent_id,
+            successor_id,
+            "successor_created",
+            previous_session_id=predecessor_session_id,
+            generation=chain[-1]["generation"],
+            chain_length=len(chain),
+            chain_status="active",
+        )
         return successor_id
 
     async def pending_bootstrap(
@@ -348,9 +380,36 @@ class GroupSessionChainService:
         )
 
     async def consume_bootstrap(self, session_id: str) -> bool:
-        return await self._db.consume_group_session_bootstrap(
+        generation = await self._db.get_group_session_generation(session_id)
+        consumed = await self._db.consume_group_session_bootstrap(
             session_id, datetime.now(timezone.utc).isoformat()
         )
+        if consumed and generation is not None:
+            await self._broadcast_event(
+                generation["group_id"],
+                generation["agent_id"],
+                session_id,
+                "bootstrap_consumed",
+                generation=generation["generation"],
+            )
+        return consumed
+
+    async def _broadcast_event(
+        self,
+        group_id: str,
+        agent_id: str,
+        session_id: str,
+        event_type: str,
+        **payload: Any,
+    ) -> None:
+        await self._session_manager._broadcast({
+            "type": "group_member_session_chain",
+            "event_type": event_type,
+            "group_id": group_id,
+            "agent_id": agent_id,
+            "session_id": session_id,
+            **payload,
+        })
 
     async def reconcile_all(self) -> list[str]:
         repaired: list[str] = []
@@ -536,7 +595,22 @@ def build_handoff_projection(
         text = _sanitize_text(content, 8_000)
         if text:
             lines.append(f"[{seq}] {role}/{kind}: {text}")
-    return _sanitize_text("\n".join(lines), max_chars)
+    # Do not pre-truncate the canonical projection: the bounded view below keeps
+    # both the opening objective and the true latest actions from the full
+    # stored transcript.
+    rendered = "\n".join(lines).strip()
+    if len(rendered) <= max_chars:
+        return rendered
+    marker_template = "\n... [{omitted} chars omitted from bounded projection] ...\n"
+    provisional = marker_template.format(omitted=len(rendered) - max_chars)
+    payload_budget = max(0, max_chars - len(provisional))
+    head_budget = payload_budget * 2 // 5
+    tail_budget = payload_budget - head_budget
+    marker = marker_template.format(
+        omitted=len(rendered) - head_budget - tail_budget
+    )
+    tail_budget = max(0, max_chars - head_budget - len(marker))
+    return rendered[:head_budget] + marker + rendered[-tail_budget:]
 
 
 def render_handoff_bootstrap(
@@ -550,14 +624,24 @@ def render_handoff_bootstrap(
     """Render the D-layer packet; generated content is data, never authority."""
     from .prompt_governance import get_prompt_registry
 
-    rendered = get_prompt_registry().render(
+    registry = get_prompt_registry()
+    values = {
+        "agent_name": _sanitize_text(agent_name, 120),
+        "generation": generation,
+        "predecessor_session_id": _sanitize_text(predecessor_session_id, 120),
+    }
+    empty = registry.render(
         "dynamic.session_chain_bootstrap",
-        agent_name=_sanitize_text(agent_name, 120),
-        generation=generation,
-        predecessor_session_id=_sanitize_text(predecessor_session_id, 120),
-        digest=_sanitize_text(digest, max_chars),
+        **values,
+        digest="",
     )
-    return _sanitize_text(rendered, max_chars)
+    digest_budget = max(0, max_chars - len(empty))
+    rendered = registry.render(
+        "dynamic.session_chain_bootstrap",
+        **values,
+        digest=_sanitize_text(digest, digest_budget),
+    )
+    return rendered if len(rendered) <= max_chars else rendered[:max_chars]
 
 
 def _sanitize_text(value: Any, max_chars: int) -> str:
