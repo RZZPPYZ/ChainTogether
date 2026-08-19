@@ -35,8 +35,10 @@ lifecycle; it continues to own delegation/A2A guard traversal.
 
 ## Numbered invariants
 
-1. For every live `(group, agent)` pointer, its target generation exists,
-   belongs to the same group and Agent, and has `status='active'`.
+1. For every live `(group, agent)` pointer, its target generation exists and
+   belongs to the same group and Agent. It is `active` normally and may be
+   `sealing` only while holding the durable seal claim; reconciliation returns
+   it to an active successor.
 2. At most one active generation exists per `(group, agent)`; generation is
    strictly increasing and predecessor edges never cross group or Agent.
 3. Only `active -> sealing -> sealed` is allowed in normal operation. Sealed
@@ -154,4 +156,3 @@ handoff with fresh-context summary and MCP recall. Thresholds are reversible,
 configurable defaults. Lifecycle objects, failure paths, privacy boundary,
 migration, rollback, observability, invariants and adversarial tests are
 explicit. No irreversible product decision remains open.
-

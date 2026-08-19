@@ -2,7 +2,7 @@
 schema_version: 1
 id: F003
 title: "Group Session Chain Handoff"
-stage: design
+stage: planning
 state: active
 priority: P1
 owner: "codex"
@@ -17,7 +17,7 @@ related_features: []
 blocked_by: []
 research_refs: ["docs/features/F003-group-session-chain/evidence/discovery.md", "https://github.com/zts212653/cat-cafe-tutorials/blob/main/docs/lessons/08-session-management.md"]
 decision_refs: ["docs/features/F003-group-session-chain/evidence/discovery.md", "docs/features/F003-group-session-chain/evidence/orchestration-design.md"]
-plan_refs: []
+plan_refs: ["docs/features/F003-group-session-chain/plan.md"]
 pr_refs: []
 ---
 
@@ -183,13 +183,13 @@ retrieve exact prior evidence instead of guessing.
 
 ## Design Gate
 
-- **Verdict**: pending
-- **Feature Doc revision**: pending
-- **Evidence**: `evidence/orchestration-design.md`
+- **Verdict**: approved
+- **Feature Doc revision**: `23710147e14a095c26b012708b3febe6952e20c4`
+- **Evidence**: `evidence/design-verdict-2371014.md`, `evidence/orchestration-design.md`
 
 ## Delivery
 
-- **Plan**: pending
+- **Plan**: `docs/features/F003-group-session-chain/plan.md`
 - **Worktree**: `F:\\RZP_program\\my_project\\ChainTogether\\.worktrees\\F003-group-session-chain`
 - **Branch**: `codex/F003-group-session-chain`
 
@@ -226,3 +226,4 @@ retrieve exact prior evidence instead of guessing.
 |---|---|---|
 | 2026-08-19 | Created from operator request | current Codex conversation |
 | 2026-08-19 | Discovery compared Lesson 08, clowder-ai and current group/session architecture | `evidence/discovery.md` |
+| 2026-08-19 | Design Gate approved the revision-bound state machine, privacy boundary and degraded recovery path | `evidence/design-verdict-2371014.md` |
