@@ -58,6 +58,10 @@ class SessionChainRecallTests(unittest.IsolatedAsyncioTestCase):
             "session-1", 3, "assistant", "text",
             ("large historical detail " * 1000) + " UNIQUE-NEEDLE finish review",
         )
+        for seq in range(4, 110):
+            await self.db.append_message(
+                "session-1", seq, "assistant", "text", f"detail {seq}"
+            )
         await self.db.flush()
         await self.db.begin_group_session_seal(
             "group-1", "agent-1", "session-1",
@@ -106,11 +110,6 @@ class SessionChainRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("digest", handoff)
 
     async def test_recall_bounds_large_fields_queries_and_search_snippets(self) -> None:
-        for seq in range(4, 110):
-            await self.db.append_message(
-                "session-1", seq, "assistant", "text", f"detail {seq}"
-            )
-        await self.db.flush()
         raw = await self.reader.read_events(
             "session-2", "session-1", view="raw", offset=3, limit=1
         )
