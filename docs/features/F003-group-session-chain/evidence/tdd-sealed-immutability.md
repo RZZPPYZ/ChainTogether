@@ -49,6 +49,20 @@ Green:
 
 The Session Chain recall fixture was corrected to build its complete transcript before sealing. This is a test-data ordering change required by the new invariant, not a production bypass.
 
+## Cycle 3 — generated contract compatibility
+
+Red:
+
+- `bun run build` rejected the WebSocket-created ordinary archive replacement because the generated `SessionInfo` contract now requires the additive `sealed` boolean.
+- A new WebSocket regression reproduced the missing field: the replacement carried `archived: false` but no `sealed: false`.
+
+Green:
+
+- The synthetic replacement explicitly initializes `sealed: false`.
+- `bunx vitest run src/hooks/useWebSocket.test.ts` passes 2 tests.
+- `bun run build` passes after transforming 6,987 modules; only the existing chunk-size warning remains.
+- The worktree's provider skill mirrors were materialized and `scripts/sync-skills.py --check` passes for all 26 mounts.
+
 ## Next Step
 
 Load `$quality-gate` and verify the exact committed correction HEAD against AC-4, the Vision Gate deviation, full backend/frontend tests, contracts, build, and the real archive-management journey.

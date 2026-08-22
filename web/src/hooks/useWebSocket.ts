@@ -402,6 +402,7 @@ export function handleWsMessage(data: Record<string, unknown>) {
           can_fork: prev?.can_fork ?? true,
           fork_is_full_copy: false,
           archived: false,
+          sealed: false,
         });
       }
       store.setSessions(next);
