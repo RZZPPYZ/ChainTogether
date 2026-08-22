@@ -63,6 +63,17 @@ Green:
 - `bun run build` passes after transforming 6,987 modules; only the existing chunk-size warning remains.
 - The worktree's provider skill mirrors were materialized and `scripts/sync-skills.py --check` passes for all 26 mounts.
 
+## Cycle 4 — changed-file lint hygiene
+
+Red:
+
+- The expanded scoped lint surfaced four pre-existing unused-variable errors in `useWebSocket.ts`, where detail-only fields were destructured solely to discard them.
+
+Green/refactor:
+
+- The same projection now copies the response and explicitly deletes the four detail-only fields before storing `SessionInfo`; observable behavior is unchanged.
+- The existing WebSocket tests and production build remain the regression oracles for this refactor.
+
 ## Next Step
 
 Load `$quality-gate` and verify the exact committed correction HEAD against AC-4, the Vision Gate deviation, full backend/frontend tests, contracts, build, and the real archive-management journey.
