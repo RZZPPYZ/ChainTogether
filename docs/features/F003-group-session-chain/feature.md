@@ -2,7 +2,7 @@
 schema_version: 1
 id: F003
 title: "Group Session Chain Handoff"
-stage: review
+stage: acceptance
 state: active
 priority: P1
 owner: "codex"
@@ -238,7 +238,11 @@ retrieve exact prior evidence instead of guessing.
 - **Same-reviewer re-review**: approved at exact HEAD
   `723c2c3d24f182ebe21416fa0d53497a2c33df7c`, with no P1/P2/P3 findings —
   `evidence/review-723c2c3-approved.md`
-- **Next gate**: Merge Gate
+- **Correction branch HEAD**: `77bfd92c7a49cc2520df1622a536448192f43fa0`
+- **Correction merge**: merged into `main` as
+  `374fa472e43564d50020f2dd3b24418f48023c30`
+- **Merge evidence**: `evidence/merge-evidence-374fa47.md`
+- **Next gate**: independent Vision Gate on the corrected merged revision
 
 ## Risks and Open Questions
 
@@ -272,3 +276,4 @@ retrieve exact prior evidence instead of guessing.
 | 2026-08-22 | Independent correction review found no P1/P2 and one P3: sealed ChatView history advertised impossible Unarchive guidance | `evidence/review-7d81067.md` |
 | 2026-08-22 | Fixed the P3 with a real sealed/ordinary ChatView browse-state regression; frontend 36 tests, typecheck and build passed at `723c2c3` | `evidence/review-fixes-723c2c3.md` |
 | 2026-08-22 | Same independent reviewer approved exact corrected HEAD `723c2c3` with no P1/P2/P3 findings | `evidence/review-723c2c3-approved.md` |
+| 2026-08-22 | Merge Gate merged correction branch HEAD `77bfd92` into `main` as `374fa47`; fresh post-merge backend, frontend, typecheck, build and validators passed | `evidence/merge-evidence-374fa47.md` |

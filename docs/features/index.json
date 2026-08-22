@@ -20,7 +20,7 @@
     {
       "id": "F003",
       "title": "Group Session Chain Handoff",
-      "stage": "implementation",
+      "stage": "acceptance",
       "state": "active",
       "priority": "P1",
       "file": "docs/features/F003-group-session-chain/feature.md"
