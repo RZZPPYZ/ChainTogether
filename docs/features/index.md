@@ -6,4 +6,4 @@
 |---|---|---|---|---|
 | F001 | [Group Feature Lifecycle](F001-group-feature-lifecycle/feature.md) | done | done | P1 |
 | F002 | [Autonomous Group Feature Delivery](F002-autonomous-group-feature-delivery/feature.md) | done | done | P1 |
-| F003 | [Group Session Chain Handoff](F003-group-session-chain/feature.md) | acceptance | active | P1 |
+| F003 | [Group Session Chain Handoff](F003-group-session-chain/feature.md) | implementation | active | P1 |

@@ -2,12 +2,12 @@
 schema_version: 1
 id: F003
 title: "Group Session Chain Handoff"
-stage: acceptance
+stage: implementation
 state: active
 priority: P1
 owner: "codex"
 reviewer: "f003_independent_review"
-vision_guardian: ""
+vision_guardian: "f003_vision_guardian"
 origin_kind: "codex_conversation"
 origin_group_id: ""
 origin_message_seq: null
@@ -218,10 +218,11 @@ retrieve exact prior evidence instead of guessing.
 
 ## Vision Gate
 
-- **Guardian**: pending independent guardian
-- **Merged revision**: pending
-- **Verdict**: pending
-- **Journey evidence**: pending
+- **Guardian**: independent `/root/f003_vision_guardian`
+- **Merged revision**: `e3d05178d768e01728e98bc6b9aa4c713bc7afb7`
+- **Verdict**: changes_required — sealed predecessor can be unarchived and
+  modified through the ordinary session surface
+- **Journey evidence**: `evidence/vision-verdict-e3d0517-changes.md`
 
 ## Risks and Open Questions
 
@@ -250,3 +251,4 @@ retrieve exact prior evidence instead of guessing.
 | 2026-08-19 | Fixed usable continuation and durable per-generation degraded state at `e2c79de`; fresh full Quality Gate passed | `evidence/review-fixes-e2c79de.md`, `evidence/quality-report-e2c79de.md` |
 | 2026-08-22 | Same independent reviewer approved exact HEAD `169e695` with no P1/P2/P3 findings | `evidence/review-169e695.md` |
 | 2026-08-22 | Merge Gate merged branch HEAD `1d8188b` into `main` as `e3d0517`; post-merge regression and build passed | `evidence/merge-evidence-e3d0517.md` |
+| 2026-08-22 | Independent Vision Gate required an implementation fix because a sealed predecessor could be unarchived and modified | `evidence/vision-verdict-e3d0517-changes.md` |
