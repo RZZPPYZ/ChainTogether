@@ -2,8 +2,8 @@
 schema_version: 1
 id: F003
 title: "Group Session Chain Handoff"
-stage: acceptance
-state: active
+stage: done
+state: done
 priority: P1
 owner: "codex"
 reviewer: "f003_independent_review"
@@ -219,10 +219,14 @@ retrieve exact prior evidence instead of guessing.
 ## Vision Gate
 
 - **Guardian**: independent `/root/f003_vision_guardian`
-- **Merged revision**: `e3d05178d768e01728e98bc6b9aa4c713bc7afb7`
-- **Verdict**: changes_required — sealed predecessor can be unarchived and
-  modified through the ordinary session surface
-- **Journey evidence**: `evidence/vision-verdict-e3d0517-changes.md`
+- **Initial merged revision**: `e3d05178d768e01728e98bc6b9aa4c713bc7afb7`
+- **Initial verdict**: changes_required — sealed predecessor could be
+  unarchived and modified through the ordinary session surface
+- **Initial evidence**: `evidence/vision-verdict-e3d0517-changes.md`
+- **Corrected merged revision**:
+  `374fa472e43564d50020f2dd3b24418f48023c30`
+- **Verdict**: accepted
+- **Final journey evidence**: `evidence/vision-verdict-374fa47-accepted.md`
 
 ## Vision Correction Delivery
 
@@ -242,7 +246,17 @@ retrieve exact prior evidence instead of guessing.
 - **Correction merge**: merged into `main` as
   `374fa472e43564d50020f2dd3b24418f48023c30`
 - **Merge evidence**: `evidence/merge-evidence-374fa47.md`
-- **Next gate**: independent Vision Gate on the corrected merged revision
+- **Closure**: complete — `evidence/closure-report.md`
+
+## Closure
+
+- **Completed**: 2026-08-22
+- **Acceptance criteria**: AC-1 through AC-11 verified
+- **Independent review**: approved at `723c2c3`
+- **Merge**: corrected implementation merged as `374fa47`
+- **Independent Vision Gate**: accepted at `374fa47`
+- **Canonical synchronization**: Feature Doc and generated indexes are `done`
+- **Evidence**: `evidence/closure-report.md`
 
 ## Risks and Open Questions
 
@@ -277,3 +291,5 @@ retrieve exact prior evidence instead of guessing.
 | 2026-08-22 | Fixed the P3 with a real sealed/ordinary ChatView browse-state regression; frontend 36 tests, typecheck and build passed at `723c2c3` | `evidence/review-fixes-723c2c3.md` |
 | 2026-08-22 | Same independent reviewer approved exact corrected HEAD `723c2c3` with no P1/P2/P3 findings | `evidence/review-723c2c3-approved.md` |
 | 2026-08-22 | Merge Gate merged correction branch HEAD `77bfd92` into `main` as `374fa47`; fresh post-merge backend, frontend, typecheck, build and validators passed | `evidence/merge-evidence-374fa47.md` |
+| 2026-08-22 | Independent Vision Gate accepted the corrected merged group-session journey and verified sealed immutability without breaking ordinary archive recovery | `evidence/vision-verdict-374fa47-accepted.md` |
+| 2026-08-22 | F003 canonical dossier, lessons and generated indexes synchronized; feature closed | `evidence/closure-report.md` |
