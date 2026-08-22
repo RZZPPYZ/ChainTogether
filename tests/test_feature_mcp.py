@@ -98,7 +98,10 @@ class FeatureMcpTests(unittest.TestCase):
 class FeatureMcpHarnessTests(unittest.TestCase):
     def test_feature_is_mandatory_when_optional_selection_is_empty(self) -> None:
         entries = select_mcp_servers([], [], {})
-        self.assertEqual(["feature"], [entry.key for entry in entries])
+        self.assertEqual(
+            ["feature", "session_chain"],
+            [entry.key for entry in entries],
+        )
 
     def test_callback_env_carries_dispatch_authority(self) -> None:
         env = build_callback_env(

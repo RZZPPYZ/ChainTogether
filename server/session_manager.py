@@ -28,6 +28,7 @@ from .harness import (
     HarnessCredential,
     HarnessEvent,
     HarnessRun,
+    OneShotContext,
     RunConfig,
     get_harness,
 )
@@ -1146,6 +1147,38 @@ class SessionManager:
             )
         return session
 
+    async def run_fresh_oneshot(
+        self,
+        source_session: Session,
+        prompt: str,
+        *,
+        timeout: float,
+    ) -> str:
+        """Run a tool-free model call with no provider resume/session identity.
+
+        The source session contributes only backend, Agent configuration,
+        credential selection and working directory. `OneShotContext` cannot
+        carry a resume id or MCP configuration by construction.
+        """
+        harness = get_harness(source_session.backend)
+        agent = (
+            await self.db.get_agent(source_session.agent_id)
+            if self.db and source_session.agent_id
+            else None
+        )
+        credential = await self._resolve_credential(
+            source_session, agent, harness
+        )
+        return await harness.run_oneshot(
+            OneShotContext(
+                prompt=prompt,
+                model=(agent or {}).get("model"),
+                credential=credential,
+                working_dir=source_session.working_dir,
+            ),
+            timeout=timeout,
+        )
+
     async def import_session(
         self,
         name: str,
@@ -1919,6 +1952,13 @@ class SessionManager:
             await asyncio.wait_for(session._lock.acquire(), timeout=5.0)
         except asyncio.TimeoutError:
             raise ValueError(f"Session {session_id} is busy")
+
+        # A group-session seal can replace the active object while this turn is
+        # queued on its lock. Never continue through a stale reference after
+        # rotation released the mutex and removed it from the manager.
+        if self.sessions.get(session_id) is not session:
+            session._lock.release()
+            raise ValueError(f"Session {session_id} is no longer active")
 
         try:
             # Resolve attachment ids → on-disk paths so the prompt can

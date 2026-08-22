@@ -31,6 +31,7 @@ from .persona_manager import persona_manager
 from .routers import agents, attachments, bg_tasks as bg_tasks_router, connectors, credentials, delegations as delegations_router, files, notifiers, personas, questions, research as research_router, schedules, sessions, ws
 from .routers import groups as groups_router
 from .routers import features as features_router
+from .routers import session_chains as session_chains_router
 from .scheduler import ScheduleRunner
 from .session_manager import session_manager
 
@@ -184,6 +185,7 @@ app.include_router(notifiers.router)
 app.include_router(ws.router)
 app.include_router(groups_router.router)
 app.include_router(features_router.router)
+app.include_router(session_chains_router.router)
 
 
 @app.get("/api/backends")

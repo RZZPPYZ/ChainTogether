@@ -5,10 +5,55 @@ import {
   GroupAgentRunBlock,
   GroupChatView,
   GroupMarkdown,
+  SessionGenerationBadge,
   buildGroupTimeline,
   highlightMentions,
   parseGroupAgentMessage,
 } from "./GroupChatView";
+
+describe("group member session generations", () => {
+  it("renders the active generation and chain length", () => {
+    render(<SessionGenerationBadge generation={2} chainLength={3} />);
+
+    expect(screen.getByText("S2/3")).toBeTruthy();
+    expect(screen.getByText("S2/3").getAttribute("title")).toContain(
+      "fresh session",
+    );
+  });
+
+  it("renders lifecycle health instead of hiding seal progress", () => {
+    const { rerender } = render(
+      <SessionGenerationBadge
+        generation={1}
+        chainLength={1}
+        chainStatus="sealing"
+        chainEventType="sealing_started"
+      />,
+    );
+    expect(screen.getByText("sealing")).toBeTruthy();
+
+    rerender(
+      <SessionGenerationBadge
+        generation={2}
+        chainLength={2}
+        chainStatus="active"
+        chainEventType="successor_created"
+        summaryDegraded
+      />,
+    );
+    expect(screen.getByText("fallback")).toBeTruthy();
+
+    rerender(
+      <SessionGenerationBadge
+        generation={2}
+        chainLength={2}
+        chainStatus="active"
+        summaryDegraded
+      />,
+    );
+    expect(screen.getByText("fallback")).toBeTruthy();
+  });
+});
 import {
   useSessionStore,
   type Agent,

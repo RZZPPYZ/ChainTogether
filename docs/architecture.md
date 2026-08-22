@@ -87,7 +87,8 @@ their Sessions, Schedules, and bridge bindings. A protected **Default Agent**
 | `crypto.py` | Fernet encryption (keyed off `OCTOPUS_AUTH_TOKEN`) for secrets at rest. |
 | `models.py` | Pydantic request/response models + enums (`SessionStatus`, `MessageRole`, agent/schedule/connector/credential DTOs). |
 | `session_manager.py` | Core turn engine. Owns in-memory `Session` objects, drives each turn through the **Harness**, persists + broadcasts events to WebSocket clients and bridges, runs tool-result forwarding, interactive questions, mid-turn interrupt, the per-session message queue, premature-exit auto-respawn, and large-prompt spill. |
-| `group_manager.py` | Group CRUD, default responder selection, user/A2A `@` routing, group-member reuse sessions, routing guards, D-layer cursor advancement, and exact FeatureDispatch invocation launch/terminal callbacks. |
+| `group_manager.py` | Group CRUD, default responder selection, user/A2A `@` routing, active group-member session-generation routing, proactive rollover hooks, routing guards, D-layer cursor advancement, and exact FeatureDispatch invocation launch/terminal callbacks. |
+| `group_session_chain.py` | Context-pressure policy, crash-safe session sealing, fresh-context handoff summarization, atomic successor activation, bounded D15 bootstrap rendering, lifecycle broadcasts, and capability-checked sealed-history reads. |
 | `feature_manager.py` | Durable group-first feature control plane: canonical dossier creation, role separation, workflow transitions, gate evidence, event history, and per-agent lifecycle context. See [`feature-lifecycle.md`](feature-lifecycle.md). |
 | `feature_delivery.py` | Autonomous `/feature` start checkpoints, deterministic three-role assignment, dispatch leasing, fresh successor launch, resume, and restart reconciliation. |
 | `prompt_governance.py` + `assets/` | Compiles versioned prompt templates and machine routing policy once, renders per-turn L0/D prompts, and derives per-group roster snapshots from canonical database rows. |
@@ -137,6 +138,12 @@ split into two layers with different lifetimes:
   next step. `/feature` dispatches bind that context to an exact target turn;
   accepted handoffs schedule a new depth-zero invocation for the successor.
   Invocation custody and feature progress remain separate.
+- **D15 session-chain bootstrap:** when a group member crosses the configured
+  context threshold, its active generation is sealed and replaced atomically.
+  A tool-free, non-resuming one-shot harness produces a factual digest from the
+  stored transcript; the successor receives that digest once as untrusted
+  dynamic data. Exact sealed history remains queryable through Session Chain
+  MCP instead of being replayed into every turn.
 - **Incremental cursor:** `group_agent_sessions.last_seen_group_seq` stores the
   highest group sequence successfully shown to each member. The cursor advances
   monotonically only after a successful backend turn. The current trigger is
@@ -173,13 +180,14 @@ The harness is the **only** place that talks to a model runtime. There is one
 ### In-app MCP servers (`server/mcp_servers/`)
 
 Every turn injects a small set of stdio MCP servers into the CLI's
-`--mcp-config`. Optional built-ins are configurable per agent (default
-`["ask", "bg", "ask_agent"]`); the Feature MCP is mandatory core control
-plane, and each enabled connector adds one more.
+`--mcp-config`. Optional built-ins are configurable per agent; Feature and
+Session Chain MCP are mandatory core control planes, and each enabled connector
+adds one more.
 
 | Server | Tool(s) | Purpose |
 |---|---|---|
 | `feature.py` | `status` / `transition` / `request_review` | Session-bound FeatureRun inspection and exact-generation lifecycle handoff. Mutation authority is injected only into the assigned turn's child environment. |
+| `session_chain.py` | `list_chain` / `read_events` / `read_invocation` / `search` | Read-only recall over sealed predecessors in the caller's exact group-member chain. The per-session capability and active-chain membership both fail closed; raw, chat, and handoff projections are available without exposing arbitrary sessions. |
 | `bg.py` | `mcp__bg__run` / `cancel` / `list` | Fire-and-forget shell commands that run **across turns**; the result arrives as a follow-up turn. |
 | `ask.py` | `mcp__ask__user(questions)` | Structured multiple-choice question rendered as a form in the UI; long-polls for the answer. Caller-aware: when invoked from a delegation-origin session the question is also injected as an `[agent-question:…]` turn into the parent agent's session — same pending queue, two answer producers. Replaces the old permission-prompt hack. |
 | `ask_agent.py` | `mcp__ask_agent__ask` / `cancel` / `answer` / `list` | Agent-to-agent delegation. `ask(request, name=…, delegation_id=…, files=…)` is bimodal: pass `name` to spawn a fresh child session under the named agent, or pass `delegation_id` to continue a prior delegation in the same child session so the target keeps her transcript across rounds; exactly one id is required. `answer` drains a child's pending question with the parent's chosen label; `cancel` stops a delegation (cascade-cancels descendants); `list` enumerates this session's delegations. Same env-injection + bg-task-style follow-up-turn pattern as `bg`. Design: [`plans/agent-collaboration.md`](plans/agent-collaboration.md). |
@@ -365,6 +373,7 @@ A backend without web tools simply returns an "unavailable" message.
 {"type":"error","session_id":"…","message":"…"}
 {"type":"queued|dequeued","session_id":"…"}
 {"type":"session_archived|session_unarchived","session_id":"…"}
+{"type":"group_member_session_chain","event_type":"sealing_started|summary_generated|summary_degraded|sealed|successor_created|bootstrap_consumed","group_id":"…","agent_id":"…","session_id":"…","generation":2}
 ```
 
 ## REST API
@@ -410,6 +419,10 @@ GET                 /api/features/{run_id}
 PATCH               /api/features/{run_id}/roles
 POST                /api/sessions/{session_id}/features/{run_id}/transition
 GET                 /api/features/{run_id}/events
+GET                 /api/sessions/{session_id}/session-chain
+GET                 /api/sessions/{session_id}/session-chain/{sealed_id}/events
+GET                 /api/sessions/{session_id}/session-chain/{sealed_id}/invocations/{seq}
+GET                 /api/sessions/{session_id}/session-chain/search
 
 # Schedules (interval + cron), credentials, connectors, notifiers
 GET/POST           /api/schedules
@@ -477,6 +490,12 @@ migrations (never re-create or duplicate the schema in docs).
   `group_invocation` custody chain to the FeatureRun it advances.
 - **`group_active_features`** — one persisted current FeatureRun per group,
   read afresh for D14 on every routed turn and cleared when the feature is done.
+- **`group_session_generations`** — one durable generation per group member;
+  a partial unique index permits exactly one `active`/`sealing` generation.
+  Rows bind predecessor/successor identity, measured context pressure, sealing
+  timestamps, digest provenance/error, and one-time bootstrap consumption.
+- **`group_session_chain_events`** — append-only warning, sealing, summary,
+  successor, degraded-mode, and bootstrap audit history for restart recovery.
 
 ## Memory
 
@@ -509,6 +528,11 @@ provisioned on agent create, kept on archive, removed on hard delete.
 | `public_base_url` | computed | Stable public host for connector OAuth redirect URIs (tunnel). |
 | `gmail_/github_oauth_client_id`/`_secret` | — | Optional env fallback for connector OAuth clients (in-app config takes precedence). |
 | `research_max_concurrent_jobs` | `2` | Max simultaneous deep-research jobs across all sessions. |
+| `group_session_chain_enabled` | `true` | Enable proactive rollover for reusable group-member sessions. |
+| `group_session_chain_warn_ratio` / `action_ratio` | `0.85` / `0.90` | Broadcast early warning, then seal before provider context exhaustion. |
+| `group_session_chain_reserve_tokens` | `8000` | Absolute remaining-token safety margin that can trigger sealing before the ratio. |
+| `group_session_chain_summary_timeout_seconds` | `60` | Deadline for the isolated fresh-context handoff summarizer before deterministic fallback. |
+| `group_session_chain_bootstrap_max_chars` | `12000` | Hard cap for the successor's one-time D15 handoff packet. |
 
 ## Key design decisions
 

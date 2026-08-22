@@ -42,7 +42,7 @@ export function shouldApplyWsEvent(
   return seq > b;
 }
 
-function handleWsMessage(data: Record<string, unknown>) {
+export function handleWsMessage(data: Record<string, unknown>) {
   const {
     addMessage,
     updateSessionStatus,
@@ -54,6 +54,7 @@ function handleWsMessage(data: Record<string, unknown>) {
     lastAppliedSeq,
     upsertSessionContextUsage,
     upsertGroupMemberContextUsage,
+    applyGroupMemberSessionChain,
   } = getState();
   const sessionId = data.session_id as string;
   const type = data.type as string;
@@ -264,6 +265,21 @@ function handleWsMessage(data: Record<string, unknown>) {
           );
         }
       }
+      break;
+    }
+
+    case "group_member_session_chain": {
+      applyGroupMemberSessionChain({
+        eventType: data.event_type as string,
+        groupId: data.group_id as string,
+        agentId: data.agent_id as string,
+        previousSessionId: data.previous_session_id as string | undefined,
+        sessionId: data.session_id as string,
+        generation: data.generation as number | undefined,
+        chainLength: data.chain_length as number | undefined,
+        chainStatus: data.chain_status as string | undefined,
+        summaryDegraded: data.summary_degraded as boolean | undefined,
+      });
       break;
     }
 

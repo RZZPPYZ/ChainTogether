@@ -425,6 +425,50 @@ CREATE TABLE IF NOT EXISTS group_agent_sessions (
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
 
+-- Durable generations behind the active (group × agent) pointer. Complete
+-- transcripts remain in messages; this table owns only lifecycle metadata.
+CREATE TABLE IF NOT EXISTS group_session_generations (
+    group_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    session_id TEXT PRIMARY KEY,
+    generation INTEGER NOT NULL,
+    predecessor_session_id TEXT,
+    status TEXT NOT NULL CHECK (status IN ('active', 'sealing', 'sealed')),
+    seal_reason TEXT,
+    context_usage TEXT,
+    seal_started_at TEXT,
+    sealed_at TEXT,
+    digest TEXT,
+    digest_provenance TEXT,
+    digest_error TEXT,
+    bootstrap_consumed_at TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE (group_id, agent_id, generation),
+    FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+    FOREIGN KEY (predecessor_session_id) REFERENCES sessions(id) ON DELETE SET NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_group_session_generation
+  ON group_session_generations(group_id, agent_id) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_group_session_generations_member
+  ON group_session_generations(group_id, agent_id, generation);
+
+CREATE TABLE IF NOT EXISTS group_session_chain_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_group_session_chain_events_member
+  ON group_session_chain_events(group_id, agent_id, id);
+
 -- One durable routing lifecycle per user message that wakes group agents.
 -- Runtime queues remain in memory, while this row provides cancellation,
 -- custody visibility and crash reconciliation across server restarts.
@@ -1095,16 +1139,29 @@ class Database:
 
     async def _group_member_sessions(self, group_id: str) -> list[dict[str, Any]]:
         cursor = await self._conn.execute(
-            "SELECT gas.agent_id, gas.session_id, s.backend, s.context_usage "
+            "SELECT gas.agent_id, gas.session_id, s.backend, s.context_usage, "
+            "COALESCE(gsg.generation, 1), COALESCE(gsg.status, 'active'), "
+            "COALESCE((SELECT COUNT(*) FROM group_session_generations chain "
+            "WHERE chain.group_id = gas.group_id "
+            "AND chain.agent_id = gas.agent_id), 1), "
+            "CASE WHEN predecessor.digest_provenance = 'extractive_fallback' "
+            "THEN 1 ELSE 0 END "
             "FROM group_agent_sessions gas "
             "JOIN sessions s ON s.id = gas.session_id "
+            "LEFT JOIN group_session_generations gsg "
+            "ON gsg.session_id = gas.session_id "
+            "LEFT JOIN group_session_generations predecessor "
+            "ON predecessor.session_id = gsg.predecessor_session_id "
             "WHERE gas.group_id = ? "
             "ORDER BY gas.created_at, gas.agent_id",
             (group_id,),
         )
         rows = await cursor.fetchall()
         out: list[dict[str, Any]] = []
-        for agent_id, session_id, backend, context_usage_raw in rows:
+        for (
+            agent_id, session_id, backend, context_usage_raw,
+            generation, chain_status, chain_length, summary_degraded,
+        ) in rows:
             context_usage = None
             if context_usage_raw:
                 try:
@@ -1117,6 +1174,10 @@ class Database:
                 "backend": backend or "claude-code",
                 "status": "idle",
                 "context_usage": context_usage,
+                "generation": int(generation),
+                "chain_status": chain_status,
+                "chain_length": int(chain_length),
+                "summary_degraded": bool(summary_degraded),
             })
         return out
 
@@ -1177,6 +1238,333 @@ class Database:
         row = await cursor.fetchone()
         return row[0] if row else None
 
+    async def adopt_group_session_generation(
+        self,
+        group_id: str,
+        agent_id: str,
+        session_id: str,
+        created_at: str,
+    ) -> dict[str, Any]:
+        """Lazily register a legacy/current member pointer as generation 1."""
+        await self._ensure_connected()
+        await self._conn.execute(
+            "INSERT OR IGNORE INTO group_session_generations "
+            "(group_id, agent_id, session_id, generation, status, created_at) "
+            "VALUES (?, ?, ?, 1, 'active', ?)",
+            (group_id, agent_id, session_id, created_at),
+        )
+        await self._conn.execute(
+            "INSERT INTO group_session_chain_events "
+            "(group_id, agent_id, session_id, event_type, payload, created_at) "
+            "SELECT ?, ?, ?, 'adopted', '{}', ? WHERE changes() = 1",
+            (group_id, agent_id, session_id, created_at),
+        )
+        await self._conn.commit()
+        row = await self.get_group_session_generation(session_id)
+        if row is None:
+            raise RuntimeError("group session generation adoption failed")
+        return row
+
+    async def get_group_session_generation(
+        self, session_id: str
+    ) -> dict[str, Any] | None:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT group_id, agent_id, session_id, generation, "
+            "predecessor_session_id, status, seal_reason, context_usage, "
+            "seal_started_at, sealed_at, digest, digest_provenance, "
+            "digest_error, bootstrap_consumed_at, created_at "
+            "FROM group_session_generations WHERE session_id = ?",
+            (session_id,),
+        )
+        row = await cursor.fetchone()
+        return self._group_session_generation_row(row) if row else None
+
+    async def list_group_session_chain(
+        self, group_id: str, agent_id: str
+    ) -> list[dict[str, Any]]:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT group_id, agent_id, session_id, generation, "
+            "predecessor_session_id, status, seal_reason, context_usage, "
+            "seal_started_at, sealed_at, digest, digest_provenance, "
+            "digest_error, bootstrap_consumed_at, created_at "
+            "FROM group_session_generations WHERE group_id = ? AND agent_id = ? "
+            "ORDER BY generation",
+            (group_id, agent_id),
+        )
+        return [self._group_session_generation_row(row) for row in await cursor.fetchall()]
+
+    async def list_sealing_group_session_generations(
+        self,
+    ) -> list[dict[str, Any]]:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT group_id, agent_id, session_id, generation, "
+            "predecessor_session_id, status, seal_reason, context_usage, "
+            "seal_started_at, sealed_at, digest, digest_provenance, "
+            "digest_error, bootstrap_consumed_at, created_at "
+            "FROM group_session_generations WHERE status = 'sealing' "
+            "ORDER BY seal_started_at, group_id, agent_id"
+        )
+        return [self._group_session_generation_row(row) for row in await cursor.fetchall()]
+
+    @staticmethod
+    def _group_session_generation_row(row: Any) -> dict[str, Any]:
+        context_usage = None
+        if row[7]:
+            try:
+                context_usage = json.loads(row[7])
+            except json.JSONDecodeError:
+                context_usage = None
+        return {
+            "group_id": row[0],
+            "agent_id": row[1],
+            "session_id": row[2],
+            "generation": int(row[3]),
+            "predecessor_session_id": row[4],
+            "status": row[5],
+            "seal_reason": row[6],
+            "context_usage": context_usage,
+            "seal_started_at": row[8],
+            "sealed_at": row[9],
+            "digest": row[10],
+            "digest_provenance": row[11],
+            "digest_error": row[12],
+            "bootstrap_consumed_at": row[13],
+            "created_at": row[14],
+        }
+
+    async def begin_group_session_seal(
+        self,
+        group_id: str,
+        agent_id: str,
+        session_id: str,
+        *,
+        reason: str,
+        context_usage: dict[str, Any] | None,
+        started_at: str,
+    ) -> bool:
+        """Claim sealing only if the supplied generation is still active."""
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "UPDATE group_session_generations SET status = 'sealing', "
+            "seal_reason = ?, context_usage = ?, seal_started_at = ? "
+            "WHERE group_id = ? AND agent_id = ? AND session_id = ? "
+            "AND status = 'active' AND EXISTS ("
+            "SELECT 1 FROM group_agent_sessions gas WHERE gas.group_id = ? "
+            "AND gas.agent_id = ? AND gas.session_id = ?)",
+            (
+                reason,
+                json.dumps(context_usage) if context_usage is not None else None,
+                started_at,
+                group_id,
+                agent_id,
+                session_id,
+                group_id,
+                agent_id,
+                session_id,
+            ),
+        )
+        claimed = cursor.rowcount == 1
+        if claimed:
+            await self._append_group_session_event_uncommitted(
+                group_id, agent_id, session_id, "sealing_started",
+                {"reason": reason, "context_usage": context_usage}, started_at,
+            )
+        await self._conn.commit()
+        return claimed
+
+    async def complete_group_session_rotation(
+        self,
+        *,
+        group_id: str,
+        agent_id: str,
+        predecessor_session_id: str,
+        successor_session_id: str,
+        digest: str,
+        digest_provenance: str,
+        completed_at: str,
+        digest_error: str | None = None,
+        successor_name: str | None = None,
+        successor_working_dir: str | None = None,
+        successor_credential_id: str | None = None,
+        successor_backend: str | None = None,
+        successor_parent_session_id: str | None = None,
+    ) -> bool:
+        """Atomically seal the predecessor and move the preserved pointer.
+
+        This saga deliberately uses its own SQLite connection. The ordinary
+        Database connection is shared by every coroutine, so an unrelated
+        ``commit()`` on that connection could otherwise publish half of this
+        multi-statement transition. ``BEGIN IMMEDIATE`` makes the file-backed
+        transaction the sole writer until commit/rollback.
+        """
+        await self._ensure_connected()
+        transaction = await aiosqlite.connect(self._db_path)
+        try:
+            await transaction.execute("PRAGMA foreign_keys=ON")
+            await transaction.execute("PRAGMA busy_timeout=5000")
+            await transaction.execute("BEGIN IMMEDIATE")
+            cursor = await transaction.execute(
+                "SELECT generation FROM group_session_generations "
+                "WHERE group_id = ? AND agent_id = ? AND session_id = ? "
+                "AND status = 'sealing' AND EXISTS ("
+                "SELECT 1 FROM group_agent_sessions gas WHERE gas.group_id = ? "
+                "AND gas.agent_id = ? AND gas.session_id = ?)",
+                (
+                    group_id, agent_id, predecessor_session_id,
+                    group_id, agent_id, predecessor_session_id,
+                ),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                existing_cursor = await transaction.execute(
+                    "SELECT predecessor_session_id, status "
+                    "FROM group_session_generations WHERE session_id = ?",
+                    (successor_session_id,),
+                )
+                existing = await existing_cursor.fetchone()
+                await transaction.rollback()
+                return bool(existing and existing[0] == predecessor_session_id
+                            and existing[1] == "active")
+            next_generation = int(row[0]) + 1
+            if successor_name is not None and successor_working_dir is not None:
+                await transaction.execute(
+                    "INSERT OR IGNORE INTO sessions "
+                    "(id, name, working_dir, created_at, claude_session_id, "
+                    "credential_id, agent_id, origin, backend, parent_session_id) "
+                    "VALUES (?, ?, ?, ?, NULL, ?, ?, 'group_member', ?, ?)",
+                    (
+                        successor_session_id,
+                        successor_name,
+                        successor_working_dir,
+                        completed_at,
+                        successor_credential_id,
+                        agent_id,
+                        successor_backend or "claude-code",
+                        successor_parent_session_id,
+                    ),
+                )
+            await transaction.execute(
+                "UPDATE group_session_generations SET status = 'sealed', "
+                "sealed_at = ?, digest = ?, digest_provenance = ?, "
+                "digest_error = ? WHERE session_id = ? AND status = 'sealing'",
+                (
+                    completed_at, digest, digest_provenance, digest_error,
+                    predecessor_session_id,
+                ),
+            )
+            # Test-only fault injection point used to prove that a cancellation
+            # cannot be committed by an unrelated writer on the main connection.
+            test_hook = getattr(self, "_group_rotation_test_hook", None)
+            if test_hook is not None:
+                await test_hook()
+            await transaction.execute(
+                "INSERT INTO group_session_generations "
+                "(group_id, agent_id, session_id, generation, "
+                "predecessor_session_id, status, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 'active', ?)",
+                (
+                    group_id, agent_id, successor_session_id, next_generation,
+                    predecessor_session_id, completed_at,
+                ),
+            )
+            pointer = await transaction.execute(
+                "UPDATE group_agent_sessions SET session_id = ? "
+                "WHERE group_id = ? AND agent_id = ? AND session_id = ?",
+                (
+                    successor_session_id, group_id, agent_id,
+                    predecessor_session_id,
+                ),
+            )
+            if pointer.rowcount != 1:
+                raise RuntimeError("group member pointer changed during rotation")
+            await transaction.execute(
+                "UPDATE sessions SET archived = 1 WHERE id = ?",
+                (predecessor_session_id,),
+            )
+            await self._append_group_session_event_uncommitted(
+                group_id, agent_id, predecessor_session_id, "sealed",
+                {"successor_session_id": successor_session_id}, completed_at,
+                connection=transaction,
+            )
+            await self._append_group_session_event_uncommitted(
+                group_id, agent_id, successor_session_id, "successor_created",
+                {
+                    "predecessor_session_id": predecessor_session_id,
+                    "generation": next_generation,
+                },
+                completed_at,
+                connection=transaction,
+            )
+            await transaction.commit()
+            return True
+        except BaseException:
+            await transaction.rollback()
+            raise
+        finally:
+            await transaction.close()
+
+    async def append_group_session_event(
+        self,
+        group_id: str,
+        agent_id: str,
+        session_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        created_at: str,
+    ) -> None:
+        await self._ensure_connected()
+        await self._append_group_session_event_uncommitted(
+            group_id, agent_id, session_id, event_type, payload, created_at
+        )
+        await self._conn.commit()
+
+    async def consume_group_session_bootstrap(
+        self, session_id: str, consumed_at: str
+    ) -> bool:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "UPDATE group_session_generations SET bootstrap_consumed_at = ? "
+            "WHERE session_id = ? AND status = 'active' "
+            "AND predecessor_session_id IS NOT NULL "
+            "AND bootstrap_consumed_at IS NULL",
+            (consumed_at, session_id),
+        )
+        consumed = cursor.rowcount == 1
+        if consumed:
+            generation = await self.get_group_session_generation(session_id)
+            assert generation is not None
+            await self._append_group_session_event_uncommitted(
+                generation["group_id"], generation["agent_id"], session_id,
+                "bootstrap_consumed", {}, consumed_at,
+            )
+        await self._conn.commit()
+        return consumed
+
+    async def _append_group_session_event_uncommitted(
+        self,
+        group_id: str,
+        agent_id: str,
+        session_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        created_at: str,
+        *,
+        connection: aiosqlite.Connection | None = None,
+    ) -> None:
+        target = connection or self._conn
+        await target.execute(
+            "INSERT INTO group_session_chain_events "
+            "(group_id, agent_id, session_id, event_type, payload, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                group_id, agent_id, session_id, event_type,
+                json.dumps(payload), created_at,
+            ),
+        )
+
     async def get_group_agent_cursor(
         self, group_id: str, agent_id: str,
     ) -> int:
@@ -1209,9 +1597,10 @@ class Database:
         to cascade-hard-delete member sessions alongside the backing session."""
         await self._ensure_connected()
         cursor = await self._conn.execute(
-            "SELECT agent_id, session_id FROM group_agent_sessions "
-            "WHERE group_id = ?",
-            (group_id,),
+            "SELECT agent_id, session_id FROM group_session_generations "
+            "WHERE group_id = ? UNION SELECT agent_id, session_id "
+            "FROM group_agent_sessions WHERE group_id = ?",
+            (group_id, group_id),
         )
         rows = await cursor.fetchall()
         return [{"agent_id": r[0], "session_id": r[1]} for r in rows]

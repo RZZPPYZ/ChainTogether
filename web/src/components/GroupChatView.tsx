@@ -35,6 +35,7 @@ import {
   type GroupAgentActivityEvent,
   type GroupAgentRun,
   type GroupInvocation,
+  type GroupMemberSession,
   type Message,
   type Agent,
 } from "../stores/sessionStore";
@@ -294,6 +295,56 @@ function ContextUsageBadge({
       title={contextUsageTitle(usage)}
     >
       {label}
+    </span>
+  );
+}
+
+export function SessionGenerationBadge({
+  generation,
+  chainLength,
+  chainStatus,
+  chainEventType,
+  summaryDegraded,
+}: {
+  generation?: number;
+  chainLength?: number;
+  chainStatus?: string;
+  chainEventType?: string;
+  summaryDegraded?: boolean;
+}) {
+  const current = Math.max(1, generation ?? 1);
+  const total = Math.max(current, chainLength ?? current);
+  const title = `Session generation ${current} of ${total}; chain status ${chainStatus || "active"}. Earlier generations are sealed; this fresh session can recall them through Session Chain.`;
+  const lifecycleLabel = (() => {
+    if (!chainEventType) {
+      if (chainStatus === "sealing") return "sealing";
+      if (chainStatus === "degraded" || summaryDegraded) return "fallback";
+      if (chainStatus === "sealed") return "sealed";
+      return undefined;
+    }
+    if (chainEventType === "summary_degraded") return "fallback";
+    if (chainEventType === "successor_created") {
+      return summaryDegraded ? "fallback" : "fresh";
+    }
+    if (chainEventType === "bootstrap_consumed") {
+      return summaryDegraded ? "fallback" : "ready";
+    }
+    const labels: Record<string, string> = {
+      unknown: "usage unknown",
+      warning: "warning",
+      sealing_started: "sealing",
+      summary_generated: "summarizing",
+      sealed: "sealed",
+    };
+    return chainEventType ? labels[chainEventType] : undefined;
+  })();
+  return (
+    <span
+      className="shrink-0 rounded border border-border/70 bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-foreground"
+      title={title}
+    >
+      <span title={title}>S{current}/{total}</span>
+      {lifecycleLabel ? <span> {lifecycleLabel}</span> : null}
     </span>
   );
 }
@@ -754,10 +805,7 @@ export function GroupChatView({
   );
 
   const memberSessionByAgent = useMemo(() => {
-    const map = new Map<
-      string,
-      { agentId: string; sessionId: string; contextUsage?: ContextUsage | null }
-    >();
+    const map = new Map<string, GroupMemberSession>();
     for (const session of group?.memberSessions || []) {
       map.set(session.agentId, session);
     }
@@ -1408,7 +1456,8 @@ export function GroupChatView({
         </div>
         <span className="flex items-center gap-1 shrink-0">
           {members.map((a) => {
-            const usage = memberSessionByAgent.get(a.id)?.contextUsage;
+            const memberSession = memberSessionByAgent.get(a.id);
+            const usage = memberSession?.contextUsage;
             return (
               <span
                 key={a.id}
@@ -1418,6 +1467,13 @@ export function GroupChatView({
                 <span className="text-base leading-none">
                   {a.avatar || "\u{1F419}"}
                 </span>
+                <SessionGenerationBadge
+                  generation={memberSession?.generation}
+                  chainLength={memberSession?.chainLength}
+                  chainStatus={memberSession?.chainStatus}
+                  chainEventType={memberSession?.chainEventType}
+                  summaryDegraded={memberSession?.summaryDegraded}
+                />
                 <ContextUsageBadge usage={usage} />
               </span>
             );

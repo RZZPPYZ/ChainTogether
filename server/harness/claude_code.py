@@ -357,7 +357,18 @@ class ClaudeEventParser(EventParser):
 
 def build_oneshot_argv(ctx: OneShotContext) -> tuple[list[str], dict[str, Any]]:
     """A lean, tool-free `claude --print --output-format=json` call."""
-    argv = ["claude", "--print", "--output-format=json"]
+    argv = [
+        "claude",
+        "--print",
+        "--output-format=json",
+        "--bare",
+        "--safe-mode",
+        "--tools",
+        "",
+        "--max-turns",
+        "1",
+        "--no-session-persistence",
+    ]
     if ctx.model:
         argv += ["--model", ctx.model]
     argv += ["--", ctx.prompt]

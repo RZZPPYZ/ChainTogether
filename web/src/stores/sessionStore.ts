@@ -16,7 +16,7 @@ import type { ContextUsage } from "../lib/contextUsage";
 // already uses. Source of truth is `web/src/api/contracts.ts`, regenerated
 // from FastAPI's openapi.json via `bun run generate:contracts`.
 export type SessionStatus = ApiSessionStatus;
-export type SessionInfo = ApiSessionInfo & {
+export type SessionInfo = Omit<ApiSessionInfo, "context_usage"> & {
   context_usage?: ContextUsage | null;
 };
 export type Agent = ApiAgentRead;
@@ -209,6 +209,7 @@ interface SessionStore {
     sessionId: string,
     contextUsage: ContextUsage,
   ) => void;
+  applyGroupMemberSessionChain: (event: GroupMemberSessionChainEvent) => void;
   activeGroupId: string | null;
   setActiveGroupId: (id: string | null) => void;
 
@@ -314,6 +315,23 @@ export interface GroupMemberSession {
   backend?: BackendKind | string;
   status?: SessionStatus;
   contextUsage?: ContextUsage | null;
+  generation?: number;
+  chainLength?: number;
+  chainStatus?: string;
+  chainEventType?: string;
+  summaryDegraded?: boolean;
+}
+
+export interface GroupMemberSessionChainEvent {
+  eventType: string;
+  groupId: string;
+  agentId: string;
+  previousSessionId?: string;
+  sessionId: string;
+  generation?: number;
+  chainLength?: number;
+  chainStatus?: string;
+  summaryDegraded?: boolean;
 }
 
 export interface ApiGroupInfo {
@@ -330,6 +348,10 @@ export interface ApiGroupInfo {
     backend?: BackendKind | string;
     status?: SessionStatus;
     context_usage?: ContextUsage | null;
+    generation?: number;
+    chain_length?: number;
+    chain_status?: string;
+    summary_degraded?: boolean;
   }>;
 }
 
@@ -348,6 +370,10 @@ export function toGroup(g: ApiGroupInfo): Group {
       backend: member.backend,
       status: member.status,
       contextUsage: member.context_usage ?? null,
+      generation: member.generation ?? 1,
+      chainLength: member.chain_length ?? 1,
+      chainStatus: member.chain_status ?? "active",
+      summaryDegraded: member.summary_degraded ?? false,
     })),
   };
 }
@@ -928,6 +954,64 @@ export const useSessionStore = create<SessionStore>((set) => ({
           agentId,
           sessionId,
           contextUsage,
+        };
+        const memberSessions =
+          index >= 0
+            ? [
+                ...current.slice(0, index),
+                nextMember,
+                ...current.slice(index + 1),
+              ]
+            : [...current, nextMember];
+        return { ...group, memberSessions };
+      }),
+    })),
+  applyGroupMemberSessionChain: (event) =>
+    set((s) => ({
+      groups: s.groups.map((group) => {
+        if (group.id !== event.groupId) return group;
+        const current = group.memberSessions || [];
+        const index = current.findIndex(
+          (item) => item.agentId === event.agentId,
+        );
+        const previous = index >= 0 ? current[index] : undefined;
+        const isSuccessor = event.eventType === "successor_created";
+        const lifecycleStatus: Record<string, string> = {
+          unknown: "unavailable",
+          warning: "warning",
+          sealing_started: "sealing",
+          summary_generated: "sealing",
+          summary_degraded: "degraded",
+          sealed: "sealed",
+          successor_created: event.chainStatus || "active",
+          bootstrap_consumed: "active",
+        };
+        let summaryDegraded = previous?.summaryDegraded ?? false;
+        if (
+          event.eventType === "sealing_started" ||
+          event.eventType === "summary_generated"
+        ) {
+          summaryDegraded = false;
+        } else if (event.eventType === "summary_degraded") {
+          summaryDegraded = true;
+        } else if (event.summaryDegraded !== undefined) {
+          summaryDegraded = event.summaryDegraded;
+        }
+        const nextMember: GroupMemberSession = {
+          ...previous,
+          agentId: event.agentId,
+          sessionId: isSuccessor
+            ? event.sessionId
+            : previous?.sessionId || event.sessionId,
+          generation: event.generation ?? previous?.generation,
+          chainLength: event.chainLength ?? previous?.chainLength,
+          chainStatus:
+            lifecycleStatus[event.eventType] ||
+            event.chainStatus ||
+            previous?.chainStatus,
+          chainEventType: event.eventType,
+          summaryDegraded,
+          contextUsage: isSuccessor ? null : previous?.contextUsage,
         };
         const memberSessions =
           index >= 0
