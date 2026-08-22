@@ -2,7 +2,7 @@
 schema_version: 1
 id: F003
 title: "Group Session Chain Handoff"
-stage: merge
+stage: acceptance
 state: active
 priority: P1
 owner: "codex"
@@ -208,6 +208,14 @@ retrieve exact prior evidence instead of guessing.
 - **Evidence-only commits after reviewed HEAD**: review packet and approval
   provenance only; no implementation changes
 
+## Merge Gate
+
+- **Base**: `1fb75b26370a2301c94f409d1d817c587d172cb3`
+- **Feature branch HEAD**: `1d8188be7ef1bc4f0599421e3db70049b0a2f134`
+- **Merged revision**: `e3d05178d768e01728e98bc6b9aa4c713bc7afb7`
+- **Verdict**: merged locally into `main`; proceed to independent Vision Gate
+- **Evidence**: `evidence/merge-evidence-e3d0517.md`
+
 ## Vision Gate
 
 - **Guardian**: pending independent guardian
@@ -241,3 +249,4 @@ retrieve exact prior evidence instead of guessing.
 | 2026-08-19 | Same reviewer approved prior P1 closure and found unusable invocation continuation plus generation-stale degraded UI state at `e4dc7d2` | `evidence/review-e4dc7d2.md` |
 | 2026-08-19 | Fixed usable continuation and durable per-generation degraded state at `e2c79de`; fresh full Quality Gate passed | `evidence/review-fixes-e2c79de.md`, `evidence/quality-report-e2c79de.md` |
 | 2026-08-22 | Same independent reviewer approved exact HEAD `169e695` with no P1/P2/P3 findings | `evidence/review-169e695.md` |
+| 2026-08-22 | Merge Gate merged branch HEAD `1d8188b` into `main` as `e3d0517`; post-merge regression and build passed | `evidence/merge-evidence-e3d0517.md` |
