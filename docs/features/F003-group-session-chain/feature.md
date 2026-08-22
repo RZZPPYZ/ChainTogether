@@ -2,7 +2,7 @@
 schema_version: 1
 id: F003
 title: "Group Session Chain Handoff"
-stage: implementation
+stage: review
 state: active
 priority: P1
 owner: "codex"
@@ -224,6 +224,16 @@ retrieve exact prior evidence instead of guessing.
   modified through the ordinary session surface
 - **Journey evidence**: `evidence/vision-verdict-e3d0517-changes.md`
 
+## Vision Correction Delivery
+
+- **Worktree**: `F:\RZP_program\my_project\ChainTogether\.worktrees\F003-sealed-immutability`
+- **Branch**: `codex/F003-sealed-immutability`
+- **Implementation commits**: `789ee0d`, `7f5b9ee`, `0849d17`
+- **Corrected implementation HEAD**: `0849d174027b85f3dff56a46a81f75d4cc191449`
+- **TDD evidence**: `evidence/tdd-sealed-immutability.md`
+- **Quality Gate**: pass — `evidence/quality-report-0849d17.md`
+- **Next gate**: independent correction review
+
 ## Risks and Open Questions
 
 | ID | Type | Item | Owner | Status |
@@ -252,3 +262,4 @@ retrieve exact prior evidence instead of guessing.
 | 2026-08-22 | Same independent reviewer approved exact HEAD `169e695` with no P1/P2/P3 findings | `evidence/review-169e695.md` |
 | 2026-08-22 | Merge Gate merged branch HEAD `1d8188b` into `main` as `e3d0517`; post-merge regression and build passed | `evidence/merge-evidence-e3d0517.md` |
 | 2026-08-22 | Independent Vision Gate required an implementation fix because a sealed predecessor could be unarchived and modified | `evidence/vision-verdict-e3d0517-changes.md` |
+| 2026-08-22 | Corrected unarchive, message-write and archive-UI behavior through three red-green cycles plus lint refactor; full Quality Gate passed at `0849d17` | `evidence/tdd-sealed-immutability.md`, `evidence/quality-report-0849d17.md` |
