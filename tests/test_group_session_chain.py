@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from fastapi import HTTPException
+
 from server.database import Database
 from server.group_session_chain import (
     ContextSealPolicy,
@@ -19,7 +21,8 @@ from server.harness.claude_code import build_oneshot_argv as build_claude_onesho
 from server.harness.codex import build_oneshot_argv as build_codex_oneshot
 from server.harness.profile import OneShotContext
 from server.models import GroupInfo
-from server.session_manager import Session, SessionManager
+from server.routers.sessions import unarchive_session as unarchive_session_route
+from server.session_manager import SealedSessionError, Session, SessionManager
 
 
 class ContextSealPolicyTests(unittest.TestCase):
@@ -570,6 +573,50 @@ class GroupSessionChainRuntimeTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError, "no longer active"):
                 await waiter
 
+    async def test_sealed_predecessor_cannot_be_unarchived_or_written(self) -> None:
+        successor_id = await self.service.maybe_rotate(
+            "group-1",
+            {"id": "agent-1", "name": "Builder", "backend": "codex"},
+            self.old.id,
+        )
+
+        archived = await self.manager.list_archived_sessions()
+        predecessor = next(row for row in archived if row["id"] == self.old.id)
+        self.assertTrue(predecessor["sealed"])
+
+        messages_before = await self.db.count_messages(self.old.id)
+        with self.assertRaisesRegex(ValueError, "sealed"):
+            await self.manager.unarchive_session(self.old.id)
+        self.assertNotIn(self.old.id, self.manager.sessions)
+        self.assertEqual(
+            await self.db.get_group_agent_session("group-1", "agent-1"),
+            successor_id,
+        )
+
+        # Defense in depth: even if a stale/corrupt object is reintroduced to
+        # the live map, turn execution must consult durable generation state
+        # before persisting a user message or spawning the harness.
+        self.manager.sessions[self.old.id] = self.old
+        stream = self.manager.send_message(self.old.id, "must remain immutable")
+        with patch(
+            "server.session_manager.get_harness",
+            side_effect=AssertionError("sealed predecessor reached the harness"),
+        ):
+            with self.assertRaisesRegex(ValueError, "sealed"):
+                await anext(stream)
+        self.manager.sessions.pop(self.old.id, None)
+        self.assertEqual(await self.db.count_messages(self.old.id), messages_before)
+
+        self.manager.sessions[self.old.id] = self.old
+        in_memory_count = self.old._message_count
+        with self.assertRaisesRegex(ValueError, "sealed"):
+            await self.manager.inject_message(
+                self.old.id, "assistant", "internal writes must also be rejected"
+            )
+        self.manager.sessions.pop(self.old.id, None)
+        self.assertEqual(self.old._message_count, in_memory_count)
+        self.assertEqual(await self.db.count_messages(self.old.id), messages_before)
+
     async def test_reconcile_completes_a_crash_left_in_sealing(self) -> None:
         claimed = await self.db.begin_group_session_seal(
             "group-1", "agent-1", self.old.id,
@@ -587,6 +634,23 @@ class GroupSessionChainRuntimeTests(unittest.IsolatedAsyncioTestCase):
             await self.db.get_group_agent_session("group-1", "agent-1"),
             repaired[0],
         )
+
+
+class SealedSessionRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unarchive_reports_a_stable_conflict_for_sealed_history(self) -> None:
+        with patch(
+            "server.routers.sessions.session_manager.unarchive_session",
+            new=AsyncMock(
+                side_effect=SealedSessionError(
+                    "Session sealed-1 is sealed and cannot be unarchived"
+                )
+            ),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await unarchive_session_route("sealed-1", "test-token")
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail["reason"], "session_sealed")
 
 
 if __name__ == "__main__":

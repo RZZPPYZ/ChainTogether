@@ -2944,6 +2944,11 @@ export interface components {
              */
             archived: boolean;
             /**
+             * Sealed
+             * @default false
+             */
+            sealed: boolean;
+            /**
              * Messages
              * @default []
              */
@@ -3020,6 +3025,11 @@ export interface components {
              * @default false
              */
             archived: boolean;
+            /**
+             * Sealed
+             * @default false
+             */
+            sealed: boolean;
         };
         /**
          * SessionStatus

@@ -1430,11 +1430,24 @@ export function ChatView({
 
       {isArchived ? (
         <div className="chat-archived-banner px-4 py-3 border-t border-border bg-muted/40 text-sm text-muted-foreground flex items-center justify-between gap-3 shrink-0">
-          <span>
-            This session is <strong className="text-foreground">archived</strong>{" "}
-            — viewing read-only history. Unarchive from the sidebar to
-            continue the conversation.
-          </span>
+          {activeSession?.sealed ? (
+            <span>
+              This session is{" "}
+              <strong className="text-foreground">
+                sealed Session Chain history
+              </strong>{" "}
+              — viewing immutable read-only evidence. Continue in the active
+              generation and use Session Chain recall there when exact history
+              is needed.
+            </span>
+          ) : (
+            <span>
+              This session is{" "}
+              <strong className="text-foreground">archived</strong>{" "}
+              — viewing read-only history. Unarchive from the sidebar to
+              continue the conversation.
+            </span>
+          )}
         </div>
       ) : (
         <div className="chat-input-bar px-4 py-1.5 bg-background shrink-0">

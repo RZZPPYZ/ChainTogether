@@ -36,7 +36,7 @@ from . import fork_helpers
 from .config import settings
 from .context_usage import normalize_context_usage
 from .crypto import decrypt, encrypt
-from .database import Database
+from .database import Database, SealedSessionWriteError
 from .oauth_errors import RefreshErrorCode
 from .oauth_providers import OAuthTokenSet, get_provider
 from .models import (
@@ -75,6 +75,10 @@ class ForkError(Exception):
         super().__init__(message)
         self.reason = reason
         self.status_code = status_code
+
+
+class SealedSessionError(ValueError):
+    """A sealed Group session generation was asked to become writable."""
 
 
 def resolve_working_dir(working_dir: str | None) -> str:
@@ -1408,6 +1412,8 @@ class SessionManager:
             if not row["archived"]:
                 continue
             count = await self.db.count_messages(row["id"])
+            generation = await self.db.get_group_session_generation(row["id"])
+            sealed = bool(generation and generation["status"] == "sealed")
             out.append(
                 {
                     "id": row["id"],
@@ -1425,6 +1431,7 @@ class SessionManager:
                     "parent_session_id": row.get("parent_session_id"),
                     "delegation_request": row.get("delegation_request"),
                     "archived": True,
+                    "sealed": sealed,
                     **fork_info_fields(
                         backend=row.get("backend") or "claude-code",
                         forked_from_session_id=row.get("forked_from_session_id"),
@@ -1452,6 +1459,7 @@ class SessionManager:
             return None
         messages_raw = await self.db.load_messages(session_id)
         messages = [MessageContent(**m) for m in messages_raw]
+        generation = await self.db.get_group_session_generation(session_id)
         return SessionDetail(
             id=match["id"],
             name=match["name"],
@@ -1475,6 +1483,7 @@ class SessionManager:
                 fork_revert_record=match.get("fork_revert_record"),
             ),
             archived=True,
+            sealed=bool(generation and generation["status"] == "sealed"),
             messages=messages,
             pending_queue=[],
             pending_questions=[],
@@ -1494,7 +1503,14 @@ class SessionManager:
         )
         if match is None:
             raise ValueError(f"Archived session {session_id} not found")
-        await self.db.update_session_field(session_id, archived=False)
+        revived = await self.db.unarchive_session_if_recoverable(session_id)
+        if not revived:
+            generation = await self.db.get_group_session_generation(session_id)
+            if generation and generation["status"] == "sealed":
+                raise SealedSessionError(
+                    f"Session {session_id} is sealed and cannot be unarchived"
+                )
+            raise ValueError(f"Archived session {session_id} not found")
         # Reload into the in-memory map so writes (sendMessage etc.)
         # immediately route to this session.
         session = Session(
@@ -1654,24 +1670,31 @@ class SessionManager:
         if not self.db:
             return None
         seq = session._message_count
+        try:
+            await self.db.append_message(
+                session_id=session.id,
+                seq=seq,
+                role=msg.role.value,
+                type=msg.type,
+                content=msg.content,
+                tool_name=msg.tool_name,
+                tool_input=msg.tool_input,
+                tool_use_id=msg.tool_use_id,
+                is_error=msg.is_error,
+                session_id_ref=msg.session_id,
+                cost=msg.cost,
+                attachments=(
+                    [a.model_dump() for a in msg.attachments]
+                    if msg.attachments
+                    else None
+                ),
+                git_head=git_head,
+                git_status_clean=git_status_clean,
+                agent_id=agent_id,
+            )
+        except SealedSessionWriteError as exc:
+            raise SealedSessionError(str(exc)) from exc
         session._message_count += 1
-        await self.db.append_message(
-            session_id=session.id,
-            seq=seq,
-            role=msg.role.value,
-            type=msg.type,
-            content=msg.content,
-            tool_name=msg.tool_name,
-            tool_input=msg.tool_input,
-            tool_use_id=msg.tool_use_id,
-            is_error=msg.is_error,
-            session_id_ref=msg.session_id,
-            cost=msg.cost,
-            attachments=[a.model_dump() for a in msg.attachments] if msg.attachments else None,
-            git_head=git_head,
-            git_status_clean=git_status_clean,
-            agent_id=agent_id,
-        )
         return seq
 
     async def inject_message(
@@ -1961,6 +1984,16 @@ class SessionManager:
             raise ValueError(f"Session {session_id} is no longer active")
 
         try:
+            generation = (
+                await self.db.get_group_session_generation(session_id)
+                if self.db is not None
+                else None
+            )
+            if generation and generation["status"] == "sealed":
+                raise SealedSessionError(
+                    f"Session {session_id} is sealed and cannot accept messages"
+                )
+
             # Resolve attachment ids → on-disk paths so the prompt can
             # cite absolute paths the agent's `Read` tool will open.
             # Missing files are dropped (with a logged warning) rather

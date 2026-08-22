@@ -402,6 +402,7 @@ export function handleWsMessage(data: Record<string, unknown>) {
           can_fork: prev?.can_fork ?? true,
           fork_is_full_copy: false,
           archived: false,
+          sealed: false,
         });
       }
       store.setSessions(next);
@@ -448,13 +449,11 @@ export function handleWsMessage(data: Record<string, unknown>) {
           // The detail endpoint is a SessionInfo superset (+ messages,
           // pending_queue, pending_questions, next_message_seq); strip the
           // detail-only fields so the list holds a clean SessionInfo.
-          const {
-            messages: _m,
-            pending_queue: _q,
-            pending_questions: _pq,
-            next_message_seq: _n,
-            ...info
-          } = detail;
+          const info = { ...detail };
+          delete info.messages;
+          delete info.pending_queue;
+          delete info.pending_questions;
+          delete info.next_message_seq;
           s.setSessions([...s.sessions, info]);
         })
         .catch(() => {});

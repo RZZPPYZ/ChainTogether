@@ -13,6 +13,10 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
+
+class SealedSessionWriteError(ValueError):
+    """A message insert targeted an immutable sealed generation."""
+
 # Built-in MCP servers attached to the Default Agent (and the default for
 # any newly-created agent). Kept here so the migration backfill and the
 # CREATE TABLE default stay in lock-step.
@@ -3262,12 +3266,16 @@ class Database:
             int(git_status_clean) if git_status_clean is not None else None
         )
 
-        await self._conn.execute(
+        cursor = await self._conn.execute(
             "INSERT INTO messages "
             "(session_id, seq, role, type, content, tool_name, tool_input, "
             "tool_use_id, is_error, session_id_ref, cost, attachments, "
             "git_head, git_status_clean, agent_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? "
+            "WHERE NOT EXISTS ("
+            "SELECT 1 FROM group_session_generations generation "
+            "WHERE generation.session_id = ? "
+            "AND generation.status = 'sealed')",
             (
                 session_id,
                 seq,
@@ -3284,8 +3292,13 @@ class Database:
                 git_head,
                 git_status_clean_int,
                 agent_id,
+                session_id,
             ),
         )
+        if cursor.rowcount != 1:
+            raise SealedSessionWriteError(
+                f"Session {session_id} is sealed and cannot accept messages"
+            )
         self._dirty = True
 
     async def load_messages(
@@ -4123,6 +4136,25 @@ class Database:
             values,
         )
         await self._conn.commit()
+
+    async def unarchive_session_if_recoverable(self, session_id: str) -> bool:
+        """Atomically revive an ordinary archive, never a sealed generation.
+
+        The generation predicate lives in the UPDATE itself so a caller cannot
+        pass a read-time status check and then revive a predecessor that was
+        sealed by a concurrent rotation.
+        """
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "UPDATE sessions SET archived = 0 "
+            "WHERE id = ? AND archived = 1 AND NOT EXISTS ("
+            "SELECT 1 FROM group_session_generations generation "
+            "WHERE generation.session_id = sessions.id "
+            "AND generation.status = 'sealed')",
+            (session_id,),
+        )
+        await self._conn.commit()
+        return cursor.rowcount == 1
 
     # --- Agents ---
 

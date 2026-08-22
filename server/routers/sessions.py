@@ -3,7 +3,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from ..auth import verify_token
 from ..harness import BackendForkNotSupported
 from ..models import CreateSessionRequest, DuplicateSessionRequest, ForkSessionRequest, ImportSessionRequest, MessageContent, PendingQuestionInfo, SessionDetail, SessionInfo, SessionStatus
-from ..session_manager import ForkError, fork_info_fields, session_manager
+from ..session_manager import (
+    ForkError,
+    SealedSessionError,
+    fork_info_fields,
+    session_manager,
+)
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
@@ -319,6 +324,11 @@ async def unarchive_session(session_id: str, _: str = Depends(verify_token)):
     """
     try:
         s = await session_manager.unarchive_session(session_id)
+    except SealedSessionError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={"reason": "session_sealed", "message": str(exc)},
+        )
     except ValueError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
     return _to_session_info(s)

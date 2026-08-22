@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { handleWsMessage } from "./useWebSocket";
-import { useSessionStore } from "../stores/sessionStore";
+import { useSessionStore, type SessionInfo } from "../stores/sessionStore";
 
 
 describe("group member session chain events", () => {
@@ -120,5 +120,33 @@ describe("group member session chain events", () => {
       chainEventType: "successor_created",
       summaryDegraded: false,
     });
+  });
+
+  it("marks an ordinary archive replacement as recoverable", () => {
+    useSessionStore.setState({
+      sessions: [
+        {
+          id: "old-session",
+          name: "Conversation",
+          working_dir: "C:/workspace",
+          credential_id: null,
+          agent_id: "agent-1",
+          origin: "user",
+          backend: "codex",
+          can_fork: true,
+        } as SessionInfo,
+      ],
+    });
+
+    handleWsMessage({
+      type: "session_archived",
+      old_session_id: "old-session",
+      new_session_id: "new-session",
+      name: "Conversation",
+    });
+
+    expect(
+      useSessionStore.getState().sessions.find((s) => s.id === "new-session"),
+    ).toMatchObject({ archived: false, sealed: false });
   });
 });

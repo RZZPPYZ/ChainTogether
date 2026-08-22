@@ -2,7 +2,7 @@
 schema_version: 1
 id: F003
 title: "Group Session Chain Handoff"
-stage: implementation
+stage: review
 state: active
 priority: P1
 owner: "codex"
@@ -224,6 +224,22 @@ retrieve exact prior evidence instead of guessing.
   modified through the ordinary session surface
 - **Journey evidence**: `evidence/vision-verdict-e3d0517-changes.md`
 
+## Vision Correction Delivery
+
+- **Worktree**: `F:\RZP_program\my_project\ChainTogether\.worktrees\F003-sealed-immutability`
+- **Branch**: `codex/F003-sealed-immutability`
+- **Implementation commits**: `789ee0d`, `7f5b9ee`, `0849d17`, `723c2c3`
+- **Corrected implementation HEAD**: `723c2c3`
+- **TDD evidence**: `evidence/tdd-sealed-immutability.md`
+- **Quality Gate**: pass — `evidence/quality-report-0849d17.md`
+- **Independent correction review**: `request_changes` at `7d81067` for one
+  P3 browsing-guidance defect — `evidence/review-7d81067.md`
+- **Review fix evidence**: `evidence/review-fixes-723c2c3.md`
+- **Same-reviewer re-review**: approved at exact HEAD
+  `723c2c3d24f182ebe21416fa0d53497a2c33df7c`, with no P1/P2/P3 findings —
+  `evidence/review-723c2c3-approved.md`
+- **Next gate**: Merge Gate
+
 ## Risks and Open Questions
 
 | ID | Type | Item | Owner | Status |
@@ -252,3 +268,7 @@ retrieve exact prior evidence instead of guessing.
 | 2026-08-22 | Same independent reviewer approved exact HEAD `169e695` with no P1/P2/P3 findings | `evidence/review-169e695.md` |
 | 2026-08-22 | Merge Gate merged branch HEAD `1d8188b` into `main` as `e3d0517`; post-merge regression and build passed | `evidence/merge-evidence-e3d0517.md` |
 | 2026-08-22 | Independent Vision Gate required an implementation fix because a sealed predecessor could be unarchived and modified | `evidence/vision-verdict-e3d0517-changes.md` |
+| 2026-08-22 | Corrected unarchive, message-write and archive-UI behavior through three red-green cycles plus lint refactor; full Quality Gate passed at `0849d17` | `evidence/tdd-sealed-immutability.md`, `evidence/quality-report-0849d17.md` |
+| 2026-08-22 | Independent correction review found no P1/P2 and one P3: sealed ChatView history advertised impossible Unarchive guidance | `evidence/review-7d81067.md` |
+| 2026-08-22 | Fixed the P3 with a real sealed/ordinary ChatView browse-state regression; frontend 36 tests, typecheck and build passed at `723c2c3` | `evidence/review-fixes-723c2c3.md` |
+| 2026-08-22 | Same independent reviewer approved exact corrected HEAD `723c2c3` with no P1/P2/P3 findings | `evidence/review-723c2c3-approved.md` |

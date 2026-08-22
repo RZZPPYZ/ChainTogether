@@ -132,6 +132,9 @@ class SessionInfo(BaseModel):
     # GETs by id, which always work). The `/archive` flow sets this;
     # `/unarchive` clears it.
     archived: bool = False
+    # A sealed Group session generation is durable historical evidence. It
+    # may be viewed read-only, but it can never re-enter the live session map.
+    sealed: bool = False
 
 
 class MessageRole(str, Enum):

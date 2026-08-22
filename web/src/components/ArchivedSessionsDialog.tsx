@@ -22,7 +22,8 @@ interface Props {
 
 /** Manage page for archived sessions, reached from the account menu. Lists
  * every archived session grouped by its owning agent (they no longer clutter
- * the sidebar). "View" opens it read-only; "Unarchive" brings it back live. */
+ * the sidebar). "View" opens it read-only; ordinary archives can be restored,
+ * while sealed Group generations remain immutable Session Chain evidence. */
 export function ArchivedSessionsDialog({ open, onOpenChange }: Props) {
   const token = useSessionStore((s) => s.token);
   const agents = useSessionStore((s) => s.agents);
@@ -129,8 +130,8 @@ export function ArchivedSessionsDialog({ open, onOpenChange }: Props) {
         <DialogHeader>
           <DialogTitle>Archived sessions</DialogTitle>
           <DialogDescription>
-            Sessions you've archived, grouped by agent. View one read-only, or
-            unarchive it to continue the conversation as a live session.
+            Sessions you've archived, grouped by agent. Sealed Group
+            generations stay read-only and are recalled through Session Chain.
           </DialogDescription>
         </DialogHeader>
 
@@ -172,14 +173,23 @@ export function ArchivedSessionsDialog({ open, onOpenChange }: Props) {
                         <IconEye size={13} />
                         View
                       </button>
-                      <button
-                        className="btn-archived-unarchive inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-primary hover:bg-primary/10"
-                        onClick={() => unarchive(s)}
-                        title="Unarchive — bring this session back as a live session"
-                      >
-                        <IconRestore size={13} />
-                        Unarchive
-                      </button>
+                      {s.sealed ? (
+                        <span
+                          className="archived-session-sealed rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground"
+                          title="Sealed generations are immutable and available through Session Chain"
+                        >
+                          Session Chain · sealed
+                        </span>
+                      ) : (
+                        <button
+                          className="btn-archived-unarchive inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-primary hover:bg-primary/10"
+                          onClick={() => unarchive(s)}
+                          title="Unarchive — bring this session back as a live session"
+                        >
+                          <IconRestore size={13} />
+                          Unarchive
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>
