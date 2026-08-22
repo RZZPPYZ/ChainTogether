@@ -228,11 +228,14 @@ retrieve exact prior evidence instead of guessing.
 
 - **Worktree**: `F:\RZP_program\my_project\ChainTogether\.worktrees\F003-sealed-immutability`
 - **Branch**: `codex/F003-sealed-immutability`
-- **Implementation commits**: `789ee0d`, `7f5b9ee`, `0849d17`
-- **Corrected implementation HEAD**: `0849d174027b85f3dff56a46a81f75d4cc191449`
+- **Implementation commits**: `789ee0d`, `7f5b9ee`, `0849d17`, `723c2c3`
+- **Corrected implementation HEAD**: `723c2c3`
 - **TDD evidence**: `evidence/tdd-sealed-immutability.md`
 - **Quality Gate**: pass — `evidence/quality-report-0849d17.md`
-- **Next gate**: independent correction review
+- **Independent correction review**: `request_changes` at `7d81067` for one
+  P3 browsing-guidance defect — `evidence/review-7d81067.md`
+- **Review fix evidence**: `evidence/review-fixes-723c2c3.md`
+- **Next gate**: same-reviewer re-review of exact HEAD `723c2c3`
 
 ## Risks and Open Questions
 
@@ -263,3 +266,5 @@ retrieve exact prior evidence instead of guessing.
 | 2026-08-22 | Merge Gate merged branch HEAD `1d8188b` into `main` as `e3d0517`; post-merge regression and build passed | `evidence/merge-evidence-e3d0517.md` |
 | 2026-08-22 | Independent Vision Gate required an implementation fix because a sealed predecessor could be unarchived and modified | `evidence/vision-verdict-e3d0517-changes.md` |
 | 2026-08-22 | Corrected unarchive, message-write and archive-UI behavior through three red-green cycles plus lint refactor; full Quality Gate passed at `0849d17` | `evidence/tdd-sealed-immutability.md`, `evidence/quality-report-0849d17.md` |
+| 2026-08-22 | Independent correction review found no P1/P2 and one P3: sealed ChatView history advertised impossible Unarchive guidance | `evidence/review-7d81067.md` |
+| 2026-08-22 | Fixed the P3 with a real sealed/ordinary ChatView browse-state regression; frontend 36 tests, typecheck and build passed at `723c2c3` | `evidence/review-fixes-723c2c3.md` |
