@@ -42,3 +42,22 @@ describe("MessageBubble turn tokens", () => {
     expect(screen.getByText("Done")).toBeTruthy();
   });
 });
+
+describe("MessageBubble tool activity", () => {
+  it("leaves tool messages to the activity trail component", () => {
+    const { container } = render(
+      <MessageBubble
+        sessionId="session-1"
+        message={{
+          role: "tool",
+          type: "tool_use",
+          tool_name: "Bash",
+          tool_input: { command: "ls" },
+          tool_use_id: "tool-1",
+        }}
+      />,
+    );
+
+    expect(container).toBeEmptyDOMElement();
+  });
+});

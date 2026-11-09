@@ -2,7 +2,6 @@ import { useState } from "react";
 import {
   IconChevronDown,
   IconChevronRight,
-  IconTool,
   IconFile,
   IconGitFork,
   IconRobot,
@@ -22,12 +21,10 @@ import {
   turnTokenCount,
   turnTokenTitle,
 } from "../lib/tokens";
-import { BgTaskChip } from "./BgTaskChip";
 import {
   AgentDelegationEventCard,
   parseDelegationEvent,
 } from "./AgentDelegationEventCard";
-import { AgentDelegationRequestCard } from "./AgentDelegationRequestCard";
 
 // Marker the backend prepends to the synthesized user message it
 // injects when a bg task completes. Used to render those messages
@@ -128,12 +125,7 @@ export function MessageBubble({
           typeof message.content === "string" &&
           message.content.startsWith(BG_TASK_RESULT_PREFIX);
         if (isBgResult) {
-          return (
-            <BgTaskResultMessage
-              content={message.content as string}
-              sessionId={sessionId}
-            />
-          );
+          return <BgTaskResultMessage content={message.content as string} />;
         }
         // Agent-to-agent delegation injection (reply / question /
         // error). The DelegationManager injects these as user-message
@@ -196,11 +188,11 @@ export function MessageBubble({
         </div>
       );
 
+    // Tool calls no longer render as standalone cards — ChatView folds them
+    // into ToolActivityGroup before they reach this component.
     case "tool_use":
-      return <ToolUseBlock message={message} sessionId={sessionId} />;
-
     case "tool_result":
-      return <ToolResultBlock message={message} />;
+      return null;
 
     case "tool_approval_request":
     case "question_request":
@@ -270,149 +262,7 @@ export function MessageBubble({
   }
 }
 
-function ToolUseBlock({
-  message,
-  sessionId,
-}: {
-  message: Message;
-  sessionId: string;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const inputStr = message.tool_input
-    ? JSON.stringify(message.tool_input, null, 2)
-    : "";
-  const preview = (() => {
-    const input = message.tool_input;
-    if (input && "command" in input) return String(input.command).slice(0, 80);
-    if (input && "file_path" in input) return String(input.file_path);
-    return null;
-  })();
-
-  // The bg MCP tool returns a task_id in its tool_result, but the
-  // tool_use itself doesn't carry it (the model generated the
-  // tool_use_id before knowing the bg task_id). We find the matching
-  // bg task by `bg_started` events stamped with the SAME tool's
-  // command text + most-recent-first. Simpler approach: the next
-  // tool_result message that follows this tool_use carries the
-  // started-at-task_id text. For now: render the chip whenever the
-  // tool is bg_run, and the chip itself fetches by id once we have
-  // it (via the followup tool_result text). We grab the task id from
-  // tool_input.__task_id if the backend injected it OR fall back to
-  // matching by command — the bg MCP server returns text like
-  // "Started bg task `<id>`" which the tool_result will contain.
-  const isBgRun = message.tool_name === "mcp__bg__run";
-  // Agent-to-agent delegation kick-off (agent-collaboration.md §6).
-  // The MCP tool's full name is `mcp__<config-key>__<tool-name>`; the
-  // ask_agent server is config-key `ask_agent` and exposes its start
-  // tool as `ask`, so this matches `mcp__ask_agent__ask`.
-  const isAskAgent = message.tool_name === "mcp__ask_agent__ask";
-  const askAgentInput = isAskAgent
-    ? (message.tool_input as
-        | { name?: unknown; request?: unknown; files?: unknown }
-        | undefined)
-    : undefined;
-  const askAgentName =
-    askAgentInput && typeof askAgentInput.name === "string"
-      ? askAgentInput.name
-      : "";
-  const askAgentRequest =
-    askAgentInput && typeof askAgentInput.request === "string"
-      ? askAgentInput.request
-      : "";
-  const askAgentFiles =
-    askAgentInput && Array.isArray(askAgentInput.files)
-      ? (askAgentInput.files as unknown[]).filter(
-          (f): f is string => typeof f === "string"
-        )
-      : undefined;
-
-  return (
-    <div className="space-y-1.5">
-      <div className="msg msg-tool rounded-lg border border-border bg-card overflow-hidden">
-        <button
-          type="button"
-          className="tool-header w-full flex items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent/50 transition-colors"
-          onClick={() => setExpanded(!expanded)}
-        >
-          <span className="tool-icon text-muted-foreground shrink-0">
-            {expanded ? <IconChevronDown size={14} /> : <IconChevronRight size={14} />}
-          </span>
-          <IconTool size={14} className="text-primary shrink-0" />
-          <span className="tool-name font-medium text-primary shrink-0">
-            {message.tool_name}
-          </span>
-          {preview && (
-            <code className="tool-preview truncate text-xs text-muted-foreground font-mono">
-              {preview}
-            </code>
-          )}
-        </button>
-        {expanded && (
-          <pre className="tool-detail border-t border-border bg-muted/40 px-4 py-2.5 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap break-words max-h-80 overflow-y-auto">
-            {inputStr}
-          </pre>
-        )}
-      </div>
-      {isBgRun && <BgChipForToolUse sessionId={sessionId} message={message} />}
-      {isAskAgent && askAgentName && askAgentRequest && (
-        <AgentDelegationRequestCard
-          sessionId={sessionId}
-          toolUseId={message.tool_use_id}
-          agentName={askAgentName}
-          request={askAgentRequest}
-          files={askAgentFiles}
-        />
-      )}
-    </div>
-  );
-}
-
-/**
- * Bridges a `mcp__bg__run` tool_use → the live BgTaskChip.
- *
- * The model's tool_use doesn't carry the task_id (we mint it
- * server-side). We pull the matching task out of the store by
- * looking for the most recent task whose `command` matches the
- * tool_use's input.command. The bg_started WS event populates the
- * store before this component mounts in normal flow; on snapshot
- * rehydration we still get a match because list_bg_tasks is fetched
- * on session load.
- */
-function BgChipForToolUse({
-  sessionId,
-  message,
-}: {
-  sessionId: string;
-  message: Message;
-}) {
-  const command =
-    message.tool_input && typeof message.tool_input.command === "string"
-      ? (message.tool_input.command as string)
-      : "";
-  const matchedId = useSessionStore((s) => {
-    const tasks = s.bgTasks[sessionId] || [];
-    const match = [...tasks]
-      .reverse()
-      .find((t) => t.command === command);
-    return match?.id ?? null;
-  });
-  if (!matchedId) {
-    return (
-      <div className="octo-bgtask-chip inline-flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground">
-        <span>Waiting for bg task to register…</span>
-      </div>
-    );
-  }
-  return <BgTaskChip sessionId={sessionId} taskId={matchedId} />;
-}
-
-function BgTaskResultMessage({
-  content,
-  sessionId: _sessionId,
-}: {
-  content: string;
-  sessionId: string;
-}) {
+function BgTaskResultMessage({ content }: { content: string }) {
   const [expanded, setExpanded] = useState(false);
   // Strip the marker for display — it's only a routing hint, not part
   // of the human-facing text.
@@ -450,57 +300,6 @@ function BgTaskResultMessage({
           </div>
         </button>
       </div>
-    </div>
-  );
-}
-
-function ToolResultBlock({ message }: { message: Message }) {
-  const [expanded, setExpanded] = useState(false);
-  const content = message.content || "";
-  const previewStr =
-    typeof content === "string" ? content.slice(0, 120) : String(content);
-  const errored = !!message.is_error;
-
-  return (
-    <div
-      className={`msg msg-tool-result rounded-lg border overflow-hidden ${
-        errored
-          ? "error border-destructive/50 bg-destructive/5"
-          : "border-border bg-card"
-      }`}
-    >
-      <button
-        type="button"
-        className="tool-header w-full flex items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent/50 transition-colors"
-        onClick={() => setExpanded(!expanded)}
-      >
-        <span className="tool-icon text-muted-foreground shrink-0">
-          {expanded ? <IconChevronDown size={14} /> : <IconChevronRight size={14} />}
-        </span>
-        <span
-          className={`tool-result-label text-xs font-semibold uppercase tracking-wider shrink-0 ${
-            errored ? "text-destructive" : "text-green-700"
-          }`}
-        >
-          {errored ? "Error" : "Result"}
-        </span>
-        {!expanded && (
-          <code className="tool-preview truncate text-xs text-muted-foreground font-mono">
-            {previewStr}
-          </code>
-        )}
-      </button>
-      {expanded && (
-        <pre
-          className={`tool-detail border-t px-4 py-2.5 text-xs font-mono whitespace-pre-wrap break-words max-h-80 overflow-y-auto ${
-            errored
-              ? "border-destructive/30 bg-destructive/5 text-destructive"
-              : "border-border bg-muted/40 text-foreground"
-          }`}
-        >
-          {content}
-        </pre>
-      )}
     </div>
   );
 }

@@ -33,12 +33,20 @@ export function messagePreview(
     : compact;
 }
 
+/**
+ * Build the navigator markers. `index` is the original message index unless a
+ * `toRenderIndex` mapper is supplied — the chat view renders grouped activity
+ * items, so it passes the "message index → render item index" map to keep
+ * jumps landing on the right row.
+ */
 export function buildUserMessageMarkers(
   messages: readonly Message[],
+  toRenderIndex?: (messageIndex: number) => number,
 ): MessageMarker[] {
+  const norm = toRenderIndex ?? ((index: number) => index);
   return messages.flatMap((message, index) =>
     isUserAuthoredMessage(message)
-      ? [{ index, preview: messagePreview(message.content) }]
+      ? [{ index: norm(index), preview: messagePreview(message.content) }]
       : [],
   );
 }

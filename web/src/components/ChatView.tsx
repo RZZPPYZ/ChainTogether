@@ -19,6 +19,7 @@ import { ForkDialog } from "./ForkDialog";
 import { ResearchCard } from "./ResearchCard";
 import { MessageBubble } from "./MessageBubble";
 import { QuestionPrompt, type AnswerPayload } from "./QuestionPrompt";
+import { ToolActivityGroup } from "./ToolActivityGroup";
 import { ToolApproval } from "./ToolApproval";
 import {
   SlashCommandMenu,
@@ -30,6 +31,10 @@ import { Button } from "./ui/button";
 import { isSessionBusy } from "../lib/deferredFork";
 import { MessageNavigator } from "./MessageNavigator";
 import { buildUserMessageMarkers } from "../lib/messageNavigation";
+import {
+  buildChatRenderItems,
+  type ChatRenderItem,
+} from "../lib/toolActivity";
 import {
   contextUsageTitle,
   contextUsageTone,
@@ -185,9 +190,20 @@ export function ChatView({
     startIndex: 0,
     endIndex: 0,
   });
-  const userMessageMarkers = useMemo(
-    () => buildUserMessageMarkers(messages),
+  // Fold consecutive tool calls into quiet activity groups at render time
+  // only — the store keeps the raw message list so /rewind (seq-based) and
+  // the WS snapshot contract are unaffected.
+  const chatRender = useMemo(
+    () => buildChatRenderItems(messages),
     [messages],
+  );
+  const userMessageMarkers = useMemo(
+    () =>
+      buildUserMessageMarkers(
+        messages,
+        (messageIndex) => chatRender.messageToItemIndex[messageIndex] ?? messageIndex,
+      ),
+    [messages, chatRender],
   );
   const activeUserMessageIndex = useMemo(() => {
     if (userMessageMarkers.length === 0) return null;
@@ -241,7 +257,7 @@ export function ChatView({
   }, [messages, isRunning, activeSession?.status]);
 
   const renderMessage = useCallback(
-    (_index: number, msg: Message) => {
+    (msg: Message) => {
       if (msg.type === "tool_approval_request") {
         return (
           <ToolApproval
@@ -309,6 +325,24 @@ export function ChatView({
       activeAgent?.avatar,
       agentLabel,
     ]
+  );
+
+  const renderChatItem = useCallback(
+    (_index: number, item: ChatRenderItem) => {
+      if (item.kind === "activity") {
+        return (
+          <ToolActivityGroup
+            key={item.id}
+            steps={item.steps}
+            sessionId={activeSessionId ?? ""}
+            turnEnded={item.turnEnded}
+            sessionRunning={!!isRunning}
+          />
+        );
+      }
+      return renderMessage(item.message);
+    },
+    [activeSessionId, isRunning, renderMessage]
   );
 
   // ---- attachments: upload, paste, drop, picker, chips ------------------
@@ -1374,17 +1408,22 @@ export function ChatView({
         <Virtuoso
           ref={virtuosoRef}
           className="chat-messages h-full min-h-0"
-          data={messages}
-          itemContent={renderMessage}
-          initialTopMostItemIndex={messages.length ? messages.length - 1 : 0}
-          followOutput="smooth"
+          data={chatRender.items}
+          itemContent={renderChatItem}
+          computeItemKey={(_index, item) => item.id}
+          initialTopMostItemIndex={
+            chatRender.items.length ? chatRender.items.length - 1 : 0
+          }
+          // Never steal the viewport from someone reading history: only
+          // auto-follow while they are already pinned to the bottom.
+          followOutput={(isAtBottom) => (isAtBottom ? "smooth" : false)}
           increaseViewportBy={{ top: 400, bottom: 400 }}
           components={{ Footer: footer }}
           rangeChanged={(range) => setVisibleRange(range)}
         />
         <MessageNavigator
           markers={userMessageMarkers}
-          totalItems={messages.length}
+          totalItems={chatRender.items.length}
           activeIndex={activeUserMessageIndex}
           onNavigate={(index) =>
             virtuosoRef.current?.scrollToIndex({

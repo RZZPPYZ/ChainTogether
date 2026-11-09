@@ -43,6 +43,22 @@ describe("user message markers", () => {
     ]);
     expect(messagePreview("", 20)).toBe("Message with attachments");
   });
+
+  it("maps original message indices onto grouped render item indices", () => {
+    const messages: Message[] = [
+      { role: "user", type: "text", content: "First" },
+      { role: "assistant", type: "tool_result", tool_use_id: "a", content: "ok" },
+      { role: "assistant", type: "tool_result", tool_use_id: "b", content: "ok" },
+      { role: "user", type: "text", content: "Second" },
+    ];
+
+    expect(
+      buildUserMessageMarkers(messages, (index) => (index === 0 ? 0 : 2)),
+    ).toEqual([
+      { index: 0, preview: "First" },
+      { index: 2, preview: "Second" },
+    ]);
+  });
 });
 
 describe("MessageNavigator", () => {

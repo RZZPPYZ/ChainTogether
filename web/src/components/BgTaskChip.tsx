@@ -1,7 +1,8 @@
 /**
  * Live status chip for a cross-turn background task.
  *
- * Rendered inside ToolUseBlock when the tool is `mcp__bg__run`. The
+ * Rendered inside ToolStepRow (activity trail) when the tool is
+ * `mcp__bg__run`. The
  * tool_use itself shows the model's request (command + description);
  * the chip shows the LIVE state (running spinner, completed/failed
  * badge, exit code, last-line output preview) and exposes a Cancel
