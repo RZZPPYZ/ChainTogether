@@ -17,7 +17,11 @@ import {
   type AttachmentMetadata,
   type Message,
 } from "../stores/sessionStore";
-import { exactTurnCostTitle, formatTurnCost } from "../lib/cost";
+import {
+  formatTokenCount,
+  turnTokenCount,
+  turnTokenTitle,
+} from "../lib/tokens";
 import { BgTaskChip } from "./BgTaskChip";
 import {
   AgentDelegationEventCard,
@@ -217,18 +221,15 @@ export function MessageBubble({
       );
 
     case "result": {
-      const costLabel = formatTurnCost(message.cost);
+      const usage = message.context_usage;
+      const tokenLabel = formatTokenCount(turnTokenCount(usage));
       return (
         <div className="msg msg-system flex justify-center py-1">
           <span
             className="result-badge text-[11px] font-medium text-muted-foreground bg-muted px-2.5 py-1 rounded-full"
-            title={
-              message.cost != null
-                ? exactTurnCostTitle(message.cost)
-                : undefined
-            }
+            title={turnTokenTitle(usage)}
           >
-            Done{costLabel ? ` · Cost ${costLabel}` : ""}
+            Done{tokenLabel ? ` · ${tokenLabel} tokens` : ""}
           </span>
         </div>
       );

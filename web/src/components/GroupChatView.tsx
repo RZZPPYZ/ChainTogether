@@ -27,7 +27,11 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
-import { exactTurnCostTitle, formatTurnCost } from "../lib/cost";
+import {
+  formatTokenCount,
+  turnTokenCount,
+  turnTokenTitle,
+} from "../lib/tokens";
 import {
   useSessionStore,
   reduceGroupAgentRun,
@@ -541,7 +545,7 @@ export function GroupAgentRunBlock({
               ? "Writing response"
               : "Waiting for CLI activity";
   const toolCount = run.blocks.filter((block) => block.kind === "tool").length;
-  const costLabel = formatTurnCost(run.cost);
+  const tokenLabel = formatTokenCount(turnTokenCount(run.contextUsage));
   const responseBlock = run.blocks.find((block) => block.kind === "response");
   const responseText =
     finalText ||
@@ -585,12 +589,12 @@ export function GroupAgentRunBlock({
                 : ""}
             </div>
           </div>
-          {costLabel && run.cost != null && (
+          {tokenLabel && (
             <span
               className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground"
-              title={exactTurnCostTitle(run.cost)}
+              title={turnTokenTitle(run.contextUsage)}
             >
-              Cost {costLabel}
+              {tokenLabel} tokens
             </span>
           )}
           <ContextUsageBadge usage={run.contextUsage} />

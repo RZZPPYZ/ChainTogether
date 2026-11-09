@@ -78,6 +78,10 @@ class ContextUsageInfo(BaseModel):
     cached_input_tokens: int | None = None
     cache_creation_input_tokens: int | None = None
     total_tokens: int | None = None
+    # Tokens consumed by the turn that reported this usage (summed over
+    # every API request, cache reads included). Drives the "Done · N
+    # tokens" badge — `total_tokens` tracks context size, not spend.
+    turn_tokens: int | None = None
     context_window: int | None = None
     remaining_tokens: int | None = None
     remaining_ratio: float | None = None

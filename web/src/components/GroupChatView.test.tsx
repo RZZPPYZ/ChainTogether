@@ -168,6 +168,7 @@ describe("group execution timeline", () => {
           input_tokens: 90000,
           output_tokens: 10000,
           total_tokens: 100000,
+          turn_tokens: 100000,
           context_window: 400000,
           remaining_tokens: 300000,
           remaining_ratio: 0.75,
@@ -217,6 +218,7 @@ describe("group execution timeline", () => {
           input_tokens: 90000,
           output_tokens: 10000,
           total_tokens: 100000,
+          turn_tokens: 100000,
           context_window: 400000,
           remaining_tokens: 300000,
           remaining_ratio: 0.75,
@@ -237,7 +239,7 @@ describe("group execution timeline", () => {
     );
 
     expect(screen.getByText("All checks passed.")).toBeTruthy();
-    expect(screen.getByText("Cost ≈1.0¢")).toBeTruthy();
+    expect(screen.getByText("100k tokens")).toBeTruthy();
     expect(screen.getByText("75% ctx")).toBeTruthy();
     expect(screen.queryByText("npm test")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Expand execution details" }));

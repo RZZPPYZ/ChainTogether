@@ -4,6 +4,9 @@ export interface ContextUsage {
   cached_input_tokens?: number | null;
   cache_creation_input_tokens?: number | null;
   total_tokens?: number | null;
+  // Tokens consumed by the reporting turn (cache reads included); the
+  // "Done · N tokens" badge reads this — `total_tokens` is context size.
+  turn_tokens?: number | null;
   context_window?: number | null;
   remaining_tokens?: number | null;
   remaining_ratio?: number | null;

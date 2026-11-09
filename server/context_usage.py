@@ -81,6 +81,27 @@ def normalize_context_usage(
         if parts:
             total_tokens = sum(parts)
 
+    # Tokens consumed by this turn (summed over every API request the CLI
+    # made), used by the UI to replace the old per-turn USD readout.
+    # Claude reports uncached input separately from cache reads/writes, so
+    # the cache counters must be added; Codex's `input_tokens` already
+    # includes `cached_input_tokens` (OpenAI usage semantics), so adding
+    # them would double-count.
+    if backend == "claude-code":
+        turn_parts = (
+            input_tokens,
+            cached_input_tokens,
+            cache_creation_input_tokens,
+            output_tokens,
+        )
+    else:
+        turn_parts = (input_tokens, output_tokens)
+    turn_tokens: int | None
+    if any(value is not None for value in turn_parts):
+        turn_tokens = sum(value or 0 for value in turn_parts)
+    else:
+        turn_tokens = total_tokens
+
     reported_window = _pick_int(
         usage,
         "context_window",
@@ -132,6 +153,7 @@ def normalize_context_usage(
         ("cached_input_tokens", cached_input_tokens),
         ("cache_creation_input_tokens", cache_creation_input_tokens),
         ("total_tokens", total_tokens),
+        ("turn_tokens", turn_tokens),
         ("context_window", context_window),
         ("remaining_tokens", remaining_tokens),
         ("remaining_ratio", remaining_ratio),

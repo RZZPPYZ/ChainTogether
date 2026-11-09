@@ -1683,6 +1683,11 @@ class SessionManager:
                 is_error=msg.is_error,
                 session_id_ref=msg.session_id,
                 cost=msg.cost,
+                context_usage=(
+                    msg.context_usage.model_dump(exclude_none=True)
+                    if msg.context_usage is not None
+                    else None
+                ),
                 attachments=(
                     [a.model_dump() for a in msg.attachments]
                     if msg.attachments

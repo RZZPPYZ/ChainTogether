@@ -144,6 +144,7 @@ CREATE TABLE IF NOT EXISTS messages (
     is_error INTEGER,
     session_id_ref TEXT,
     cost REAL,
+    context_usage TEXT,                     -- JSON ContextUsageInfo (result rows), null otherwise
     attachments TEXT,                       -- JSON list[AttachmentMetadata], null when none
     -- Per-turn git anchor captured when a user message row is written
     -- (session-rewind.md §4 + §5.6.3). Powers the safe-revert preflight.
@@ -738,6 +739,14 @@ class Database:
             )
         except Exception:
             pass
+
+        # messages.context_usage keeps the per-turn usage snapshot on result
+        # rows so the "Done · N tokens" badge survives a reload (the WS
+        # event alone is ephemeral). Additive; NULL on pre-existing rows.
+        if not await self._has_column("messages", "context_usage"):
+            await self._conn.execute(
+                "ALTER TABLE messages ADD COLUMN context_usage TEXT"
+            )
 
         # sessions.backend ('claude-code' | 'codex') — codex-backend.md §4.1.
         # DEFAULT backfills existing rows to claude-code → no behavior change.
@@ -3250,6 +3259,7 @@ class Database:
         is_error: bool | None = None,
         session_id_ref: str | None = None,
         cost: float | None = None,
+        context_usage: dict[str, Any] | None = None,
         attachments: list[dict[str, Any]] | None = None,
         git_head: str | None = None,
         git_status_clean: bool | None = None,
@@ -3259,6 +3269,9 @@ class Database:
         content_str = json.dumps(content) if content is not None else None
         tool_input_str = json.dumps(tool_input) if tool_input is not None else None
         is_error_int = int(is_error) if is_error is not None else None
+        context_usage_str = (
+            json.dumps(context_usage) if context_usage else None
+        )
         attachments_str = (
             json.dumps(attachments) if attachments else None
         )
@@ -3269,9 +3282,9 @@ class Database:
         cursor = await self._conn.execute(
             "INSERT INTO messages "
             "(session_id, seq, role, type, content, tool_name, tool_input, "
-            "tool_use_id, is_error, session_id_ref, cost, attachments, "
-            "git_head, git_status_clean, agent_id) "
-            "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? "
+            "tool_use_id, is_error, session_id_ref, cost, context_usage, "
+            "attachments, git_head, git_status_clean, agent_id) "
+            "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? "
             "WHERE NOT EXISTS ("
             "SELECT 1 FROM group_session_generations generation "
             "WHERE generation.session_id = ? "
@@ -3288,6 +3301,7 @@ class Database:
                 is_error_int,
                 session_id_ref,
                 cost,
+                context_usage_str,
                 attachments_str,
                 git_head,
                 git_status_clean_int,
@@ -3309,7 +3323,7 @@ class Database:
         query = (
             "SELECT seq, role, type, content, tool_name, tool_input, tool_use_id, "
             "is_error, session_id_ref, cost, attachments, git_head, "
-            "git_status_clean, agent_id "
+            "git_status_clean, agent_id, context_usage "
             "FROM messages WHERE session_id = ? ORDER BY seq"
         )
         params: list = [session_id]
@@ -3326,6 +3340,7 @@ class Database:
             attachments = json.loads(row[10]) if row[10] is not None else []
             git_status_clean = bool(row[12]) if row[12] is not None else None
             agent_id = row[13]
+            context_usage = json.loads(row[14]) if row[14] is not None else None
             results.append(
                 {
                     "seq": row[0],
@@ -3338,6 +3353,7 @@ class Database:
                     "is_error": is_error,
                     "session_id": row[8],
                     "cost": row[9],
+                    "context_usage": context_usage,
                     "attachments": attachments,
                     "git_head": row[11],
                     "git_status_clean": git_status_clean,

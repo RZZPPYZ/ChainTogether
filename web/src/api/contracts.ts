@@ -2137,6 +2137,8 @@ export interface components {
             cache_creation_input_tokens?: number | null;
             /** Total Tokens */
             total_tokens?: number | null;
+            /** Turn Tokens */
+            turn_tokens?: number | null;
             /** Context Window */
             context_window?: number | null;
             /** Remaining Tokens */

@@ -25,6 +25,44 @@ class ContextUsageTests(unittest.TestCase):
         self.assertEqual(usage["model"], "gpt-5-codex")
         self.assertEqual(usage["source"], "estimated")
 
+    def test_claude_turn_tokens_include_cache_reads_and_writes(self) -> None:
+        usage = normalize_context_usage(
+            backend="claude-code",
+            model="claude-sonnet-4-5",
+            raw={
+                "usage": {
+                    "input_tokens": 250,
+                    "cache_read_input_tokens": 24832,
+                    "cache_creation_input_tokens": 100,
+                    "output_tokens": 2,
+                }
+            },
+        )
+
+        self.assertIsNotNone(usage)
+        assert usage is not None
+        self.assertEqual(usage["turn_tokens"], 25184)
+        # Context size keeps its existing semantics (input + output here).
+        self.assertEqual(usage["total_tokens"], 252)
+
+    def test_codex_turn_tokens_do_not_double_count_cached_input(self) -> None:
+        usage = normalize_context_usage(
+            backend="codex",
+            model="gpt-5-codex",
+            raw={
+                "usage": {
+                    "input_tokens": 90000,
+                    "cached_input_tokens": 20000,
+                    "output_tokens": 10000,
+                }
+            },
+        )
+
+        self.assertIsNotNone(usage)
+        assert usage is not None
+        # Codex's input_tokens already includes cached input.
+        self.assertEqual(usage["turn_tokens"], 100000)
+
     def test_reported_remaining_context_wins_over_estimate(self) -> None:
         usage = normalize_context_usage(
             backend="claude-code",
