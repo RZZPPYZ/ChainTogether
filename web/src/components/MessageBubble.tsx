@@ -1,5 +1,6 @@
 import { useState } from "react";
 import {
+  IconBulb,
   IconChevronDown,
   IconChevronRight,
   IconFile,
@@ -119,6 +120,15 @@ export function MessageBubble({
   // back to the default octopus when an agent exists but set no avatar.
   const assistantAvatar = agentName ? agentAvatar || "🐙" : null;
   switch (message.type) {
+    // Provider-supplied reasoning (Claude thinking blocks / Codex reasoning
+    // summaries). Collapsed by default so long traces don't flood the
+    // transcript; the user can expand each block.
+    case "thinking": {
+      const content = message.content || "";
+      if (!content.trim()) return null;
+      return <ThinkingBlock content={content} />;
+    }
+
     case "text":
       if (message.role === "user") {
         const isBgResult =
@@ -260,6 +270,42 @@ export function MessageBubble({
     default:
       return null;
   }
+}
+
+function ThinkingBlock({ content }: { content: string }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="msg msg-thinking overflow-hidden rounded-lg border border-dashed border-border bg-muted/20">
+      <button
+        type="button"
+        className="thinking-toggle flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted/40"
+        onClick={() => setExpanded((value) => !value)}
+        aria-expanded={expanded}
+        title={expanded ? "Hide thinking" : "Show thinking"}
+      >
+        {expanded ? (
+          <IconChevronDown size={12} />
+        ) : (
+          <IconChevronRight size={12} />
+        )}
+        <IconBulb size={12} />
+        <span>Thinking</span>
+        <span className="ml-auto text-[10px] font-normal tabular-nums text-muted-foreground/60">
+          {content.length.toLocaleString()} chars
+        </span>
+      </button>
+      {expanded && (
+        <div className="thinking-content markdown border-t border-dashed border-border/60 px-3 py-2 text-muted-foreground">
+          <Markdown
+            remarkPlugins={[remarkGfm, remarkMath]}
+            rehypePlugins={[rehypeKatex]}
+          >
+            {content}
+          </Markdown>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function BgTaskResultMessage({ content }: { content: string }) {

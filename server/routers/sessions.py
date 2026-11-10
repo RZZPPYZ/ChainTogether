@@ -37,6 +37,8 @@ def _to_session_info(
         claude_session_id=s.claude_session_id,
         credential_id=s.credential_id,
         agent_id=s.agent_id,
+        folder_id=s.folder_id,
+        sort_order=s.sort_order,
         origin=s.origin,
         backend=s.backend,
         context_usage=s.context_usage,
@@ -52,7 +54,13 @@ async def list_sessions(
     include_archived: bool = Query(False),
     _: str = Depends(verify_token),
 ):
-    live = [_to_session_info(s) for s in session_manager.list_sessions()]
+    live = [
+        _to_session_info(s)
+        for s in sorted(
+            session_manager.list_sessions(),
+            key=lambda s: (s.sort_order, s.created_at),
+        )
+    ]
     if not include_archived:
         return live
     archived = await session_manager.list_archived_sessions()
@@ -102,6 +110,7 @@ async def create_session(
             req.working_dir,
             credential_id=req.credential_id,
             backend=backend,
+            folder_id=req.folder_id,
         )
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
@@ -137,6 +146,8 @@ async def import_session(
         claude_session_id=s.claude_session_id,
         credential_id=s.credential_id,
         agent_id=s.agent_id,
+        folder_id=s.folder_id,
+        sort_order=s.sort_order,
         origin=s.origin,
         backend=s.backend,
         context_usage=s.context_usage,
@@ -174,6 +185,8 @@ async def get_session(session_id: str, _: str = Depends(verify_token)):
             claude_session_id=s.claude_session_id,
             credential_id=s.credential_id,
             agent_id=s.agent_id,
+            folder_id=s.folder_id,
+            sort_order=s.sort_order,
             origin=s.origin,
             backend=s.backend,
             context_usage=s.context_usage,

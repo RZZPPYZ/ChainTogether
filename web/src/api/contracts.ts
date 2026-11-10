@@ -80,6 +80,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agents/{agent_id}/sessions/order": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Reorder Agent Sessions
+         * @description Persist a drag-and-drop order for one sidebar group.
+         *
+         *     `folder_id` null means the agent's top-level sessions; otherwise the
+         *     listed sessions must all belong to that same folder. The request must
+         *     name the complete desired sequence; positions are rewritten to 0..N-1.
+         */
+        put: operations["reorder_agent_sessions_api_agents__agent_id__sessions_order_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents/{agent_id}/schedules": {
         parameters: {
             query?: never;
@@ -221,6 +245,46 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Session Folders */
+        get: operations["list_session_folders_api_agents__agent_id__folders_get"];
+        put?: never;
+        /** Create Session Folder */
+        post: operations["create_session_folder_api_agents__agent_id__folders_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/folders/{folder_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Session Folder
+         * @description Remove the folder only. Its sessions survive at the agent's top level;
+         *     the FK (ON DELETE SET NULL) detaches them and they keep their path.
+         */
+        delete: operations["delete_session_folder_api_folders__folder_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Session Folder */
+        patch: operations["update_session_folder_api_folders__folder_id__patch"];
         trace?: never;
     };
     "/api/sessions": {
@@ -2204,12 +2268,21 @@ export interface components {
             /** Session Id */
             session_id?: string | null;
         };
+        /** CreateSessionFolderRequest */
+        CreateSessionFolderRequest: {
+            /** Name */
+            name: string;
+            /** Working Dir */
+            working_dir: string;
+        };
         /** CreateSessionRequest */
         CreateSessionRequest: {
             /** Name */
             name?: string | null;
             /** Working Dir */
             working_dir?: string | null;
+            /** Folder Id */
+            folder_id?: string | null;
             /** Credential Id */
             credential_id?: string | null;
             /** Agent Id */
@@ -2844,6 +2917,20 @@ export interface components {
             resources: components["schemas"]["PersonaResourceInfo"][];
         };
         /**
+         * ReorderSessionsRequest
+         * @description Body for `PUT /api/agents/{agent_id}/sessions/order`.
+         *
+         *     `session_ids` is the complete desired order for one sidebar group
+         *     (top-level when `folder_id` is null, otherwise that folder). Every id
+         *     must be a live session owned by the same agent and in the same folder.
+         */
+        ReorderSessionsRequest: {
+            /** Folder Id */
+            folder_id?: string | null;
+            /** Session Ids */
+            session_ids: string[];
+        };
+        /**
          * ScheduleFromTextRequest
          * @description Natural-language schedule: `text` is parsed (rigid fast-path, else AI)
          *     into a recurrence + prompt. `timezone` is the user's IANA tz (browser-
@@ -2911,6 +2998,13 @@ export interface components {
             credential_id?: string | null;
             /** Agent Id */
             agent_id?: string | null;
+            /** Folder Id */
+            folder_id?: string | null;
+            /**
+             * Sort Order
+             * @default 0
+             */
+            sort_order: number;
             /**
              * Origin
              * @default user
@@ -2971,6 +3065,26 @@ export interface components {
              */
             next_message_seq: number;
         };
+        /** SessionFolderInfo */
+        SessionFolderInfo: {
+            /** Id */
+            id: string;
+            /** Agent Id */
+            agent_id: string;
+            /** Name */
+            name: string;
+            /** Working Dir */
+            working_dir: string;
+            /**
+             * Session Count
+             * @default 0
+             */
+            session_count: number;
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+        };
         /** SessionInfo */
         SessionInfo: {
             /** Id */
@@ -2993,6 +3107,13 @@ export interface components {
             credential_id?: string | null;
             /** Agent Id */
             agent_id?: string | null;
+            /** Folder Id */
+            folder_id?: string | null;
+            /**
+             * Sort Order
+             * @default 0
+             */
+            sort_order: number;
             /**
              * Origin
              * @default user
@@ -3128,6 +3249,13 @@ export interface components {
             interval_seconds?: number | null;
             /** Enabled */
             enabled?: boolean | null;
+        };
+        /** UpdateSessionFolderRequest */
+        UpdateSessionFolderRequest: {
+            /** Name */
+            name?: string | null;
+            /** Working Dir */
+            working_dir?: string | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -3407,6 +3535,39 @@ export interface operations {
             };
         };
     };
+    reorder_agent_sessions_api_agents__agent_id__sessions_order_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReorderSessionsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_agent_schedules_api_agents__agent_id__schedules_get: {
         parameters: {
             query?: never;
@@ -3674,6 +3835,136 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PersonaResourceContent"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_session_folders_api_agents__agent_id__folders_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionFolderInfo"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_session_folder_api_agents__agent_id__folders_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSessionFolderRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionFolderInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_session_folder_api_folders__folder_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                folder_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_session_folder_api_folders__folder_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                folder_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateSessionFolderRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionFolderInfo"];
                 };
             };
             /** @description Validation Error */

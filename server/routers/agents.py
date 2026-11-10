@@ -10,6 +10,7 @@ from ..models import (
     AgentUpdate,
     CreateScheduleRequest,
     CreateSessionRequest,
+    ReorderSessionsRequest,
     ScheduleFromTextRequest,
     ScheduleInfo,
     SessionInfo,
@@ -106,7 +107,10 @@ async def list_agent_sessions(agent_id: str, _: str = Depends(verify_token)):
 
     return [
         _to_session_info(s)
-        for s in session_manager.list_sessions()
+        for s in sorted(
+            session_manager.list_sessions(),
+            key=lambda s: (s.sort_order, s.created_at),
+        )
         if s.agent_id == agent_id
     ]
 
@@ -138,10 +142,65 @@ async def create_agent_session(
             req.working_dir,
             credential_id=req.credential_id,
             backend=backend,
+            folder_id=req.folder_id,
         )
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     return _to_session_info(s, message_count=0)
+
+
+@router.put(
+    "/{agent_id}/sessions/order", status_code=status.HTTP_204_NO_CONTENT
+)
+async def reorder_agent_sessions(
+    agent_id: str,
+    req: ReorderSessionsRequest,
+    _: str = Depends(verify_token),
+):
+    """Persist a drag-and-drop order for one sidebar group.
+
+    `folder_id` null means the agent's top-level sessions; otherwise the
+    listed sessions must all belong to that same folder. The request must
+    name the complete desired sequence; positions are rewritten to 0..N-1.
+    """
+    if await _get_manager().get_agent(agent_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
+
+    if req.folder_id is not None:
+        folder = (
+            await session_manager.db.get_session_folder(req.folder_id)
+            if session_manager.db
+            else None
+        )
+        if folder is None or folder["agent_id"] != agent_id:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "Folder does not belong to this agent",
+            )
+
+    if len(set(req.session_ids)) != len(req.session_ids):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "Duplicate session ids"
+        )
+    for session_id in req.session_ids:
+        session = session_manager.get_session(session_id)
+        if session is None:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Session {session_id} is not live",
+            )
+        if session.agent_id != agent_id:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Session {session_id} belongs to a different agent",
+            )
+        if (session.folder_id or None) != (req.folder_id or None):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Session {session_id} is in a different folder",
+            )
+
+    await session_manager.reorder_sessions(req.session_ids)
 
 
 @router.get("/{agent_id}/schedules", response_model=list[ScheduleInfo])

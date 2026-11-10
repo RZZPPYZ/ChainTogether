@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { MessageBubble } from "./MessageBubble";
@@ -40,6 +40,38 @@ describe("MessageBubble turn tokens", () => {
     );
 
     expect(screen.getByText("Done")).toBeTruthy();
+  });
+});
+
+describe("MessageBubble thinking", () => {
+  it("shows a collapsed thinking block and expands it on click", () => {
+    render(
+      <MessageBubble
+        sessionId="session-1"
+        message={{
+          role: "assistant",
+          type: "thinking",
+          content: "Step one: inspect the caller.",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Thinking")).toBeTruthy();
+    expect(screen.queryByText(/Step one/)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Thinking/ }));
+
+    expect(screen.getByText(/Step one/)).toBeTruthy();
+  });
+
+  it("renders nothing for a blank thinking block", () => {
+    const { container } = render(
+      <MessageBubble
+        sessionId="session-1"
+        message={{ role: "assistant", type: "thinking", content: "  " }}
+      />,
+    );
+    expect(container.firstChild).toBeNull();
   });
 });
 

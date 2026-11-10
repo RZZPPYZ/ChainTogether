@@ -28,7 +28,7 @@ from .notifiers import notifier_manager
 from .agent_manager import AgentManager
 from .connector_manager import ConnectorManager
 from .persona_manager import persona_manager
-from .routers import agents, attachments, bg_tasks as bg_tasks_router, connectors, credentials, delegations as delegations_router, files, notifiers, personas, questions, research as research_router, schedules, sessions, ws
+from .routers import agents, attachments, bg_tasks as bg_tasks_router, connectors, credentials, delegations as delegations_router, files, notifiers, personas, questions, research as research_router, schedules, session_folders, sessions, ws
 from .routers import groups as groups_router
 from .routers import features as features_router
 from .routers import session_chains as session_chains_router
@@ -74,6 +74,7 @@ async def lifespan(app: FastAPI):
     session_manager.set_schedule_runner(schedule_runner)
     schedules._db = db
     schedules._runner = schedule_runner
+    session_folders.set_db(db)
     agents.set_manager(AgentManager(db))
     persona_manager.bind(db)
     connectors.set_manager(ConnectorManager(db))
@@ -170,6 +171,7 @@ app.add_middleware(
 
 app.include_router(agents.router)
 app.include_router(personas.router)
+app.include_router(session_folders.router)
 app.include_router(sessions.router)
 app.include_router(attachments.router)
 app.include_router(files.router)

@@ -37,8 +37,13 @@ export type PersonaResourceInfo = components["schemas"]["PersonaResourceInfo"];
 export type PendingQuestionInfo = components["schemas"]["PendingQuestionInfo"];
 export type ScheduleInfo = components["schemas"]["ScheduleInfo"];
 export type SessionDetail = components["schemas"]["SessionDetail"];
+export type SessionFolderInfo = components["schemas"]["SessionFolderInfo"];
 export type SessionInfo = components["schemas"]["SessionInfo"];
 export type SessionStatus = components["schemas"]["SessionStatus"];
+export type CreateSessionFolderRequest =
+  components["schemas"]["CreateSessionFolderRequest"];
+export type UpdateSessionFolderRequest =
+  components["schemas"]["UpdateSessionFolderRequest"];
 
 export type CreateCredentialRequest = components["schemas"]["CreateCredentialRequest"];
 export type CreateNotifierRequest = components["schemas"]["CreateNotifierRequest"];

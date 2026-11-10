@@ -50,7 +50,7 @@ export interface ChatRenderResult {
   items: ChatRenderItem[];
   /**
    * Original message index → render item index (-1 for messages that produce
-   * no render item, e.g. hidden `thinking` rows).
+   * no render item, e.g. empty `thinking` rows).
    */
   messageToItemIndex: number[];
 }
@@ -60,13 +60,13 @@ export function isToolActivityMessage(message: Message): boolean {
 }
 
 /**
- * Messages that are persisted in the transcript but never rendered (the chat
- * bubble returns null for them). They must not split a run of tool calls: a
- * snapshot reload inserts one `thinking` row between most assistant steps, so
- * flushing on it would turn every tool pair into its own one-step group.
+ * Messages that are persisted in the transcript but produce no render item.
+ * Only EMPTY thinking rows are hidden: they carry no content (a redacted or
+ * blank thought) and must not split a run of tool calls. Non-empty thinking
+ * rows render as their own collapsible blocks.
  */
 function isHiddenMessage(message: Message): boolean {
-  return message.type === "thinking";
+  return message.type === "thinking" && !messageContent(message).trim();
 }
 
 function messageContent(message: Message): string {
@@ -155,8 +155,8 @@ export function buildChatRenderItems(
   for (let index = 0; index < messages.length; index++) {
     const message = messages[index];
 
-    // Invisible in the chat (MessageBubble renders null) — skip it entirely
-    // and leave the current group open so tools on both sides stay together.
+    // Empty thinking rows render nothing — skip them without breaking the
+    // current tool group. Visible thinking (non-empty) flushes below.
     if (isHiddenMessage(message)) continue;
 
     if (!isToolActivityMessage(message)) {

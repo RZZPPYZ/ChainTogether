@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -83,6 +84,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_active_persona_per_agent
 CREATE INDEX IF NOT EXISTS idx_agent_personas_persona
   ON agent_personas(persona_id);
 
+-- Agent-scoped folder that groups sessions and owns their shared working
+-- directory. Deleting a folder detaches its sessions (SET NULL) rather than
+-- deleting precious conversations; each session keeps the working_dir it
+-- inherited. Names are unique per agent (case-insensitive) so the sidebar has
+-- an unambiguous label.
+CREATE TABLE IF NOT EXISTS session_folders (
+    id TEXT PRIMARY KEY,                    -- 12-char hex, same scheme as sessions
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    working_dir TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS session_folders_agent_name_unique
+  ON session_folders(agent_id, name COLLATE NOCASE);
+
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -93,6 +110,14 @@ CREATE TABLE IF NOT EXISTS sessions (
                                            -- name kept for back-compat — codex-backend.md §4.3)
     archived INTEGER NOT NULL DEFAULT 0,   -- hidden from default list; row kept for history
     agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE,  -- owner; nullable in SQLite, required by API
+    -- Sidebar folder (session-folders). SET NULL on folder delete: the
+    -- session survives at the agent's top level with its frozen working_dir.
+    folder_id TEXT REFERENCES session_folders(id) ON DELETE SET NULL,
+    -- Manual sidebar position inside the folder group (drag and drop).
+    -- Lower sorts first; created_at is the tie-breaker. New sessions get
+    -- MAX(sort_order)+1 so they append; a reorder rewrites its group to
+    -- 0..N-1 (values are only compared within one group).
+    sort_order REAL NOT NULL DEFAULT 0,
     origin TEXT NOT NULL DEFAULT 'user',   -- 'user' | 'schedule' | 'bridge' | 'delegation'
     backend TEXT NOT NULL DEFAULT 'claude-code',  -- 'claude-code' | 'codex' (codex-backend.md §4.1)
     context_usage TEXT,                    -- JSON ContextUsageInfo for the latest completed turn
@@ -761,6 +786,29 @@ class Database:
         if not await self._has_column("sessions", "context_usage"):
             await self._conn.execute(
                 "ALTER TABLE sessions ADD COLUMN context_usage TEXT"
+            )
+
+        # sessions.folder_id — agent-scoped sidebar folders (session-folders).
+        # Additive so legacy databases keep working; the referenced
+        # session_folders table is created by _SCHEMA above on every boot.
+        if not await self._has_column("sessions", "folder_id"):
+            await self._conn.execute(
+                "ALTER TABLE sessions ADD COLUMN folder_id TEXT "
+                "REFERENCES session_folders(id) ON DELETE SET NULL"
+            )
+        # Index lives here (not in _SCHEMA) for the same legacy-DB reason as
+        # the fork index: the column doesn't exist when _SCHEMA runs on an
+        # older database.
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_folder ON sessions(folder_id)"
+        )
+
+        # sessions.sort_order — manual sidebar ordering (drag and drop).
+        # DEFAULT 0 backfills existing rows; created_at breaks ties, so the
+        # pre-existing creation order is preserved until the user drags.
+        if not await self._has_column("sessions", "sort_order"):
+            await self._conn.execute(
+                "ALTER TABLE sessions ADD COLUMN sort_order REAL NOT NULL DEFAULT 0"
             )
 
         await self._migrate_agents()
@@ -3107,6 +3155,8 @@ class Database:
         claude_session_id: str | None = None,
         credential_id: str | None = None,
         agent_id: str | None = None,
+        folder_id: str | None = None,
+        sort_order: float = 0.0,
         origin: str = "user",
         backend: str = "claude-code",
         parent_session_id: str | None = None,
@@ -3116,9 +3166,9 @@ class Database:
         await self._conn.execute(
             "INSERT INTO sessions "
             "(id, name, working_dir, created_at, claude_session_id, "
-            " credential_id, agent_id, origin, backend, "
+            " credential_id, agent_id, folder_id, sort_order, origin, backend, "
             " parent_session_id, delegation_request) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session_id,
                 name,
@@ -3127,6 +3177,8 @@ class Database:
                 claude_session_id,
                 credential_id,
                 agent_id,
+                folder_id,
+                sort_order,
                 origin,
                 backend,
                 parent_session_id,
@@ -3153,6 +3205,8 @@ class Database:
         credential_id: str | None,
         resume_id: str | None,
         fork_after_seq: int,
+        folder_id: str | None = None,
+        sort_order: float = 0.0,
         fork_metadata: str | None = None,
     ) -> None:
         """The DB-only half of the fork saga (session-rewind.md §5.1 step
@@ -3171,15 +3225,15 @@ class Database:
             await self._conn.execute(
                 "INSERT INTO sessions "
                 "(id, name, working_dir, created_at, claude_session_id, "
-                " credential_id, agent_id, origin, backend, "
-                " forked_from_session_id, fork_after_seq, fork_needs_replay, "
-                " fork_status, fork_metadata) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'fork', ?, ?, ?, 0, "
+                " credential_id, agent_id, folder_id, sort_order, origin, "
+                " backend, forked_from_session_id, fork_after_seq, "
+                " fork_needs_replay, fork_status, fork_metadata) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'fork', ?, ?, ?, 0, "
                 " 'initializing', ?)",
                 (
                     fork_id, name, working_dir, created_at, resume_id,
-                    credential_id, agent_id, backend, parent_id, fork_after_seq,
-                    fork_metadata,
+                    credential_id, agent_id, folder_id, sort_order, backend,
+                    parent_id, fork_after_seq, fork_metadata,
                 ),
             )
             await self._conn.execute(
@@ -3207,7 +3261,8 @@ class Database:
             "credential_id, archived, agent_id, origin, backend, "
             "parent_session_id, delegation_request, forked_from_session_id, "
             "fork_after_seq, fork_needs_replay, fork_metadata, "
-            "fork_revert_record, fork_status, context_usage FROM sessions"
+            "fork_revert_record, fork_status, context_usage, folder_id, "
+            "sort_order FROM sessions"
         )
         if not include_archived:
             query += " WHERE archived = 0"
@@ -3234,6 +3289,8 @@ class Database:
                 "fork_revert_record": row[16],
                 "fork_status": row[17],
                 "context_usage": json.loads(row[18]) if row[18] else None,
+                "folder_id": row[19],
+                "sort_order": float(row[20] or 0.0),
             }
             for row in rows
         ]
@@ -4111,6 +4168,8 @@ class Database:
             "credential_id",
             "archived",
             "agent_id",
+            "folder_id",
+            "sort_order",
             "origin",
             "backend",
             "context_usage",
@@ -4131,7 +4190,12 @@ class Database:
         # first turn reloads the bogus hint and spawns `codex resume <bogus>`
         # (Vera review BLOCKING #1). Other columns omitted by the caller are
         # left untouched.
-        nullable = {"fork_metadata", "claude_session_id", "context_usage"}
+        nullable = {
+            "fork_metadata",
+            "claude_session_id",
+            "context_usage",
+            "folder_id",
+        }
         bool_fields = {"archived", "fork_needs_replay"}
         updates: dict[str, Any] = {}
         for k, v in fields.items():
@@ -4171,6 +4235,145 @@ class Database:
         )
         await self._conn.commit()
         return cursor.rowcount == 1
+
+    async def next_session_sort_order(self) -> float:
+        """The next append position. MAX over ALL rows (archived included) so
+        a restored session can never collide with a newly created one."""
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT COALESCE(MAX(sort_order), 0) FROM sessions"
+        )
+        row = await cursor.fetchone()
+        return float(row[0] or 0.0) + 1.0
+
+    async def set_session_sort_orders(
+        self, orders: list[tuple[str, float]]
+    ) -> None:
+        """Rewrite the drag position of each listed session in one commit."""
+        await self._ensure_connected()
+        try:
+            await self._conn.executemany(
+                "UPDATE sessions SET sort_order = ? WHERE id = ?",
+                [(sort_order, session_id) for session_id, sort_order in orders],
+            )
+            await self._conn.commit()
+        except Exception:
+            await self._conn.rollback()
+            raise
+
+    # --- Session folders ---
+
+    # Folders are agent-scoped sidebar containers that own a working
+    # directory (session-folders). Sessions created inside one inherit the
+    # folder's path; deleting a folder detaches sessions via the FK
+    # ON DELETE SET NULL rather than destroying conversation history.
+
+    @staticmethod
+    def _session_folder_row(row: Any) -> dict[str, Any]:
+        return {
+            "id": row[0],
+            "agent_id": row[1],
+            "name": row[2],
+            "working_dir": row[3],
+            "created_at": row[4],
+            "updated_at": row[5],
+            "session_count": int(row[6] or 0),
+        }
+
+    _SESSION_FOLDER_SELECT = (
+        "SELECT f.id, f.agent_id, f.name, f.working_dir, f.created_at, "
+        "f.updated_at, (SELECT COUNT(*) FROM sessions s "
+        "               WHERE s.folder_id = f.id AND s.archived = 0) "
+        "FROM session_folders f "
+    )
+
+    async def create_session_folder(
+        self,
+        agent_id: str,
+        name: str,
+        working_dir: str,
+        *,
+        created_at: str | None = None,
+    ) -> dict[str, Any]:
+        await self._ensure_connected()
+        folder_id = uuid.uuid4().hex[:12]
+        now = created_at or datetime.now(timezone.utc).isoformat()
+        try:
+            await self._conn.execute(
+                "INSERT INTO session_folders "
+                "(id, agent_id, name, working_dir, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (folder_id, agent_id, name, working_dir, now, now),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(
+                f"A folder named {name!r} already exists for this agent"
+            ) from exc
+        await self._conn.commit()
+        folder = await self.get_session_folder(folder_id)
+        assert folder is not None
+        return folder
+
+    async def load_session_folders(
+        self, agent_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        await self._ensure_connected()
+        query = self._SESSION_FOLDER_SELECT
+        params: tuple[Any, ...] = ()
+        if agent_id is not None:
+            query += "WHERE f.agent_id = ? "
+            params = (agent_id,)
+        query += "ORDER BY f.name COLLATE NOCASE, f.created_at"
+        cursor = await self._conn.execute(query, params)
+        return [self._session_folder_row(row) for row in await cursor.fetchall()]
+
+    async def get_session_folder(self, folder_id: str) -> dict[str, Any] | None:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            self._SESSION_FOLDER_SELECT + "WHERE f.id = ?", (folder_id,)
+        )
+        row = await cursor.fetchone()
+        return self._session_folder_row(row) if row else None
+
+    async def update_session_folder(
+        self,
+        folder_id: str,
+        *,
+        name: str | None = None,
+        working_dir: str | None = None,
+    ) -> dict[str, Any] | None:
+        await self._ensure_connected()
+        updates: dict[str, Any] = {}
+        if name is not None:
+            updates["name"] = name
+        if working_dir is not None:
+            updates["working_dir"] = working_dir
+        if not updates:
+            return await self.get_session_folder(folder_id)
+        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [folder_id]
+        try:
+            await self._conn.execute(
+                f"UPDATE session_folders SET {set_clause} WHERE id = ?", values
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(
+                f"A folder named {updates.get('name')!r} already exists "
+                "for this agent"
+            ) from exc
+        await self._conn.commit()
+        return await self.get_session_folder(folder_id)
+
+    async def delete_session_folder(self, folder_id: str) -> bool:
+        """Delete the folder. Its sessions survive: the FK sets their
+        folder_id to NULL and they keep the working_dir they inherited."""
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "DELETE FROM session_folders WHERE id = ?", (folder_id,)
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
 
     # --- Agents ---
 

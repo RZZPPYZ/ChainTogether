@@ -84,6 +84,17 @@ export function handleWsMessage(data: Record<string, unknown>) {
       });
       break;
 
+    // Provider-supplied reasoning (Claude thinking blocks / Codex reasoning
+    // summaries). The backend persists these too; live updates keep the chat
+    // identical to the snapshot after a reload.
+    case "assistant_thinking":
+      addMessage(sessionId, {
+        role: "assistant",
+        type: "thinking",
+        content: data.content as string,
+      });
+      break;
+
     case "tool_use": {
       const toolName = data.tool as string;
       const toolInput = data.input as Record<string, unknown>;
@@ -397,6 +408,8 @@ export function handleWsMessage(data: Record<string, unknown>) {
           claude_session_id: null,
           credential_id: prev?.credential_id ?? null,
           agent_id: prev?.agent_id ?? null,
+          folder_id: prev?.folder_id ?? null,
+          sort_order: prev?.sort_order ?? 0,
           origin: prev?.origin ?? "user",
           backend: prev?.backend ?? "claude-code",
           can_fork: prev?.can_fork ?? true,

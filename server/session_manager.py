@@ -216,6 +216,13 @@ class Session:
     # created post-refactor; left optional on the dataclass so legacy
     # in-memory construction paths don't break mid-migration.
     agent_id: str | None = None
+    # Agent-scoped sidebar folder (session-folders). The session's
+    # working_dir is inherited from this folder at creation time and stays
+    # frozen even if the folder's path is later edited. NULL = top level.
+    folder_id: str | None = None
+    # Manual sidebar position within the folder group (drag and drop).
+    # Lower sorts first; created_at breaks ties.
+    sort_order: float = 0.0
     # Who created this session: 'user' | 'schedule' | 'bridge' | 'delegation'.
     # Scheduler fires auto-archive on idle (§5.6); bridge/user sessions
     # persist. 'delegation' sessions auto-archive on idle too — they're a
@@ -316,6 +323,8 @@ class SessionManager:
                 claude_session_id=row["claude_session_id"],
                 credential_id=row.get("credential_id"),
                 agent_id=row.get("agent_id"),
+                folder_id=row.get("folder_id"),
+                sort_order=float(row.get("sort_order") or 0.0),
                 origin=row.get("origin") or "user",
                 backend=row.get("backend") or "claude-code",
                 context_usage=row.get("context_usage"),
@@ -647,6 +656,12 @@ class SessionManager:
                 credential_id=parent.credential_id,
                 resume_id=resume_id_hint,
                 fork_after_seq=fork_after_seq,
+                # A rewind branch stays in its parent's sidebar folder; its
+                # working_dir is the parent's exact path, so it stays valid.
+                folder_id=parent.folder_id,
+                # It replaces the parent in the sidebar: the parent is
+                # archived as part of the fork, so they never both render.
+                sort_order=parent.sort_order,
             )
             fork = Session(
                 id=fork_id,
@@ -656,6 +671,8 @@ class SessionManager:
                 claude_session_id=resume_id_hint,
                 credential_id=parent.credential_id,
                 agent_id=parent.agent_id,
+                folder_id=parent.folder_id,
+                sort_order=parent.sort_order,
                 origin="fork",
                 backend=parent.backend,
                 forked_from_session_id=parent_id,
@@ -918,12 +935,18 @@ class SessionManager:
             #    or the duplicate would continue with no copied context). The UI
             #    distinguishes a full copy from a rewind via fork_metadata's
             #    `full_copy` flag, not by nulling fork_after_seq (Vera review).
+            fork_sort_order = await self.db.next_session_sort_order()
             try:
                 await self.db.create_fork_session(
                     fork_id=fork_id, name=fork_name, working_dir=dest,
                     created_at=now, parent_id=parent_id, backend=parent.backend,
                     agent_id=parent.agent_id, credential_id=parent.credential_id,
                     resume_id=resume_id_hint, fork_after_seq=last_seq,
+                    # A full copy lives on an independent directory, NOT in
+                    # the parent's folder (which points at the original path).
+                    folder_id=None,
+                    # It is a new, independent session: append at the bottom.
+                    sort_order=fork_sort_order,
                     fork_metadata=fork_meta,
                 )
             except Exception:
@@ -932,9 +955,11 @@ class SessionManager:
             fork = Session(
                 id=fork_id, name=fork_name, working_dir=dest, created_at=now,
                 claude_session_id=resume_id_hint, credential_id=parent.credential_id,
-                agent_id=parent.agent_id, origin="fork", backend=parent.backend,
-                forked_from_session_id=parent_id, fork_after_seq=last_seq,
-                fork_metadata=fork_meta, fork_status="initializing",
+                agent_id=parent.agent_id, folder_id=None,
+                sort_order=fork_sort_order, origin="fork",
+                backend=parent.backend, forked_from_session_id=parent_id,
+                fork_after_seq=last_seq, fork_metadata=fork_meta,
+                fork_status="initializing",
             )
             fork._message_count = last_seq + 1
             self.sessions[fork_id] = fork
@@ -1098,6 +1123,8 @@ class SessionManager:
         backend: str = "claude-code",
         parent_session_id: str | None = None,
         delegation_request: str | None = None,
+        folder_id: str | None = None,
+        sort_order: float | None = None,
     ) -> Session:
         """Create a conversation thread owned by `agent_id`.
 
@@ -1105,6 +1132,10 @@ class SessionManager:
         §5.2). Refuses a missing/unknown agent. `working_dir` defaults to
         `settings.default_working_dir` — agents are not path-aware. `name`
         defaults to a generated "{agent} — {timestamp}" label.
+
+        When `folder_id` is provided, the session joins that agent-scoped
+        folder and inherits its working directory; `working_dir` is ignored
+        (the folder owns the path). The folder must belong to the same agent.
 
         `parent_session_id` + `delegation_request` are set together for
         agent-to-agent delegation children (agent-collaboration.md §4.1):
@@ -1117,18 +1148,45 @@ class SessionManager:
         if self.db and agent is None:
             raise ValueError(f"Agent {agent_id} not found")
 
+        folder_working_dir: str | None = None
+        if folder_id:
+            if self.db is None:
+                raise ValueError("Session folders require a database")
+            folder = await self.db.get_session_folder(folder_id)
+            if folder is None:
+                raise ValueError(f"Session folder {folder_id} not found")
+            if folder["agent_id"] != agent_id:
+                raise ValueError(
+                    f"Session folder {folder_id} belongs to a different agent"
+                )
+            folder_working_dir = folder["working_dir"]
+
         if not name:
             label = (agent or {}).get("name", "Agent")
             stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
             name = f"{label} — {stamp}"
 
+        # Append to the bottom of the sidebar group by default. MAX+1 is
+        # monotonic, so it is greater than every existing position in the
+        # target group. Callers that conceptually replace a session (the
+        # /archive successor) pass an explicit slot instead.
+        effective_sort_order = (
+            sort_order
+            if sort_order is not None
+            else (await self.db.next_session_sort_order() if self.db else 0.0)
+        )
+
         sid = uuid.uuid4().hex[:12]
         session = Session(
             id=sid,
             name=name,
-            working_dir=resolve_working_dir(working_dir),
+            working_dir=resolve_working_dir(
+                folder_working_dir if folder_id else working_dir
+            ),
             credential_id=credential_id,
             agent_id=agent_id,
+            folder_id=folder_id,
+            sort_order=effective_sort_order,
             origin=origin,
             backend=backend,
             parent_session_id=parent_session_id,
@@ -1144,12 +1202,30 @@ class SessionManager:
                 claude_session_id=session.claude_session_id,
                 credential_id=session.credential_id,
                 agent_id=session.agent_id,
+                folder_id=session.folder_id,
+                sort_order=session.sort_order,
                 origin=session.origin,
                 backend=session.backend,
                 parent_session_id=session.parent_session_id,
                 delegation_request=session.delegation_request,
             )
         return session
+
+    async def reorder_sessions(self, ordered_ids: list[str]) -> None:
+        """Persist a sidebar group's manual order (drag and drop).
+
+        `ordered_ids` is the complete desired sequence for one agent/folder
+        group as validated by the route. Positions become 0..N-1; live
+        Session objects are updated so a later reload/fork sees the new
+        order immediately.
+        """
+        orders = [(sid, float(index)) for index, sid in enumerate(ordered_ids)]
+        if self.db:
+            await self.db.set_session_sort_orders(orders)
+        for session_id, sort_order in orders:
+            session = self.sessions.get(session_id)
+            if session is not None:
+                session.sort_order = sort_order
 
     async def run_fresh_oneshot(
         self,
@@ -1202,6 +1278,9 @@ class SessionManager:
             claude_session_id=claude_session_id,
             credential_id=credential_id,
             agent_id=agent_id,
+            sort_order=(
+                await self.db.next_session_sort_order() if self.db else 0.0
+            ),
             origin=origin,
             backend=backend,
         )
@@ -1215,6 +1294,7 @@ class SessionManager:
                 claude_session_id=session.claude_session_id,
                 credential_id=session.credential_id,
                 agent_id=session.agent_id,
+                sort_order=session.sort_order,
                 origin=session.origin,
                 backend=session.backend,
             )
@@ -1227,7 +1307,7 @@ class SessionManager:
 
     async def archive_session(self, session_id: str) -> Session:
         """Hide the current session and return a fresh one with the same
-        user-visible settings (name / working_dir / credential_id).
+        user-visible settings (name / working_dir / credential_id / folder).
 
         The old session row stays in the DB (with `archived = 1`) so the
         message history isn't lost — it just disappears from the default
@@ -1268,6 +1348,8 @@ class SessionManager:
 
         # New session inherits agent / name / working_dir / credential_id /
         # origin but starts with no claude_session_id (fresh conversation).
+        # A folder session's successor stays in the same folder and follows
+        # the folder's current path (folders own the working directory).
         agent_id = old.agent_id
         if agent_id is None and self.db:
             sys_agent = await self.db.get_system_agent()
@@ -1279,6 +1361,11 @@ class SessionManager:
             credential_id=old.credential_id,
             origin=old.origin,
             backend=old.backend,
+            folder_id=old.folder_id,
+            # Take over the archived session's sidebar slot instead of
+            # jumping to the bottom (also keeps other tabs' optimistic
+            # `session_archived` handler consistent until they refetch).
+            sort_order=old.sort_order,
         )
 
         # Schedules/bridges are agent-owned, so ownership needs no repoint.
@@ -1425,6 +1512,8 @@ class SessionManager:
                     "claude_session_id": row["claude_session_id"],
                     "credential_id": row.get("credential_id"),
                     "agent_id": row.get("agent_id"),
+                    "folder_id": row.get("folder_id"),
+                    "sort_order": float(row.get("sort_order") or 0.0),
                     "origin": row.get("origin") or "user",
                     "backend": row.get("backend") or "claude-code",
                     "context_usage": row.get("context_usage"),
@@ -1441,6 +1530,7 @@ class SessionManager:
                     ),
                 }
             )
+        out.sort(key=lambda item: (item["sort_order"], item["created_at"]))
         return out
 
     async def load_archived_session_detail(
@@ -1470,6 +1560,8 @@ class SessionManager:
             claude_session_id=match["claude_session_id"],
             credential_id=match.get("credential_id"),
             agent_id=match.get("agent_id"),
+            folder_id=match.get("folder_id"),
+            sort_order=float(match.get("sort_order") or 0.0),
             origin=match.get("origin") or "user",
             backend=match.get("backend") or "claude-code",
             context_usage=match.get("context_usage"),
@@ -1521,6 +1613,8 @@ class SessionManager:
             claude_session_id=match["claude_session_id"],
             credential_id=match.get("credential_id"),
             agent_id=match.get("agent_id"),
+            folder_id=match.get("folder_id"),
+            sort_order=float(match.get("sort_order") or 0.0),
             origin=match.get("origin") or "user",
             backend=match.get("backend") or "claude-code",
             # Preserve the delegation chain fields when unarchiving —
@@ -1617,6 +1711,24 @@ class SessionManager:
                     src = get_path_with_fork_fallback(ancestors, aid)
                     if src is not None:
                         blit_attachment(fork_id, src)
+
+    async def delete_session_folder(self, folder_id: str) -> bool:
+        """Delete an agent-scoped folder and detach its live sessions.
+
+        The DB half relies on the FK (ON DELETE SET NULL) so archived rows
+        are detached too. Live Session objects must be updated here as well:
+        they're the in-memory source of truth for fork/archive/next-session
+        paths, and a stale folder_id would make those operations target a
+        folder that no longer exists.
+        """
+        if self.db is None:
+            return False
+        deleted = await self.db.delete_session_folder(folder_id)
+        if deleted:
+            for session in self.sessions.values():
+                if session.folder_id == folder_id:
+                    session.folder_id = None
+        return deleted
 
     async def delete_session(self, session_id: str) -> bool:
         session = self.sessions.pop(session_id, None)
@@ -3200,8 +3312,12 @@ class SessionManager:
                 role=MessageRole.assistant, type="text", content=event.content
             )
         if event.type == "thinking":
-            # Persist thinking as a typed message; the UI can choose to hide
-            # it. Don't filter at the persistence layer.
+            # Persist the provider-supplied reasoning/summary so the chat can
+            # render it (live and after a reload). Blank blocks are noise — a
+            # redacted/empty thought carries no information and would only add
+            # an empty row (plus a seq) to the transcript.
+            if not event.content or not event.content.strip():
+                return None
             return MessageContent(
                 role=MessageRole.assistant,
                 type="thinking",
@@ -3252,8 +3368,13 @@ class SessionManager:
                 "content": event.content,
             }
         if event.type == "thinking":
-            # We persist thinking but don't broadcast it by default.
-            return None
+            if not event.content or not event.content.strip():
+                return None
+            return {
+                "type": "assistant_thinking",
+                "session_id": session_id,
+                "content": event.content,
+            }
         if event.type == "tool_use":
             return {
                 "type": "tool_use",

@@ -195,7 +195,7 @@ describe("buildChatRenderItems grouping boundaries", () => {
     expect(grown?.kind === "activity" && grown.steps).toHaveLength(2);
   });
 
-  it("keeps a tool run together across hidden thinking rows", () => {
+  it("renders non-empty thinking and keeps groups across empty thinking rows", () => {
     const messages: Message[] = [
       toolUse("a", "Read", { file_path: "a.ts" }),
       toolResult("a", "one\n"),
@@ -209,13 +209,26 @@ describe("buildChatRenderItems grouping boundaries", () => {
 
     const { items, messageToItemIndex } = buildChatRenderItems(messages);
 
-    // One group, not three: thinking rows are invisible and must not split it.
-    expect(items).toHaveLength(1);
-    const item = items[0];
-    expect(item?.kind === "activity" && item.steps.map((s) => s.toolName)).toEqual(
-      ["Read", "Grep", "Bash"],
+    // Visible thinking splits the run; the EMPTY thinking after Grep is
+    // invisible and must not split Grep+Bash into separate groups.
+    expect(items.map((item) => item.kind)).toEqual([
+      "activity",
+      "message",
+      "activity",
+    ]);
+    const first = items[0];
+    const thinking = items[1];
+    const second = items[2];
+    expect(first?.kind === "activity" && first.steps.map((s) => s.toolName)).toEqual(
+      ["Read"],
     );
-    expect(messageToItemIndex).toEqual([0, 0, -1, 0, 0, -1, 0, 0]);
+    expect(thinking?.kind === "message" && thinking.message.type).toBe(
+      "thinking",
+    );
+    expect(second?.kind === "activity" && second.steps.map((s) => s.toolName)).toEqual(
+      ["Grep", "Bash"],
+    );
+    expect(messageToItemIndex).toEqual([0, 0, 1, 2, 2, -1, 2, 2]);
   });
 
   it("maps every original message to a render item", () => {

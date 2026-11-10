@@ -20,6 +20,10 @@ class BackendKind(str, Enum):
 class CreateSessionRequest(BaseModel):
     name: str | None = None
     working_dir: str | None = None
+    # Session folder this session belongs to (session-folders). When set, the
+    # session inherits the folder's working directory; `working_dir` is
+    # ignored. The folder must belong to the same agent.
+    folder_id: str | None = None
     credential_id: str | None = None
     # Owning agent. Required by the API (a session is a conversation with an
     # agent), but left optional on the wire for exactly one release: when
@@ -103,6 +107,14 @@ class SessionInfo(BaseModel):
     # Owning agent + who created the session ('user' | 'schedule' |
     # 'bridge' | 'delegation' | 'fork').
     agent_id: str | None = None
+    # Organizational folder inside the agent's sidebar (session-folders).
+    # A folder owns a working directory; sessions created inside it inherit
+    # that path at creation time. None = a top-level session.
+    folder_id: str | None = None
+    # Manual sidebar position inside the session's folder group (drag and
+    # drop). Lower sorts first; equal values fall back to created_at. New
+    # sessions append, and a reorder rewrites the listed group to 0..N-1.
+    sort_order: float = 0.0
     origin: str = "user"
     # Which AI backend drives this session.
     backend: BackendKind = BackendKind.claude_code
@@ -197,6 +209,49 @@ class SessionDetail(SessionInfo):
     # baseline so any subsequently-broadcast event with seq <=
     # next_message_seq-1 is treated as already applied.
     next_message_seq: int = 0
+
+
+# Session folders — an agent-scoped organizational container that owns a
+# working directory. Sessions created inside a folder inherit that directory
+# instead of asking for one, and keep the path frozen at creation time (so
+# editing a folder never rewrites the cwd of an already-running session).
+
+
+class SessionFolderInfo(BaseModel):
+    id: str
+    agent_id: str
+    name: str
+    working_dir: str
+    # Live (non-archived) sessions currently in the folder. Archived sessions
+    # keep their folder_id but are managed elsewhere.
+    session_count: int = 0
+    created_at: str
+    updated_at: str
+
+
+class ReorderSessionsRequest(BaseModel):
+    """Body for `PUT /api/agents/{agent_id}/sessions/order`.
+
+    `session_ids` is the complete desired order for one sidebar group
+    (top-level when `folder_id` is null, otherwise that folder). Every id
+    must be a live session owned by the same agent and in the same folder.
+    """
+
+    folder_id: str | None = None
+    session_ids: list[str] = Field(min_length=1)
+
+
+class CreateSessionFolderRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    working_dir: str = Field(min_length=1, max_length=4096)
+
+
+class UpdateSessionFolderRequest(BaseModel):
+    # Optional-patch semantics: omitted fields are left untouched. An explicit
+    # null is rejected by the route — a folder must always have both a name
+    # and a working directory.
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    working_dir: str | None = Field(default=None, min_length=1, max_length=4096)
 
 
 # WebSocket protocol messages (client -> server)

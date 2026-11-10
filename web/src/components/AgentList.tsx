@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { IconChevronRight, IconPlus } from "@tabler/icons-react";
+import { IconChevronRight, IconFolderPlus, IconPlus } from "@tabler/icons-react";
 import { fetchInstallations } from "../api/connectors";
 import { useSessionStore, type Agent, type SessionInfo } from "../stores/sessionStore";
+import { SessionFolderList } from "./SessionFolderList";
 import { SessionList } from "./SessionList";
 
 const API = window.location.origin;
@@ -29,6 +30,10 @@ export function AgentList({ onCreateAgent }: { onCreateAgent: () => void }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   // Which agent's new-session form is open (driven by the row's + button).
   const [formAgentId, setFormAgentId] = useState<string | null>(null);
+  // Which agent's new-folder form is open (driven by the folder-plus button).
+  const [folderFormAgentId, setFolderFormAgentId] = useState<string | null>(
+    null,
+  );
 
   const headers = { Authorization: `Bearer ${token}` };
 
@@ -93,7 +98,16 @@ export function AgentList({ onCreateAgent }: { onCreateAgent: () => void }) {
     setActiveGroupId(null);
     setActiveAgentId(id);
     setExpanded((prev) => new Set(prev).add(id));
+    setFolderFormAgentId((cur) => (cur === id ? null : cur));
     setFormAgentId(id);
+  };
+
+  const openNewFolder = (id: string) => {
+    setActiveGroupId(null);
+    setActiveAgentId(id);
+    setExpanded((prev) => new Set(prev).add(id));
+    setFormAgentId((cur) => (cur === id ? null : cur));
+    setFolderFormAgentId(id);
   };
 
   return (
@@ -152,6 +166,17 @@ export function AgentList({ onCreateAgent }: { onCreateAgent: () => void }) {
                   }`}
                 >
                   <button
+                    className="btn-folder-add inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-card hover:text-sidebar-foreground"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openNewFolder(a.id);
+                    }}
+                    title="New folder"
+                    aria-label={`New folder for ${a.name}`}
+                  >
+                    <IconFolderPlus size={14} />
+                  </button>
+                  <button
                     className="btn-session-add inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-card hover:text-sidebar-foreground"
                     onClick={(e) => {
                       e.stopPropagation();
@@ -164,15 +189,28 @@ export function AgentList({ onCreateAgent }: { onCreateAgent: () => void }) {
                   </button>
                 </div>
               </div>
-              {/* Sessions live inside their agent — foldable per agent. */}
+              {/* Sessions live inside their agent — foldable per agent.
+               * Top-level sessions render first; folder rows below them,
+               * each with its own nested session list. */}
               {isExpanded && (
-                <SessionList
-                  agentId={a.id}
-                  formOpen={formAgentId === a.id}
-                  onCloseForm={() =>
-                    setFormAgentId((cur) => (cur === a.id ? null : cur))
-                  }
-                />
+                <>
+                  <SessionList
+                    agentId={a.id}
+                    formOpen={formAgentId === a.id}
+                    onCloseForm={() =>
+                      setFormAgentId((cur) => (cur === a.id ? null : cur))
+                    }
+                  />
+                  <SessionFolderList
+                    agentId={a.id}
+                    formOpen={folderFormAgentId === a.id}
+                    onCloseForm={() =>
+                      setFolderFormAgentId((cur) =>
+                        cur === a.id ? null : cur,
+                      )
+                    }
+                  />
+                </>
               )}
             </div>
           );
