@@ -36,6 +36,9 @@ Current focus areas:
   be dragged to reorder their sidebar group, with the order persisted via
   `sort_order`. See [session-folders](docs/plans/session-folders.md) and
   [session-order](docs/plans/session-order.md).
+- Provider-supplied model thinking/reasoning is persisted and shown as
+  collapsible Thinking blocks in the session chat. See
+  [model-thinking](docs/plans/model-thinking.md).
 - Live group execution blocks showing agent phase, elapsed time, tool calls,
   bounded inputs/results, and streamed response text while a turn is running.
 - Better guardrails around agent-to-agent routing, completion tokens, holds,

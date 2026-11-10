@@ -3312,8 +3312,12 @@ class SessionManager:
                 role=MessageRole.assistant, type="text", content=event.content
             )
         if event.type == "thinking":
-            # Persist thinking as a typed message; the UI can choose to hide
-            # it. Don't filter at the persistence layer.
+            # Persist the provider-supplied reasoning/summary so the chat can
+            # render it (live and after a reload). Blank blocks are noise — a
+            # redacted/empty thought carries no information and would only add
+            # an empty row (plus a seq) to the transcript.
+            if not event.content or not event.content.strip():
+                return None
             return MessageContent(
                 role=MessageRole.assistant,
                 type="thinking",
@@ -3364,8 +3368,13 @@ class SessionManager:
                 "content": event.content,
             }
         if event.type == "thinking":
-            # We persist thinking but don't broadcast it by default.
-            return None
+            if not event.content or not event.content.strip():
+                return None
+            return {
+                "type": "assistant_thinking",
+                "session_id": session_id,
+                "content": event.content,
+            }
         if event.type == "tool_use":
             return {
                 "type": "tool_use",

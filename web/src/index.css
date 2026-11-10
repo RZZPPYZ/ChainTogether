@@ -264,6 +264,44 @@ body {
   background: hsl(var(--gray-50));
 }
 
+/* Model thinking (Claude thinking / Codex reasoning). Deliberately quieter
+ * than normal assistant text: smaller and gray, including markdown
+ * descendants, so it never reads like the model's actual answer. */
+.thinking-content,
+.thinking-content :where(p, li, strong, em, blockquote, table, td, th, pre, code, a) {
+  color: hsl(var(--muted-foreground));
+}
+.thinking-content {
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+.thinking-content :where(p) {
+  margin: 0.35rem 0;
+}
+.thinking-content :where(ul, ol) {
+  padding-left: 1.25rem;
+  margin: 0.35rem 0;
+}
+.thinking-content :where(pre) {
+  background: hsl(var(--gray-50));
+  padding: 0.5rem;
+  border-radius: var(--radius);
+  overflow-x: auto;
+  margin: 0.4rem 0;
+  font-size: 0.92em;
+}
+.thinking-content :where(code) {
+  background: hsl(var(--gray-50));
+  padding: 0.05rem 0.25rem;
+  border-radius: 3px;
+  font-size: 0.92em;
+  font-family: var(--font-family-mono);
+}
+.thinking-content :where(pre code) {
+  background: none;
+  padding: 0;
+}
+
 .group-markdown p {
   margin: 0.25rem 0;
 }

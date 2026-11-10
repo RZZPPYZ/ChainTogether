@@ -4,6 +4,26 @@ import { handleWsMessage } from "./useWebSocket";
 import { useSessionStore, type SessionInfo } from "../stores/sessionStore";
 
 
+describe("assistant thinking events", () => {
+  it("appends a collapsible thinking message to the session", () => {
+    useSessionStore.setState({ messages: {} });
+
+    handleWsMessage({
+      type: "assistant_thinking",
+      session_id: "session-1",
+      content: "Plan the change before touching files.",
+    });
+
+    expect(useSessionStore.getState().messages["session-1"]).toEqual([
+      {
+        role: "assistant",
+        type: "thinking",
+        content: "Plan the change before touching files.",
+      },
+    ]);
+  });
+});
+
 describe("group member session chain events", () => {
   beforeEach(() => {
     useSessionStore.setState({

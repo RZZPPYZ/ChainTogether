@@ -84,6 +84,17 @@ export function handleWsMessage(data: Record<string, unknown>) {
       });
       break;
 
+    // Provider-supplied reasoning (Claude thinking blocks / Codex reasoning
+    // summaries). The backend persists these too; live updates keep the chat
+    // identical to the snapshot after a reload.
+    case "assistant_thinking":
+      addMessage(sessionId, {
+        role: "assistant",
+        type: "thinking",
+        content: data.content as string,
+      });
+      break;
+
     case "tool_use": {
       const toolName = data.tool as string;
       const toolInput = data.input as Record<string, unknown>;
