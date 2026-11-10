@@ -7,6 +7,7 @@ import type {
   ConnectorInstallationInfo as ApiConnectorInstallationInfo,
   CredentialInfo as ApiCredentialInfo,
   ScheduleInfo,
+  SessionFolderInfo as ApiSessionFolderInfo,
   SessionInfo as ApiSessionInfo,
   SessionStatus as ApiSessionStatus,
 } from "../api";
@@ -26,6 +27,7 @@ export type ConnectorCatalogEntry = ApiConnectorCatalogEntry;
 export type ConnectorInstallationInfo = ApiConnectorInstallationInfo;
 export type Schedule = ScheduleInfo;
 export type AttachmentMetadata = ApiAttachmentMetadata;
+export type SessionFolder = ApiSessionFolderInfo;
 
 // `Message` is a UI-only shape: it's how WS events are normalized for
 // rendering, not 1-to-1 with `MessageContent` from the contract (which has
@@ -83,6 +85,14 @@ interface SessionStore {
   removeAgent: (id: string) => void;
   activeAgentId: string | null;
   setActiveAgentId: (id: string | null) => void;
+
+  // Agent-scoped sessions folders (session-folders). A folder owns a working
+  // directory; sessions created inside inherit it and are grouped under the
+  // folder in the sidebar. Folder membership is per session via folder_id.
+  sessionFolders: SessionFolder[];
+  setSessionFolders: (f: SessionFolder[]) => void;
+  upsertSessionFolder: (f: SessionFolder) => void;
+  removeSessionFolder: (id: string) => void;
 
   // Which AI backends this host can run (GET /api/backends). 'claude-code'
   // is always present; 'codex' only when the binary resolves. Drives the
@@ -693,6 +703,26 @@ export const useSessionStore = create<SessionStore>((set) => ({
     set((s) => ({ agents: s.agents.filter((a) => a.id !== id) })),
   activeAgentId: null,
   setActiveAgentId: (activeAgentId) => set({ activeAgentId }),
+
+  sessionFolders: [],
+  setSessionFolders: (sessionFolders) => set({ sessionFolders }),
+  upsertSessionFolder: (folder) =>
+    set((s) => {
+      const idx = s.sessionFolders.findIndex((f) => f.id === folder.id);
+      const sessionFolders =
+        idx >= 0
+          ? [
+              ...s.sessionFolders.slice(0, idx),
+              folder,
+              ...s.sessionFolders.slice(idx + 1),
+            ]
+          : [...s.sessionFolders, folder];
+      return { sessionFolders };
+    }),
+  removeSessionFolder: (id) =>
+    set((s) => ({
+      sessionFolders: s.sessionFolders.filter((f) => f.id !== id),
+    })),
 
   availableBackends: ["claude-code"],
   setAvailableBackends: (availableBackends) => set({ availableBackends }),

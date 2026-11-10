@@ -1,40 +1,48 @@
-import { useEffect, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import {
   IconCheck,
   IconCopy,
   IconEye,
   IconEyeOff,
+  IconFolder,
+  IconGripVertical,
   IconSubtask,
   IconX,
 } from "@tabler/icons-react";
+import {
+  getAgentSidebarSessions,
+  reorderSessionIds,
+  sortSessionsByOrder,
+  type SessionDropPosition,
+} from "../lib/sessionOrder";
 import { useSessionStore, type SessionInfo } from "../stores/sessionStore";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 
 const API_URL = window.location.origin;
 
-const GROUP_SESSION_ORIGINS = new Set(["group", "group_member"]);
-
-export function getAgentSidebarSessions(
-  sessions: SessionInfo[],
-  agentId: string,
-): SessionInfo[] {
-  return sessions.filter(
-    (session) =>
-      session.agent_id === agentId &&
-      !GROUP_SESSION_ORIGINS.has(session.origin),
-  );
-}
-
 /** The session list for a single agent — rendered nested under its agent row
  * in AgentList (sessions belong to an agent). No "Sessions" header; the
- * new-session "+" lives on the agent row and drives `formOpen`. */
+ * new-session "+" lives on the agent row and drives `formOpen`.
+ *
+ * With `folderId`, the list is the contents of that agent-scoped folder:
+ * the working directory comes from the folder, so the create form omits the
+ * path input and the server inherits the folder's path. */
 export function SessionList({
   agentId,
+  folderId = null,
+  folderWorkingDir = null,
   formOpen,
   onCloseForm,
 }: {
   agentId: string;
+  folderId?: string | null;
+  folderWorkingDir?: string | null;
   formOpen: boolean;
   onCloseForm: () => void;
 }) {
@@ -43,6 +51,37 @@ export function SessionList({
   const [credentialId, setCredentialId] = useState<string>("");
   const [backend, setBackend] = useState<string>("claude-code");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  // Drag-and-drop reorder state. `draggingId` dims the source row;
+  // `dropTarget` renders the insertion line on the hovered row.
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{
+    id: string;
+    position: SessionDropPosition;
+  } | null>(null);
+  const [reorderError, setReorderError] = useState<string | null>(null);
+  // Pointer-event drag (works even where native HTML5 drag is unavailable).
+  // The candidate is armed on pointerdown and only becomes a real drag after
+  // a small movement threshold, so a plain click still selects the session.
+  const listRef = useRef<HTMLDivElement>(null);
+  const dragCandidateRef = useRef<{
+    sessionId: string;
+    startX: number;
+    startY: number;
+    active: boolean;
+  } | null>(null);
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+  const suppressClickRef = useRef(false);
+  const reorderErrorTimerRef = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      dragCleanupRef.current?.();
+      if (reorderErrorTimerRef.current !== null) {
+        window.clearTimeout(reorderErrorTimerRef.current);
+      }
+    },
+    [],
+  );
 
   const token = useSessionStore((s) => s.token);
   const sessions = useSessionStore((s) => s.sessions);
@@ -86,7 +125,11 @@ export function SessionList({
   // the global showDelegations toggle to see them. The hidden-count
   // pill at the bottom of this list surfaces what's been filtered.
   // (agent-collaboration.md §6)
-  const allAgentSessions = getAgentSidebarSessions(sessions, agentId);
+  const allAgentSessions = getAgentSidebarSessions(
+    sessions,
+    agentId,
+    folderId,
+  );
   const hiddenDelegationCount = showDelegations
     ? 0
     : allAgentSessions.filter((s) => s.origin === "delegation").length;
@@ -107,7 +150,10 @@ export function SessionList({
         headers,
         body: JSON.stringify({
           name,
-          working_dir: workingDir.trim() || null,
+          // Inside a folder the server inherits the folder's working
+          // directory; the form deliberately doesn't collect one.
+          working_dir: folderId ? null : workingDir.trim() || null,
+          folder_id: folderId,
           credential_id: credentialId || null,
           backend,
         }),
@@ -172,21 +218,197 @@ export function SessionList({
     }
   };
 
+  const reorderSessions = async (
+    draggedId: string,
+    targetId: string,
+    position: SessionDropPosition,
+  ) => {
+    // Order the FULL group (hidden delegation sessions included) so their
+    // relative positions stay stable when the user later reveals them.
+    const groupIds = sortSessionsByOrder(allAgentSessions).map((s) => s.id);
+    const nextIds = reorderSessionIds(groupIds, draggedId, targetId, position);
+    if (!nextIds) return;
+
+    const orderById = new Map(nextIds.map((id, index) => [id, index] as const));
+    const previous = sessions;
+    setSessions(
+      sessions.map((session) =>
+        orderById.has(session.id)
+          ? { ...session, sort_order: orderById.get(session.id)! }
+          : session,
+      ),
+    );
+    try {
+      const res = await fetch(
+        `${API_URL}/api/agents/${agentId}/sessions/order`,
+        {
+          method: "PUT",
+          headers,
+          body: JSON.stringify({
+            folder_id: folderId,
+            session_ids: nextIds,
+          }),
+        },
+      );
+      if (!res.ok) throw new Error(`reorder failed: ${res.status}`);
+      if (reorderErrorTimerRef.current !== null) {
+        window.clearTimeout(reorderErrorTimerRef.current);
+        reorderErrorTimerRef.current = null;
+      }
+      setReorderError(null);
+    } catch (error) {
+      // Optimistic update failed — restore the pre-drag order and tell the
+      // user instead of silently snapping back.
+      console.warn("[session-order] save failed", error);
+      setSessions(previous);
+      setReorderError("Couldn't save the new order. Please retry.");
+      if (reorderErrorTimerRef.current !== null) {
+        window.clearTimeout(reorderErrorTimerRef.current);
+      }
+      reorderErrorTimerRef.current = window.setTimeout(
+        () => setReorderError(null),
+        4000,
+      );
+    }
+  };
+
+  // Hit-test a pointer position against this list's rows. Using
+  // elementFromPoint keeps the target accurate even when the pointer moves
+  // faster than React can re-render.
+  const dropTargetAt = (x: number, y: number) => {
+    const row = document
+      .elementFromPoint(x, y)
+      ?.closest<HTMLElement>("[data-session-id]");
+    if (!row || !listRef.current?.contains(row)) return null;
+    const sessionId = row.dataset.sessionId;
+    if (!sessionId) return null;
+    const rect = row.getBoundingClientRect();
+    const position: SessionDropPosition =
+      y < rect.top + rect.height / 2 ? "before" : "after";
+    return { sessionId, position };
+  };
+
+  const handleRowPointerDown = (
+    e: ReactPointerEvent<HTMLDivElement>,
+    s: SessionInfo,
+  ) => {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    // Action buttons inside the row keep their normal click behavior.
+    if (target.closest("button, a, input, select, textarea")) return;
+    // A new press supersedes any stale listener set.
+    dragCleanupRef.current?.();
+
+    const candidate = {
+      sessionId: s.id,
+      startX: e.clientX,
+      startY: e.clientY,
+      active: false,
+    };
+    dragCandidateRef.current = candidate;
+
+    const onMove = (event: PointerEvent) => {
+      const current = dragCandidateRef.current;
+      if (!current) return;
+      if (!current.active) {
+        // A tiny move is still a click; only start a drag past the threshold.
+        if (
+          Math.hypot(
+            event.clientX - current.startX,
+            event.clientY - current.startY,
+          ) < 5
+        ) {
+          return;
+        }
+        current.active = true;
+        setDraggingId(current.sessionId);
+        document.body.style.userSelect = "none";
+        document.body.style.cursor = "grabbing";
+      }
+      if (event.cancelable) event.preventDefault();
+      const hit = dropTargetAt(event.clientX, event.clientY);
+      if (!hit || hit.sessionId === current.sessionId) {
+        setDropTarget(null);
+        return;
+      }
+      setDropTarget((prev) =>
+        prev && prev.id === hit.sessionId && prev.position === hit.position
+          ? prev
+          : { id: hit.sessionId, position: hit.position },
+      );
+    };
+
+    const finish = (commit: boolean, event: PointerEvent) => {
+      const current = dragCandidateRef.current;
+      dragCleanupRef.current?.();
+      dragCleanupRef.current = null;
+      dragCandidateRef.current = null;
+      setDraggingId(null);
+      setDropTarget(null);
+      if (!current || !current.active || !commit) return;
+      // pointerup is followed by click; swallow it so a drag doesn't also
+      // open the session.
+      suppressClickRef.current = true;
+      window.setTimeout(() => {
+        suppressClickRef.current = false;
+      }, 0);
+      const hit = dropTargetAt(event.clientX, event.clientY);
+      if (!hit || hit.sessionId === current.sessionId) return;
+      void reorderSessions(current.sessionId, hit.sessionId, hit.position);
+    };
+
+    const onUp = (event: PointerEvent) => finish(true, event);
+    const onCancel = (event: PointerEvent) => finish(false, event);
+    const cleanup = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+    };
+    dragCleanupRef.current = cleanup;
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+  };
+
   // Every session is a flat, EQUAL row in the sidebar — no parent/child
   // nesting, no fork chrome. A /fork duplicate or /rewind branch is just
   // another session; its lineage lives in the chat-header fork banner, not as
   // sidebar hierarchy (user preference: sidebar sessions never look nested).
   const renderSessionRow = (s: SessionInfo) => {
+    const dropPosition =
+      dropTarget?.id === s.id ? dropTarget.position : null;
     return (
-      <div key={s.id} className="fork-node">
+      <div key={s.id} className="fork-node relative">
+        {dropPosition && (
+          <div
+            className={`session-drop-indicator pointer-events-none absolute left-0 right-0 z-10 h-0.5 rounded-full bg-primary ${
+              dropPosition === "before" ? "top-0" : "bottom-0"
+            }`}
+            aria-hidden="true"
+          />
+        )}
         <div
-          className={`session-item group flex items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer transition-colors ${
+          className={`session-item group flex items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer select-none transition-colors ${
             s.id === activeSessionId
               ? "active bg-[hsl(var(--gray-200))] text-foreground"
               : "text-sidebar-foreground hover:bg-sidebar-accent"
-          }`}
-          onClick={() => selectSession(s.id)}
+          } ${draggingId === s.id ? "opacity-50" : ""}`}
+          data-session-id={s.id}
+          onPointerDown={(e) => handleRowPointerDown(e, s)}
+          onClick={() => {
+            if (suppressClickRef.current) return;
+            void selectSession(s.id);
+          }}
         >
+          <span
+            className="session-drag-handle inline-flex shrink-0 items-center text-sidebar-foreground/25 group-hover:text-sidebar-foreground/60"
+            title="Drag to reorder"
+            aria-hidden="true"
+          >
+            <IconGripVertical size={13} />
+          </span>
           <span
             className={`status-dot status-${s.status} inline-block size-2 rounded-full shrink-0 ${
               s.status === "running"
@@ -246,7 +468,10 @@ export function SessionList({
   );
 
   return (
-    <div className="session-list session-list-nested ml-3 mt-0.5 mb-1 pl-2 border-l border-sidebar-border/40">
+    <div
+      ref={listRef}
+      className="session-list session-list-nested ml-3 mt-0.5 mb-1 pl-2 border-l border-sidebar-border/40"
+    >
       <div className="session-list-items flex flex-col gap-0">
         {agentSessions.length === 0 && !formOpen && (
           <div className="text-[11px] italic text-sidebar-foreground/40 px-2 py-1">
@@ -281,6 +506,14 @@ export function SessionList({
             </button>
           )}
         {renderForkForest(agentSessions)}
+        {reorderError && (
+          <div
+            className="px-2 py-1 text-[11px] leading-snug text-destructive"
+            role="status"
+          >
+            {reorderError}
+          </div>
+        )}
       </div>
 
       {formOpen && (
@@ -293,13 +526,25 @@ export function SessionList({
             placeholder="Session name"
             autoFocus
           />
-          <Input
-            type="text"
-            className="h-9 text-sm"
-            value={workingDir}
-            onChange={(e) => setWorkingDir(e.target.value)}
-            placeholder="Working directory (optional)"
-          />
+          {folderId ? (
+            <div
+              className="session-folder-path flex items-center gap-1.5 rounded-md bg-sidebar-accent/60 px-2 py-1.5 text-[11px] text-muted-foreground"
+              title={folderWorkingDir ?? "Folder working directory"}
+            >
+              <IconFolder size={12} className="shrink-0" />
+              <span className="truncate">
+                {folderWorkingDir ?? "Folder working directory"}
+              </span>
+            </div>
+          ) : (
+            <Input
+              type="text"
+              className="h-9 text-sm"
+              value={workingDir}
+              onChange={(e) => setWorkingDir(e.target.value)}
+              placeholder="Working directory (optional)"
+            />
+          )}
           {codexAvailable && (
             <div
               className="session-backend-select flex gap-2"

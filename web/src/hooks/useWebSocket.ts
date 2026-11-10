@@ -397,6 +397,8 @@ export function handleWsMessage(data: Record<string, unknown>) {
           claude_session_id: null,
           credential_id: prev?.credential_id ?? null,
           agent_id: prev?.agent_id ?? null,
+          folder_id: prev?.folder_id ?? null,
+          sort_order: prev?.sort_order ?? 0,
           origin: prev?.origin ?? "user",
           backend: prev?.backend ?? "claude-code",
           can_fork: prev?.can_fork ?? true,
